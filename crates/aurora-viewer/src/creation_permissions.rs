@@ -230,9 +230,11 @@ mod tests {
         let mut script = NetCommand::Build(aurora_net::build::BuildCmd::RezScript {
             handle: 0,
             local_id: 1,
+            object_id: uuid::Uuid::nil(),
             enabled: true,
             group_id: uuid::Uuid::nil(),
             item: Box::default(),
+            runtime: aurora_net::scripts::ScriptRuntime::Mono,
         });
         defaults.prepare(&mut script);
         let NetCommand::Build(aurora_net::build::BuildCmd::RezScript { ref mut item, .. }) = script else {

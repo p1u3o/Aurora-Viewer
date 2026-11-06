@@ -745,9 +745,12 @@ impl Job {
                         tool.send(BuildCmd::RezScript {
                             handle,
                             local_id: self.replacement.key.local_id,
+                            object_id: self.replacement.id,
                             enabled: false,
                             group_id: world.groups.active,
                             item,
+                            // A staged copy of an existing asset.
+                            runtime: aurora_net::scripts::ScriptRuntime::Mono,
                         });
                     } else {
                         tool.send(BuildCmd::UpdateTaskInventory {

@@ -1482,8 +1482,11 @@ impl Bridge {
                             self.commands.push(NetCommand::Build(BuildCmd::RezScript {
                                 handle: root.key.region,
                                 local_id: root.key.local_id,
+                                object_id: *object,
                                 enabled: false,
                                 group_id: world.groups.active,
+                                // The controller sources follow with uploads.
+                                runtime: aurora_net::scripts::ScriptRuntime::Mono,
                                 item: Box::new(TaskItem {
                                     parent_id: *object,
                                     creator_id: world.agent_id,

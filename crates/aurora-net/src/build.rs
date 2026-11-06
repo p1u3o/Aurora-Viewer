@@ -398,13 +398,18 @@ pub enum BuildCmd {
         local_id: u32,
         item: Box<TaskItem>,
     },
-    /// RezScript: a script into an object, running or not.
+    /// RezScript: a script into an object, running or not. `runtime` picks
+    /// the simulator's default template through `CreateTaskInventoryItem`
+    /// (`sub_type`), falling back to the classic LSL default over UDP.
     RezScript {
         handle: RegionHandle,
         local_id: u32,
+        /// Full id of the object (the capability names it, UDP does not).
+        object_id: Uuid,
         enabled: bool,
         group_id: Uuid,
         item: Box<TaskItem>,
+        runtime: crate::scripts::ScriptRuntime,
     },
     ScriptReset {
         handle: RegionHandle,

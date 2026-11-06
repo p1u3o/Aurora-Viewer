@@ -13,6 +13,7 @@ use crate::ui::inventory::permissions::Permissions;
 use crate::ui::{menu, widgets};
 use crate::world::World;
 use aurora_net::build::{TaskItem, perm};
+use aurora_net::scripts::ScriptRuntime;
 use egui::{RichText, Vec2};
 
 /// Localized item name (LLTaskInvFVBridge::getDisplayName). Permissions are
@@ -45,6 +46,22 @@ fn root_label(n: usize) -> String {
     aurora_i18n::tr!("contents-count", count = n)
 }
 
+/// "New script" dropdown (the Legacy Viewer's flyout button,
+/// `LLPanelContents::onNewScriptFlyoutCommit`): LSL always, Lua only on
+/// Lua-enabled regions; the simulator fills its own default template.
+fn new_script_menu(ui: &mut egui::Ui, p: &Palette, tool: &mut BuildTool, world: &World, idx: usize, label: RichText) {
+    let Some(o) = world.objects.get(idx) else { return };
+    let lua_enabled = world.regions.get(&o.key.region).is_some_and(|r| r.lua_enabled);
+    ui.menu_button(label, |ui| {
+        if menu::item(ui, p, "code", aurora_i18n::tr!("build-ui-contents-new-lsl-script")) {
+            tool.new_script(world, idx, ScriptRuntime::Mono);
+        }
+        if menu::item_if(ui, p, "code", aurora_i18n::tr!("build-ui-contents-new-lua-script"), lua_enabled) {
+            tool.new_script(world, idx, ScriptRuntime::Luau);
+        }
+    });
+}
+
 pub fn show(ui: &mut egui::Ui, p: &Palette, tool: &mut BuildTool, world: &mut World) {
     let Some(idx) = tool.contents_target(world) else { return };
     let Some(object_id) = world.objects.get(idx).map(|o| o.full_id) else {
@@ -56,12 +73,9 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, tool: &mut BuildTool, world: &mut Wo
 
     if super::legacy::active(ui) {
         ui.columns(3, |columns| {
-            if columns[0]
-                .add_enabled(editable && single, egui::Button::new(aurora_i18n::tr!("common-new-script")))
-                .clicked()
-            {
-                tool.new_script(world, idx);
-            }
+            columns[0].add_enabled_ui(editable && single, |ui| {
+                new_script_menu(ui, p, tool, world, idx, RichText::new(aurora_i18n::tr!("common-new-script")));
+            });
             if columns[1].button(aurora_i18n::tr!("common-rights")).clicked() {
                 tool.ui.bulk_perms_open = !tool.ui.bulk_perms_open;
             }
@@ -80,15 +94,16 @@ pub fn show(ui: &mut egui::Ui, p: &Palette, tool: &mut BuildTool, world: &mut Wo
         });
     } else {
         ui.horizontal(|ui| {
-            if ui
-                .add_enabled(
-                    editable && single,
-                    egui::Button::new(RichText::new(aurora_i18n::tr!("common-new-script")).size(12.0)),
-                )
-                .clicked()
-            {
-                tool.new_script(world, idx);
-            }
+            ui.add_enabled_ui(editable && single, |ui| {
+                new_script_menu(
+                    ui,
+                    p,
+                    tool,
+                    world,
+                    idx,
+                    RichText::new(aurora_i18n::tr!("common-new-script")).size(12.0),
+                );
+            });
             if ui
                 .button(RichText::new(aurora_i18n::tr!("common-rights")).size(12.0))
                 .on_hover_text(aurora_i18n::tr!("build-ui-contents-change-content-permissions"))

@@ -3,7 +3,7 @@
 use super::*;
 use crate::ui::scripts::Action;
 use aurora_net::build::{BuildCmd, perm};
-use aurora_net::scripts::{DEFAULT_SOURCE, ScriptSaved, ScriptTarget};
+use aurora_net::scripts::{DEFAULT_LUA_SOURCE, DEFAULT_SOURCE, ScriptSaved, ScriptTarget};
 use uuid::Uuid;
 
 const SYNTAX_DEMO_SOURCE: &str = r#"// LSL: types, variables, functions and events
@@ -777,11 +777,15 @@ impl App {
                 });
             }
             NetCommand::LoadScript { request, target, .. } => {
-                let source = self
-                    .demo_script_sources
-                    .get(target)
-                    .cloned()
-                    .unwrap_or_else(|| DEFAULT_SOURCE.into());
+                let source = self.demo_script_sources.get(target).cloned().unwrap_or_else(|| {
+                    // A simulated simulator fills its own default; like the
+                    // grid choice it follows the creation runtime.
+                    if self.build_demo.script_runtime(target.object, target.item).is_lua() {
+                        DEFAULT_LUA_SOURCE.into()
+                    } else {
+                        DEFAULT_SOURCE.into()
+                    }
+                });
                 self.on_app_event(NetEvent::ScriptLoaded {
                     request: *request,
                     target: *target,

@@ -164,43 +164,7 @@ impl Session<'_> {
             let http = self.sh.caps_http.clone();
             let events = self.sh.events.clone();
             tokio::spawn(async move {
-                let result = async {
-                    let mut url = reqwest::Url::parse(&url)
-                        .map_err(|_| aurora_i18n::tr!("session-object-actions-invalid-inventory-capability").to_string())?;
-                    url.query_pairs_mut().append_pair("task_id", &object.to_string());
-                    let mut response = http
-                        .get(url)
-                        .timeout(Duration::from_secs(30))
-                        .header("Accept", "application/llsd+xml")
-                        .send()
-                        .await
-                        .map_err(|_| aurora_i18n::tr!("session-object-actions-could-not-load-the-object-s-inventory").to_string())?;
-                    if !response.status().is_success() {
-                        return Err(aurora_i18n::tr!(
-                            "session-object-actions-inventory-rejected-http",
-                            value0 = format!("{}", response.status().as_u16())
-                        ));
-                    }
-                    if response.content_length().is_some_and(|n| n > MAX_FILE as u64) {
-                        return Err(aurora_i18n::tr!("session-object-actions-inventory-too-large").into());
-                    }
-                    let mut data = Vec::new();
-                    while let Some(chunk) = response
-                        .chunk()
-                        .await
-                        .map_err(|_| aurora_i18n::tr!("session-object-actions-unreadable-inventory-response").to_string())?
-                    {
-                        if data.len() + chunk.len() > MAX_FILE {
-                            return Err(aurora_i18n::tr!("session-object-actions-inventory-too-large").into());
-                        }
-                        data.extend_from_slice(&chunk);
-                    }
-                    let doc = aurora_llsd::from_xml(&data)
-                        .map_err(|_| aurora_i18n::tr!("session-object-actions-invalid-inventory-response").to_string())?;
-                    Ok((task_inventory::cap_serial(&doc), task_inventory::parse_cap(&doc)?))
-                }
-                .await;
-                let (serial, result) = match result {
+                let (serial, result) = match Self::fetch_task_inventory(&http, &url, object).await {
                     Ok((serial, items)) => (serial, Ok(items)),
                     Err(e) => (None, Err(e)),
                 };
@@ -225,6 +189,50 @@ impl Session<'_> {
             m.inventory_data.local_id = local_id;
             self.send(addr, &m, true);
         }
+    }
+
+    /// Listing behind the `RequestTaskInventory` capability: GET
+    /// `?task_id=`, then the simulator serial with the parsed items (the
+    /// capability answer path of `LLViewerObject::requestInventory`,
+    /// indra/newview/llviewerobject.cpp).
+    pub(super) async fn fetch_task_inventory(
+        http: &reqwest::Client,
+        url: &str,
+        object: Uuid,
+    ) -> Result<(Option<i16>, Vec<crate::build::TaskItem>), String> {
+        let mut url =
+            reqwest::Url::parse(url).map_err(|_| aurora_i18n::tr!("session-object-actions-invalid-inventory-capability").to_string())?;
+        url.query_pairs_mut().append_pair("task_id", &object.to_string());
+        let mut response = http
+            .get(url)
+            .timeout(Duration::from_secs(30))
+            .header("Accept", "application/llsd+xml")
+            .send()
+            .await
+            .map_err(|_| aurora_i18n::tr!("session-object-actions-could-not-load-the-object-s-inventory").to_string())?;
+        if !response.status().is_success() {
+            return Err(aurora_i18n::tr!(
+                "session-object-actions-inventory-rejected-http",
+                value0 = format!("{}", response.status().as_u16())
+            ));
+        }
+        if response.content_length().is_some_and(|n| n > MAX_FILE as u64) {
+            return Err(aurora_i18n::tr!("session-object-actions-inventory-too-large").into());
+        }
+        let mut data = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| aurora_i18n::tr!("session-object-actions-unreadable-inventory-response").to_string())?
+        {
+            if data.len() + chunk.len() > MAX_FILE {
+                return Err(aurora_i18n::tr!("session-object-actions-inventory-too-large").into());
+            }
+            data.extend_from_slice(&chunk);
+        }
+        let doc =
+            aurora_llsd::from_xml(&data).map_err(|_| aurora_i18n::tr!("session-object-actions-invalid-inventory-response").to_string())?;
+        Ok((task_inventory::cap_serial(&doc), task_inventory::parse_cap(&doc)?))
     }
 
     pub(super) fn dispatch_object_actions(&mut self, from: SocketAddr, pkt: &IncomingPacket) -> Result<bool, aurora_msg::DecodeError> {

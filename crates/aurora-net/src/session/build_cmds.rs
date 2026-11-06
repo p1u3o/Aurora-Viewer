@@ -4,7 +4,7 @@
 use super::{Session, emit};
 use crate::build::{BuildCmd, ObjectProps, PhysicsParams, brush_index};
 use crate::types::NetEvent;
-use aurora_llsd::Llsd;
+use aurora_llsd::{Llsd, llsd_map};
 use aurora_msg::msgs::{self, *};
 use aurora_msg::{IncomingPacket, Msg, field_str, str_field};
 
@@ -707,12 +707,51 @@ impl Session<'_> {
                 self.send(addr, &m, true);
             }
             BuildCmd::RezScript {
+                handle: _handle,
                 local_id,
+                object_id,
                 enabled,
+                runtime,
                 group_id,
                 item,
-                ..
             } => {
+                // A simulator with the creation capability fills its own
+                // default template for the subtype (the Legacy Viewer's
+                // `LLViewerObject::createInventoryItem`,
+                // indra/newview/llviewerobject.cpp); the listing is fetched
+                // again afterwards like the capability inventory path, so the
+                // new script shows up. Without both capabilities the UDP path
+                // below yields the classic LSL default.
+                let sim = self.sims.get(&addr);
+                if let (Some(create_url), Some(fetch_url)) = (
+                    sim.and_then(|s| s.caps.get("CreateTaskInventoryItem")).cloned(),
+                    sim.and_then(|s| s.caps.get("RequestTaskInventory")).cloned(),
+                ) {
+                    let http = self.sh.caps_http.clone();
+                    let events = self.sh.events.clone();
+                    let body = create_task_body(object_id, &item, enabled, runtime);
+                    tokio::spawn(async move {
+                        let created = crate::caps::post_llsd(&http, &create_url, &body)
+                            .await
+                            .map(|reply| reply["success"].as_bool())
+                            .unwrap_or(false);
+                        if !created {
+                            log::warn!("CreateTaskInventoryItem failed for {object_id}");
+                            return;
+                        }
+                        let fetched = Session::fetch_task_inventory(&http, &fetch_url, object_id).await;
+                        let (serial, result) = match fetched {
+                            Ok((serial, items)) => (serial, Ok(items)),
+                            Err(e) => (None, Err(e)),
+                        };
+                        let _ = events.send(NetEvent::TaskInventory {
+                            object: object_id,
+                            serial,
+                            result,
+                        });
+                    });
+                    return;
+                }
                 let mut m = RezScript::default();
                 m.agent_data.agent_id = agent_id;
                 m.agent_data.session_id = session_id;
@@ -928,6 +967,35 @@ pub(super) fn parse_properties(m: &msgs::ObjectProperties) -> Vec<ObjectProps> {
         .collect()
 }
 
+/// Body of `CreateTaskInventoryItem` for a new object script (the Legacy
+/// Viewer's `LLViewerObject::createInventoryItem`,
+/// indra/newview/llviewerobject.cpp): the subtype picks the simulator's
+/// default template, `params.vm` its compiler.
+pub(super) fn create_task_body(
+    object: uuid::Uuid,
+    item: &crate::build::TaskItem,
+    enabled: bool,
+    runtime: crate::scripts::ScriptRuntime,
+) -> Llsd {
+    let (sub_type, vm) = runtime.task_template();
+    llsd_map! {
+        "object_id" => object,
+        "inventory_type" => i32::from(item.inv_type),
+        "asset_type" => i32::from(item.asset_type),
+        "sub_type" => i32::from(sub_type),
+        "name" => item.name.clone(),
+        "description" => item.description.clone(),
+        "permissions" => llsd_map! {
+            "base" => item.base_mask,
+            "owner" => item.owner_mask,
+            "everyone" => item.everyone_mask,
+            "group" => item.group_mask,
+            "next_owner" => item.next_owner_mask
+        },
+        "params" => llsd_map! { "enabled" => enabled, "vm" => vm }
+    }
+}
+
 /// ObjectPropertiesFamily (one object).
 pub(super) fn parse_family(m: &msgs::ObjectPropertiesFamily) -> ObjectProps {
     let b = &m.object_data;
@@ -948,5 +1016,50 @@ pub(super) fn parse_family(m: &msgs::ObjectPropertiesFamily) -> ObjectProps {
         name: field_str(&b.name),
         description: field_str(&b.description),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scripts::{SUBTYPE_LSL, SUBTYPE_LUA, ScriptRuntime};
+
+    fn script_item() -> crate::build::TaskItem {
+        crate::build::TaskItem {
+            item_id: uuid::Uuid::from_u128(11),
+            parent_id: uuid::Uuid::from_u128(10),
+            creator_id: uuid::Uuid::from_u128(1),
+            owner_id: uuid::Uuid::from_u128(1),
+            base_mask: 0x7fff_ffff,
+            owner_mask: 0x7fff_ffff,
+            group_mask: 0,
+            everyone_mask: 0,
+            next_owner_mask: crate::build::perm::MOVE | crate::build::perm::TRANSFER,
+            asset_type: 10,
+            inv_type: 10,
+            name: "New Script".into(),
+            description: "2023-11-14 22:13:20 lsl2 script".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn create_task_body_picks_the_simulator_template() {
+        let object = uuid::Uuid::from_u128(10);
+        let mono = create_task_body(object, &script_item(), true, ScriptRuntime::Mono);
+        assert_eq!(mono["object_id"].as_uuid(), object);
+        assert_eq!(mono["inventory_type"].as_i32(), 10);
+        assert_eq!(mono["asset_type"].as_i32(), 10);
+        assert_eq!(mono["sub_type"].as_i32(), i32::from(SUBTYPE_LSL));
+        assert_eq!(mono["params"]["vm"].as_str(), "mono");
+        assert!(mono["params"]["enabled"].as_bool());
+        assert_eq!(
+            mono["permissions"]["next_owner"].as_i32(),
+            (crate::build::perm::MOVE | crate::build::perm::TRANSFER) as i32
+        );
+        let lua = create_task_body(object, &script_item(), true, ScriptRuntime::Luau);
+        assert_eq!(lua["sub_type"].as_i32(), i32::from(SUBTYPE_LUA));
+        assert_eq!(lua["params"]["vm"].as_str(), "luau");
+        assert_eq!(lua["name"].as_str(), "New Script");
     }
 }

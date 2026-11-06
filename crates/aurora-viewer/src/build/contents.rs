@@ -6,6 +6,7 @@
 use super::BuildTool;
 use crate::world::World;
 use aurora_net::build::{BuildCmd, TaskItem, perm};
+use aurora_net::scripts::ScriptRuntime;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -45,10 +46,16 @@ pub struct Contents {
 
 /// "YYYY-MM-DD HH:MM:SS lsl2 script" (LLViewerAssetType: new script
 /// descriptions carry their creation time, UTC here).
-fn new_script_description(unix: i64) -> String {
+fn new_script_description(unix: i64, runtime: ScriptRuntime) -> String {
     let (y, m, d) = aurora_net::profile::civil_from_days(unix.div_euclid(86_400));
     let s = unix.rem_euclid(86_400);
-    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02} lsl2 script", s / 3600, s / 60 % 60, s % 60)
+    let target = if runtime.is_lua() { "luau" } else { "lsl2" };
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02} {target} script",
+        s / 3600,
+        s / 60 % 60,
+        s % 60
+    )
 }
 
 fn now_unix() -> i64 {
@@ -155,10 +162,13 @@ impl BuildTool {
     }
 
     /// "New script": RezScript of a default script
-    /// (LLPanelContents::onClickNewScript + LLViewerObject::saveScript).
-    /// RezScript uses the active group, independent of the parcel's rez group
+    /// (LLPanelContents::onNewScriptFlyoutCommit +
+    /// LLViewerObject::saveScript). `runtime` picks the simulator's default
+    /// through `CreateTaskInventoryItem`; the UDP fallback always yields the
+    /// classic LSL one. RezScript uses the active group, independent of the
+    /// parcel's rez group
     /// (LLViewerObject::saveScript, indra/newview/llviewerobject.cpp).
-    pub fn new_script(&mut self, world: &World, idx: usize) {
+    pub fn new_script(&mut self, world: &World, idx: usize, runtime: ScriptRuntime) {
         let Some(o) = world.objects.get(idx) else { return };
         let now = now_unix();
         let item = TaskItem {
@@ -176,7 +186,7 @@ impl BuildTool {
             inv_type: IT_LSL,
             sale_price: DEFAULT_PRICE,
             name: aurora_i18n::tr!("extra-new-script").into(),
-            description: new_script_description(now),
+            description: new_script_description(now, runtime),
             creation_date: now as i32,
             ..Default::default()
         };
@@ -184,9 +194,11 @@ impl BuildTool {
         self.send(BuildCmd::RezScript {
             handle,
             local_id,
+            object_id,
             enabled: true,
             group_id: world.groups.active,
             item: Box::new(item),
+            runtime,
         });
         self.contents_changed(object_id);
     }
@@ -354,6 +366,13 @@ mod tests {
     #[test]
     fn script_description_date() {
         // 2023-11-14 22:13:20 UTC
-        assert_eq!(new_script_description(1_700_000_000), "2023-11-14 22:13:20 lsl2 script");
+        assert_eq!(
+            new_script_description(1_700_000_000, ScriptRuntime::Mono),
+            "2023-11-14 22:13:20 lsl2 script"
+        );
+        assert_eq!(
+            new_script_description(1_700_000_000, ScriptRuntime::Luau),
+            "2023-11-14 22:13:20 luau script"
+        );
     }
 }

@@ -25,6 +25,9 @@ pub const REQUESTED_CAPS: &[&str] = &[
     "CopyInventoryFromNotecard",
     // a new folder on a grid without AIS (LLInventoryModel::createNewCategory)
     "CreateInventoryCategory",
+    // a new task item with the simulator's default template
+    // (LLViewerObject::createInventoryItem): the subtype picks LSL or Lua
+    "CreateTaskInventoryItem",
     "DeclineFriendship",
     "DeclineGroupInvite",
     // the Region / Estate window (llviewerregion.cpp buildCapabilityNames):

@@ -313,9 +313,13 @@ pub fn item_drop(world: &World, idx: usize, item: &InvItem, running: bool) -> Op
         BuildCmd::RezScript {
             handle: o.key.region,
             local_id: o.key.local_id,
+            object_id: o.full_id,
             enabled: running,
             group_id: world.groups.active,
             item: Box::new(task),
+            // An existing asset: the simulator copies it, no default
+            // template is involved.
+            runtime: aurora_net::scripts::ScriptRuntime::Mono,
         }
     } else {
         BuildCmd::UpdateTaskInventory {

@@ -1246,7 +1246,7 @@ fn scripts_and_derez_send_the_current_active_group_instead_of_the_parcel_group()
             "the parcel group must differ from the message group"
         );
         tool.out.clear();
-        tool.new_script(&world, roots[0]);
+        tool.new_script(&world, roots[0], aurora_net::scripts::ScriptRuntime::Mono);
         let scripts: Vec<_> = tool
             .out
             .iter()
@@ -1254,16 +1254,20 @@ fn scripts_and_derez_send_the_current_active_group_instead_of_the_parcel_group()
                 NetCommand::Build(BuildCmd::RezScript {
                     handle,
                     local_id,
+                    object_id,
                     enabled,
                     group_id,
                     item,
-                }) => Some((*handle, *local_id, *enabled, *group_id, item)),
+                    runtime,
+                }) => Some((*handle, *local_id, *object_id, *enabled, *group_id, item, *runtime)),
                 _ => None,
             })
             .collect();
         assert_eq!(scripts.len(), 1);
-        let (handle, local_id, enabled, group, item) = scripts[0];
+        let (handle, local_id, object_id, enabled, group, item, runtime) = scripts[0];
         assert_eq!((handle, local_id, enabled, group), (keys[0].region, keys[0].local_id, true, active));
+        assert_eq!(object_id, world.objects.get(roots[0]).unwrap().full_id);
+        assert_eq!(runtime, aurora_net::scripts::ScriptRuntime::Mono);
         assert_eq!(item.parent_id, world.objects.get(roots[0]).unwrap().full_id);
         assert_eq!(
             (item.owner_id, item.group_id, item.asset_type),
@@ -1361,4 +1365,42 @@ fn duplicate_copies_only_roots_with_copy_and_link_needs_modify() {
     assert!(!tool.out.iter().any(|c| matches!(c, NetCommand::Build(BuildCmd::Delink { .. }))));
     world.objects.get_mut(b).unwrap().update_flags |= OBJECT_MODIFY;
     assert!(tool.can_link(&world) && tool.can_unlink(&world));
+}
+
+#[test]
+fn new_scripts_remember_their_runtime_in_demo() {
+    let (world, _tool, _settings) = fixture();
+    let idx = object(&world, 99610);
+    let o = world.objects.get(idx).unwrap();
+    let (region, local_id, object_id) = (o.key.region, o.key.local_id, o.full_id);
+    let mut sim = demo_sim::DemoSim::default();
+    for (item_no, runtime) in [
+        (4242, aurora_net::scripts::ScriptRuntime::Luau),
+        (4243, aurora_net::scripts::ScriptRuntime::Mono),
+    ] {
+        let item_id = Uuid::from_u128(item_no);
+        sim.reply(
+            &world,
+            &aurora_net::build::BuildCmd::RezScript {
+                handle: region,
+                local_id,
+                object_id,
+                enabled: true,
+                group_id: Uuid::nil(),
+                item: Box::new(aurora_net::build::TaskItem {
+                    item_id,
+                    parent_id: object_id,
+                    asset_type: 10,
+                    inv_type: 10,
+                    ..Default::default()
+                }),
+                runtime,
+            },
+        );
+        assert_eq!(sim.script_runtime(object_id, item_id), runtime);
+    }
+    assert_eq!(
+        sim.script_runtime(object_id, Uuid::from_u128(9999)),
+        aurora_net::scripts::ScriptRuntime::Mono
+    );
 }

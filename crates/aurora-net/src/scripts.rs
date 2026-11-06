@@ -74,7 +74,26 @@ impl ScriptRuntime {
             Self::Luau => aurora_i18n::tr!("script-target-luau"),
         }
     }
+
+    /// `(sub_type, vm)` for `CreateTaskInventoryItem`: the subtype tells the
+    /// simulator which default template to fill in (the Legacy Viewer's
+    /// `create_new_item`, `llviewerinventory.cpp`), `vm` which compiler
+    /// builds it. Only pure Lua asks for the Lua template; every LSL source
+    /// keeps the classic one.
+    pub fn task_template(self) -> (u8, &'static str) {
+        if self.is_lua() {
+            (SUBTYPE_LUA, "luau")
+        } else {
+            (SUBTYPE_LSL, "mono")
+        }
+    }
 }
+
+/// Inventory subtypes of a new script (`llinventorytype.h` `SST_LSL` /
+/// `SST_LUA`): the `sub_type` of `CreateTaskInventoryItem` picks the
+/// simulator's LSL or Lua default script.
+pub const SUBTYPE_LSL: u8 = 0;
+pub const SUBTYPE_LUA: u8 = 1;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ScriptOptions {
@@ -85,6 +104,15 @@ pub struct ScriptOptions {
 
 pub const MAX_SOURCE: usize = 1024 * 1024;
 pub const DEFAULT_SOURCE: &str = "default\n{\n    state_entry()\n    {\n        llSay(0, \"Hello, Avatar!\");\n    }\n\n    touch_start(integer total_number)\n    {\n        llSay(0, \"Touched.\");\n    }\n}\n";
+
+/// Default source of a new Lua script, mirroring [`DEFAULT_SOURCE`]. Only
+/// demo mode serves it: on the grid the simulator fills its own default.
+/// Lua has no `default` state: top-level code runs at startup and handlers
+/// register through `LLEvents:on` (`slua_definitions.yaml` in
+/// secondlife/lsl-definitions). The exact template is the viewer's guess
+/// until a grid check confirms it.
+pub const DEFAULT_LUA_SOURCE: &str =
+    "ll.Say(0, \"Hello, Avatar!\")\n\nLLEvents:on(\"touch_start\", function(events)\n    ll.Say(0, \"Touched.\")\nend)\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScriptTarget {
@@ -316,6 +344,14 @@ mod tests {
         assert_eq!(ScriptRuntime::from_target("bogus"), None);
         assert_eq!(ScriptRuntime::from_mono(true), ScriptRuntime::Mono);
         assert_eq!(ScriptRuntime::from_mono(false), ScriptRuntime::Lso);
+    }
+
+    #[test]
+    fn new_script_templates_pick_the_simulators_default() {
+        assert_eq!(ScriptRuntime::Mono.task_template(), (SUBTYPE_LSL, "mono"));
+        assert_eq!(ScriptRuntime::Lso.task_template(), (SUBTYPE_LSL, "mono"));
+        assert_eq!(ScriptRuntime::LslLuau.task_template(), (SUBTYPE_LSL, "mono"));
+        assert_eq!(ScriptRuntime::Luau.task_template(), (SUBTYPE_LUA, "luau"));
     }
 
     #[test]

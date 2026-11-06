@@ -37,6 +37,14 @@ pub struct DemoSim {
 /// An object's position, rotation and scale.
 type Placement = (glam::Vec3, glam::Quat, glam::Vec3);
 
+impl DemoSim {
+    /// Runtime of a simulated task script (the simulator knows it; demo
+    /// keeps what `RezScript` asked for, defaulting to LSL elsewhere).
+    pub fn script_runtime(&self, object: Uuid, item: Uuid) -> aurora_net::scripts::ScriptRuntime {
+        self.running.get(&(object, item)).map(|(_, runtime)| *runtime).unwrap_or_default()
+    }
+}
+
 /// Updates of one object closer than this are one edit (a drag sends one
 /// a frame), as a simulator keeps one undo step for a drag.
 const EDIT_GAP: Duration = Duration::from_millis(400);
@@ -646,9 +654,8 @@ impl DemoSim {
                 }
                 entry.0 = entry.0.wrapping_add(1);
                 let serial = entry.0;
-                if let BuildCmd::RezScript { enabled, .. } = c {
-                    self.running
-                        .insert((id, script_id), (*enabled, aurora_net::scripts::ScriptRuntime::Mono));
+                if let BuildCmd::RezScript { enabled, runtime, .. } = c {
+                    self.running.insert((id, script_id), (*enabled, *runtime));
                 }
                 self.props_of(world, id).inventory_serial = serial;
                 self.reply_props(world, &ids)
