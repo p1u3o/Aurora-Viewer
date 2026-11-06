@@ -270,7 +270,7 @@ impl App {
             },
             handle: self.world.main_region.unwrap_or_default(),
             options: ScriptOptions {
-                mono: true,
+                runtime: aurora_net::scripts::ScriptRuntime::Mono,
                 running: true,
                 experience: Uuid::nil(),
             },

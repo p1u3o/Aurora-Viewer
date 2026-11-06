@@ -633,6 +633,9 @@ pub enum NetEvent {
         /// "OpenSimExtras" "ExportSupported": the region honours the export
         /// permission (LFSimFeatureHandler::simSupportsExport).
         export_supported: bool,
+        /// "LuaScriptsEnabled": the region runs Lua scripts (the Legacy
+        /// Viewer gates its Luau compile targets on this).
+        lua_enabled: bool,
     },
     HoverHeightUpdated {
         region: RegionHandle,
@@ -1363,7 +1366,7 @@ pub enum NetEvent {
         object_id: Uuid,
         item_id: Uuid,
         running: bool,
-        mono: Option<bool>,
+        runtime: Option<super::scripts::ScriptRuntime>,
     },
     /// ObjectPhysicsProperties (event queue): physics shape and material
     /// values of selected prims.

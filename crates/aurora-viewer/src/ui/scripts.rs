@@ -5,7 +5,7 @@
 
 use super::widgets::{Floater, flat_button};
 use crate::theme::Palette;
-use aurora_net::scripts::{MAX_SOURCE, ScriptOptions, ScriptSaved, ScriptTarget};
+use aurora_net::scripts::{MAX_SOURCE, ScriptOptions, ScriptRuntime, ScriptSaved, ScriptTarget};
 use egui::Vec2;
 use uuid::Uuid;
 
@@ -60,7 +60,7 @@ pub enum Action {
 struct PendingSave {
     request: Uuid,
     source: String,
-    mono: bool,
+    runtime: ScriptRuntime,
     experience: Option<Uuid>,
     running: bool,
 }
@@ -79,8 +79,11 @@ pub struct Editor {
     pub can_read: bool,
     pub can_edit: bool,
     pub can_reset: bool,
-    pub mono: bool,
-    baseline_mono: bool,
+    pub runtime: ScriptRuntime,
+    baseline_runtime: ScriptRuntime,
+    /// Whether the script's region runs Lua (SimulatorFeatures'
+    /// `LuaScriptsEnabled`); set per frame by the app before showing.
+    pub lua_enabled: bool,
     experience: experiences::State,
     running: Option<bool>,
     status: String,
@@ -99,7 +102,7 @@ pub struct Editor {
 
 impl Editor {
     fn dirty(&self) -> bool {
-        self.loaded && (self.source != self.baseline || self.mono != self.baseline_mono || self.experience.dirty())
+        self.loaded && (self.source != self.baseline || self.runtime != self.baseline_runtime || self.experience.dirty())
     }
 
     fn can_save(&self) -> bool {
@@ -119,17 +122,22 @@ impl Editor {
             return None;
         }
         let request = Uuid::new_v4();
+        // A Lua target in a Lua-less region is coerced back to Mono when
+        // the region flag arrives (the Legacy Viewer's `set_compile_target`),
+        // so the upload always carries the editor's own target.
+        let runtime = self.runtime;
         self.saving = Some(PendingSave {
             request,
             source: self.source.clone(),
-            mono: self.mono,
+            runtime,
             experience: self.experience.selected,
             running: self.running.unwrap_or(false),
         });
         self.status = aurora_i18n::tr!("script-saving").into();
         self.errors.clear();
         self.tools.diagnostics_processed = false;
-        if self.processor_settings.preprocessor {
+        // Pure Lua has no LSL preprocessor (the Legacy Viewer hides its tab).
+        if self.processor_settings.preprocessor && !runtime.is_lua() {
             self.status = aurora_i18n::tr!("script-preproc-processing").into();
             self.processing = Some(preprocessor::start(
                 self.source.clone(),
@@ -143,13 +151,42 @@ impl Editor {
             request,
             target: self.target,
             options: ScriptOptions {
-                mono: self.mono,
+                runtime,
                 running: self.running.unwrap_or(false),
                 experience: self.experience.selected.unwrap_or_default(),
             },
             source: self.source.clone(),
         })
     }
+}
+
+/// The Legacy Viewer's `is_lua_script`, retargeted: a `default` state followed by
+/// `{` marks LSL (the brace may sit on a later line), anything else is
+/// Lua. Callers keep the Mono default for empty sources (new scripts),
+/// where the pattern cannot appear.
+fn detect_runtime(source: &str) -> ScriptRuntime {
+    let bytes = source.as_bytes();
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut i = 0;
+    while i + 7 <= bytes.len() {
+        // Slicing past a multibyte character would panic: only slice on
+        // boundaries (a `default` match starts with ASCII `d` anyway).
+        if source.is_char_boundary(i)
+            && source[i..].starts_with("default")
+            && (i == 0 || !word(bytes[i - 1]))
+            && (i + 7 >= bytes.len() || !word(bytes[i + 7]))
+        {
+            let mut j = i + 7;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if bytes.get(j) == Some(&b'{') {
+                return ScriptRuntime::Mono;
+            }
+        }
+        i += 1;
+    }
+    ScriptRuntime::Luau
 }
 
 #[derive(Default)]
@@ -461,8 +498,9 @@ impl Editors {
             can_read,
             can_edit,
             can_reset: !target.object.is_nil(),
-            mono: true,
-            baseline_mono: true,
+            runtime: ScriptRuntime::default(),
+            baseline_runtime: ScriptRuntime::default(),
+            lua_enabled: false,
             experience: experiences::State::default(),
             running: None,
             status: if can_read {
@@ -505,6 +543,14 @@ impl Editors {
                 let source = preprocessor::decode(&source);
                 e.tools.has_processed = source != e.tools.processed_source;
                 e.tools.diagnostics_processed = false;
+                // Detect Lua from the content (the Legacy Viewer's `is_lua_script`:
+                // every LSL script has a `default` state); an empty source
+                // keeps the Mono default for new scripts. The running reply
+                // may still correct an LSL runtime below.
+                if !source.is_empty() {
+                    e.runtime = detect_runtime(&source);
+                    e.baseline_runtime = e.runtime;
+                }
                 e.baseline.clone_from(&source);
                 e.source = source;
                 e.loaded = true;
@@ -549,7 +595,7 @@ impl Editors {
         match result {
             Ok(saved) => {
                 e.baseline = pending.source;
-                e.baseline_mono = pending.mono;
+                e.baseline_runtime = pending.runtime;
                 e.experience.baseline = pending.experience;
                 e.compile_failed = !saved.compiled;
                 e.errors.clone_from(&saved.errors);
@@ -571,13 +617,30 @@ impl Editors {
         true
     }
 
-    pub fn running(&mut self, target: ScriptTarget, running: bool, mono: Option<bool>) {
+    /// The script's region announced (or lost) Lua: without it a Lua
+    /// target cannot run, so it falls back to Mono with its baseline
+    /// (the Legacy Viewer's `set_compile_target` coerces the combo the same).
+    pub fn set_lua_enabled(&mut self, target: ScriptTarget, lua: bool) {
+        let Some(e) = self.documents.iter_mut().find(|e| e.target == target) else {
+            return;
+        };
+        e.lua_enabled = lua;
+        if !lua && e.runtime.needs_lua() {
+            e.runtime = ScriptRuntime::Mono;
+            e.baseline_runtime = ScriptRuntime::Mono;
+        }
+    }
+
+    pub fn running(&mut self, target: ScriptTarget, running: bool, runtime: Option<ScriptRuntime>) {
         if let Some(e) = self.documents.iter_mut().find(|e| e.target == target) {
+            // The Mono flag predates Lua and only tells LSO apart: it must
+            // not clobber a Lua runtime the content (or the user) selected.
             if e.running.is_none()
-                && let Some(mono) = mono
+                && !e.runtime.needs_lua()
+                && let Some(runtime) = runtime
             {
-                e.mono = mono;
-                e.baseline_mono = mono;
+                e.runtime = runtime;
+                e.baseline_runtime = runtime;
             }
             e.running = Some(running);
         }
@@ -667,10 +730,10 @@ impl Editors {
                         e.tools.has_processed = true;
                         e.tools.diagnostics_processed = true;
                         e.tools.processed_source = output.uploaded.clone();
-                        if let Some(mono) = output.mono {
-                            e.mono = mono;
+                        if let Some(runtime) = output.runtime {
+                            e.runtime = runtime;
                             if let Some(pending) = e.saving.as_mut() {
-                                pending.mono = mono;
+                                pending.runtime = runtime;
                             }
                         }
                         e.errors = output.warnings;
@@ -679,7 +742,7 @@ impl Editors {
                                 request: pending.request,
                                 target: e.target,
                                 options: ScriptOptions {
-                                    mono: pending.mono,
+                                    runtime: pending.runtime,
                                     running: pending.running,
                                     experience: pending.experience.unwrap_or_default(),
                                 },
@@ -1439,7 +1502,9 @@ mod tests {
                     let label = if area == "menu" {
                         aurora_i18n::tr!("script-menu-file")
                     } else {
-                        "Mono"
+                        // The footer control: a target dropdown since Lua,
+                        // showing the editor's current runtime, not "Mono".
+                        editor.runtime.label()
                     };
                     show(&ctx, &mut editors, vec![])
                         .shapes
@@ -1628,7 +1693,7 @@ mod tests {
         };
         let request = editors.open(target, "Test".into(), true, true).expect("load");
         editors.loaded(request, target, Ok("original".into()));
-        editors.running(target, true, Some(true));
+        editors.running(target, true, Some(ScriptRuntime::Mono));
         let Action::Experiences { request, .. } = editors.load_experiences(target).expect("experiences") else {
             panic!("load experiences")
         };
@@ -1676,7 +1741,7 @@ mod tests {
         };
         let request = editors.open(target, "Test".into(), true, true).expect("load");
         editors.loaded(request, target, Ok("original".into()));
-        editors.running(target, true, Some(true));
+        editors.running(target, true, Some(ScriptRuntime::Mono));
         editors.documents[0].source.push_str(" // edit");
         let Action::Experiences { request, .. } = editors.load_experiences(target).expect("experiences") else {
             panic!("load")
@@ -1859,9 +1924,9 @@ mod tests {
         };
         for target in [inventory, object] {
             let request = editors.open(target, "Test".into(), true, true).expect("load");
-            editors.loaded(request, target, Ok("original".into()));
+            editors.loaded(request, target, Ok("default { state_entry() {} }".into()));
         }
-        editors.running(object, false, Some(false));
+        editors.running(object, false, Some(ScriptRuntime::Lso));
         editors.documents[0].source = "inventory edit".into();
         editors.documents[1].source = "object edit".into();
         assert!(editors.open(inventory, "Again".into(), true, true).is_none());
@@ -1883,7 +1948,51 @@ mod tests {
         );
         assert!(!editors.documents[0].dirty());
         assert!(editors.documents[1].dirty());
-        assert!(!editors.documents[1].mono);
+        assert_eq!(editors.documents[1].runtime, ScriptRuntime::Lso);
+    }
+
+    #[test]
+    fn lsl_states_sniff_mono_and_everything_else_sniffs_luau() {
+        // `default` needs word boundaries and the brace may follow lines
+        // later; multibyte text must not panic the byte scan.
+        assert_eq!(detect_runtime("default { state_entry() {} }"), ScriptRuntime::Mono);
+        assert_eq!(detect_runtime("  default\n  {\n  }\n"), ScriptRuntime::Mono);
+        assert_eq!(detect_runtime("mydefault {}"), ScriptRuntime::Luau);
+        assert_eq!(detect_runtime("// défault état\nprint('héllo')"), ScriptRuntime::Luau);
+        assert_eq!(detect_runtime("éü default"), ScriptRuntime::Luau);
+    }
+
+    #[test]
+    fn lsl_content_stays_mono_while_lua_content_selects_luau() {
+        let mut editors = Editors::default();
+        let lsl = target(11);
+        let load = editors.open(lsl, "LSL".into(), true, true).expect("load");
+        editors.loaded(load, lsl, Ok("default\n{\n    state_entry() {}\n}\n".into()));
+        assert_eq!(editors.documents[0].runtime, ScriptRuntime::Mono);
+        assert!(!editors.documents[0].dirty());
+        editors.running(lsl, true, Some(ScriptRuntime::Lso));
+        assert_eq!(editors.documents[0].runtime, ScriptRuntime::Lso);
+
+        let lua = target(12);
+        let load = editors.open(lua, "Lua".into(), true, true).expect("load");
+        editors.loaded(load, lua, Ok("ll.Say(0, \"hi\")".into()));
+        assert_eq!(editors.documents[1].runtime, ScriptRuntime::Luau);
+        assert!(!editors.documents[1].dirty());
+        // The Mono flag cannot express Lua: it must not downgrade the sniff.
+        editors.running(lua, true, Some(ScriptRuntime::Mono));
+        assert_eq!(editors.documents[1].runtime, ScriptRuntime::Luau);
+        // A region without Lua coerces the target (and baseline) to Mono.
+        editors.set_lua_enabled(lua, false);
+        assert_eq!(editors.documents[1].runtime, ScriptRuntime::Mono);
+        assert!(!editors.documents[1].dirty());
+        // Regaining Lua does not reselect it on its own.
+        editors.set_lua_enabled(lua, true);
+        assert_eq!(editors.documents[1].runtime, ScriptRuntime::Mono);
+
+        let blank = target(13);
+        let load = editors.open(blank, "Blank".into(), true, true).expect("load");
+        editors.loaded(load, blank, Ok(String::new()));
+        assert_eq!(editors.documents[2].runtime, ScriptRuntime::Mono);
     }
 
     #[test]

@@ -539,6 +539,10 @@ impl App {
             .map(|e| (e.target, self.script_info(e.target)))
             .collect();
         for (target, info) in rights {
+            let lua = info
+                .as_ref()
+                .is_some_and(|i| self.world.regions.get(&i.handle).is_some_and(|region| region.lua_enabled));
+            self.script_editors.set_lua_enabled(target, lua);
             if let Some(e) = self.script_editors.documents.iter_mut().find(|e| e.target == target) {
                 e.can_read = info.as_ref().is_some_and(|i| i.can_read);
                 e.can_edit = info.as_ref().is_some_and(|i| i.can_edit);
@@ -798,7 +802,7 @@ impl App {
                 self.demo_script_sources.insert(*target, source.clone());
                 self.demo_script_experiences.insert(*target, options.experience);
                 self.build_demo
-                    .save_script(*target, asset, compiled && options.running, options.mono);
+                    .save_script(*target, asset, compiled && options.running, options.runtime);
                 let result = Ok(ScriptSaved {
                     asset,
                     compiled,

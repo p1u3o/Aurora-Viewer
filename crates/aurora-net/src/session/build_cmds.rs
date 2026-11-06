@@ -812,7 +812,7 @@ impl Session<'_> {
                     object_id: m.script.object_id,
                     item_id: m.script.item_id,
                     running: m.script.running,
-                    mono: None,
+                    runtime: None,
                 },
             );
         } else {
@@ -853,7 +853,7 @@ impl Session<'_> {
                         object_id: s["ObjectID"].as_uuid(),
                         item_id: s["ItemID"].as_uuid(),
                         running: s["Running"].as_bool(),
-                        mono: s.has("Mono").then(|| s["Mono"].as_bool()),
+                        runtime: s.has("Mono").then(|| crate::scripts::ScriptRuntime::from_mono(s["Mono"].as_bool())),
                     },
                 );
             }

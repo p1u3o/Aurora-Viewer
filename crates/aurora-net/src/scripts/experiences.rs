@@ -247,7 +247,7 @@ mod tests {
                 assert!(choices.iter().any(|e| e.id == associated_id && !e.selectable));
             }
             let options = super::super::ScriptOptions {
-                mono: true,
+                runtime: super::super::ScriptRuntime::Mono,
                 running: true,
                 experience: associated_id,
             };

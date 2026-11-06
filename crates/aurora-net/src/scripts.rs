@@ -8,9 +8,77 @@ use uuid::Uuid;
 
 pub mod experiences;
 
+/// Compile target of a script (the Legacy Viewer's `compile_target` combo
+/// in indra/newview `llpreviewscript.cpp`: LSL on Mono, LSL Legacy, LSL on
+/// Lua, Lua).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScriptRuntime {
+    /// Classic LSL bytecode (`lsl2`, shown as LSO).
+    Lso,
+    /// LSL on Mono (`mono`).
+    #[default]
+    Mono,
+    /// LSL source on the Lua engine (`lsl-luau`).
+    LslLuau,
+    /// Lua source (`luau`).
+    Luau,
+}
+
+impl ScriptRuntime {
+    /// Every target, in dropdown order.
+    pub const ALL: [Self; 4] = [Self::Lso, Self::Mono, Self::LslLuau, Self::Luau];
+
+    /// The `target` value of `UpdateScriptTask` / `LLScriptAssetUpload`.
+    pub fn target(self) -> &'static str {
+        match self {
+            Self::Lso => "lsl2",
+            Self::Mono => "mono",
+            Self::LslLuau => "lsl-luau",
+            Self::Luau => "luau",
+        }
+    }
+
+    /// Parse an upload `target` back; unknown values stay unselected.
+    pub fn from_target(target: &str) -> Option<Self> {
+        match target {
+            "lsl2" => Some(Self::Lso),
+            "mono" => Some(Self::Mono),
+            "lsl-luau" => Some(Self::LslLuau),
+            "luau" => Some(Self::Luau),
+            _ => None,
+        }
+    }
+
+    /// The event queue's Mono flag predates Lua: it only tells LSO apart.
+    pub fn from_mono(mono: bool) -> Self {
+        if mono { Self::Mono } else { Self::Lso }
+    }
+
+    /// Needs a Lua-enabled region (the Legacy Viewer disables these entries
+    /// when the region's SimulatorFeatures lack `LuaScriptsEnabled`).
+    pub fn needs_lua(self) -> bool {
+        matches!(self, Self::LslLuau | Self::Luau)
+    }
+
+    /// Pure Lua source: the LSL preprocessor must not rewrite it
+    /// (the Legacy Viewer hides its preprocessor tab for Lua).
+    pub fn is_lua(self) -> bool {
+        matches!(self, Self::Luau)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Lso => aurora_i18n::tr!("script-target-lso"),
+            Self::Mono => aurora_i18n::tr!("script-target-mono"),
+            Self::LslLuau => aurora_i18n::tr!("script-target-lsl-luau"),
+            Self::Luau => aurora_i18n::tr!("script-target-luau"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ScriptOptions {
-    pub mono: bool,
+    pub runtime: ScriptRuntime,
     pub running: bool,
     pub experience: Uuid,
 }
@@ -48,8 +116,8 @@ pub fn compile_ok(ack: &Llsd) -> bool {
     }
 }
 
-pub fn upload_body(target: ScriptTarget, mono: bool, running: bool, experience: Option<Uuid>) -> Llsd {
-    let mut body = llsd_map! { "item_id" => target.item, "target" => if mono { "mono" } else { "lsl2" } };
+pub fn upload_body(target: ScriptTarget, runtime: ScriptRuntime, running: bool, experience: Option<Uuid>) -> Llsd {
+    let mut body = llsd_map! { "item_id" => target.item, "target" => runtime.target() };
     if !target.object.is_nil() {
         body.insert("task_id", target.object);
         body.insert("is_script_running", i32::from(running));
@@ -88,7 +156,7 @@ pub async fn save(
         let answer = crate::caps::post_llsd(
             http,
             cap,
-            &upload_body(target, options.mono, options.running, Some(options.experience)),
+            &upload_body(target, options.runtime, options.running, Some(options.experience)),
         )
         .await
         .map_err(|_| aurora_i18n::tr!("script-save-failed").to_owned())?;
@@ -188,7 +256,7 @@ mod tests {
             &url,
             target,
             ScriptOptions {
-                mono: false,
+                runtime: ScriptRuntime::Lso,
                 running: false,
                 experience,
             },
@@ -203,7 +271,7 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert_eq!(
             aurora_llsd::from_xml(&requests[0].1).expect("LLSD"),
-            upload_body(target, false, false, Some(experience))
+            upload_body(target, ScriptRuntime::Lso, false, Some(experience))
         );
         assert!(requests[1].0.to_lowercase().contains("content-type: application/octet-stream"));
         assert_eq!(requests[1].1, source.as_bytes());
@@ -215,7 +283,7 @@ mod tests {
             object: Uuid::nil(),
             item: Uuid::from_u128(12),
         };
-        let body = upload_body(target, true, false, None);
+        let body = upload_body(target, ScriptRuntime::Mono, false, None);
         assert_eq!(body["item_id"].as_uuid(), target.item);
         assert_eq!(body["target"].as_str(), "mono");
         assert!(body.as_map().expect("upload map").get("task_id").is_none());
@@ -223,11 +291,31 @@ mod tests {
             object: Uuid::from_u128(13),
             ..target
         };
-        let body = upload_body(task, false, true, None);
+        let body = upload_body(task, ScriptRuntime::Lso, true, None);
         assert_eq!(body["task_id"].as_uuid(), task.object);
         assert_eq!(body["target"].as_str(), "lsl2");
         assert_eq!(body["is_script_running"].as_i32(), 1);
         assert_eq!(body["experience"].as_uuid(), Uuid::nil());
+    }
+
+    #[test]
+    fn every_runtime_maps_to_its_upload_target_and_back() {
+        for runtime in ScriptRuntime::ALL {
+            let body = upload_body(
+                ScriptTarget {
+                    object: Uuid::from_u128(13),
+                    item: Uuid::from_u128(12),
+                },
+                runtime,
+                true,
+                None,
+            );
+            assert_eq!(body["target"].as_str(), runtime.target());
+            assert_eq!(ScriptRuntime::from_target(runtime.target()), Some(runtime));
+        }
+        assert_eq!(ScriptRuntime::from_target("bogus"), None);
+        assert_eq!(ScriptRuntime::from_mono(true), ScriptRuntime::Mono);
+        assert_eq!(ScriptRuntime::from_mono(false), ScriptRuntime::Lso);
     }
 
     #[test]

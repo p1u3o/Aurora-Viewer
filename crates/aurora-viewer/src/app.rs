@@ -3574,16 +3574,16 @@ impl App {
                 object_id,
                 item_id,
                 running,
-                mono,
+                runtime,
             } => {
-                self.build.contents.running.insert((object_id, item_id), (running, mono));
+                self.build.contents.running.insert((object_id, item_id), (running, runtime));
                 self.script_editors.running(
                     aurora_net::scripts::ScriptTarget {
                         object: object_id,
                         item: item_id,
                     },
                     running,
-                    mono,
+                    runtime,
                 );
             }
             NetEvent::PhysicsProperties(list) => {

@@ -71,7 +71,7 @@ pub(super) struct Output {
     pub uploaded: String,
     #[cfg(test)]
     pub generated: String,
-    pub mono: Option<bool>,
+    pub runtime: Option<aurora_net::scripts::ScriptRuntime>,
     pub warnings: Vec<String>,
 }
 
@@ -218,10 +218,10 @@ where
     if uploaded.len() > MAX_SOURCE {
         return Err(aurora_i18n::tr!("script-source-too-large").into());
     }
-    let mono = if source.lines().any(|line| line == "//mono") {
-        Some(true)
+    let runtime = if source.lines().any(|line| line == "//mono") {
+        Some(aurora_net::scripts::ScriptRuntime::Mono)
     } else if source.lines().any(|line| line == "//lsl2") {
-        Some(false)
+        Some(aurora_net::scripts::ScriptRuntime::Lso)
     } else {
         None
     };
@@ -229,7 +229,7 @@ where
         uploaded,
         #[cfg(test)]
         generated,
-        mono,
+        runtime,
         warnings: processor.warnings,
     })
 }
@@ -550,6 +550,20 @@ mod tests {
         .unwrap();
         assert_eq!(requested, ["kit/core", "kit/extra", "kit/quoted", "kit/macro"]);
         assert!(output.generated.contains("int core;"));
+    }
+
+    #[test]
+    fn target_directives_select_the_lsl_runtime() {
+        use aurora_net::scripts::ScriptRuntime;
+        let settings = ScriptSettings::default();
+        for (source, runtime) in [
+            ("default {}\n//mono", Some(ScriptRuntime::Mono)),
+            ("default {}\n//lsl2", Some(ScriptRuntime::Lso)),
+            ("default {}", None),
+        ] {
+            let output = process(source, "main", &settings, &Environment::default(), &mut |_, _| unreachable!()).expect("directive source");
+            assert_eq!(output.runtime, runtime, "{source}");
+        }
     }
 
     #[test]

@@ -154,6 +154,8 @@ pub struct Region {
     pub avatar_hover_height: bool,
     /// SimulatorFeatures' LSLSyntaxId once they came (nil: none named).
     pub lsl_syntax_id: Option<Uuid>,
+    /// SimulatorFeatures' LuaScriptsEnabled: the region runs Lua scripts.
+    pub lua_enabled: bool,
     /// RenderMaterials limits of the region (SimulatorFeatures).
     pub materials_limits: crate::scene::legacy_mat::RegionLimits,
     /// Object capacity (SimStats ObjectCapacity, LLViewerRegion::getMaxTasks);
@@ -2032,6 +2034,7 @@ impl World {
             voice_server: String::new(),
             avatar_hover_height: false,
             lsl_syntax_id: None,
+            lua_enabled: false,
             materials_limits: Default::default(),
             max_tasks: 0,
             grid_status: Default::default(),
@@ -2587,9 +2590,11 @@ impl World {
                 opensim,
                 currency_symbol,
                 export_supported,
+                lua_enabled,
             } => {
                 let r = self.ensure_region(handle, (256, 256));
                 r.lsl_syntax_id = Some(lsl_syntax_id);
+                r.lua_enabled = lua_enabled;
                 r.grid_status = (grid_status_feed, grid_status_page);
                 r.currency_base_uri = currency_base_uri;
                 r.opensim = opensim;
@@ -8323,6 +8328,7 @@ mod motion_tests {
                 opensim: Default::default(),
                 currency_symbol: String::new(),
                 export_supported: false,
+                lua_enabled: false,
             };
             world.apply(features(true));
             assert!(world.hover_height_available());

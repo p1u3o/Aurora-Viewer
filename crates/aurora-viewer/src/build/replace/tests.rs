@@ -168,9 +168,9 @@ impl Harness {
                     object_id,
                     item_id,
                     running,
-                    mono,
+                    runtime,
                 } => {
-                    self.tool.contents.running.insert((object_id, item_id), (running, mono));
+                    self.tool.contents.running.insert((object_id, item_id), (running, runtime));
                 }
                 _ => {}
             }

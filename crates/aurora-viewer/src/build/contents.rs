@@ -39,8 +39,8 @@ pub struct TaskInventory {
 #[derive(Debug, Default)]
 pub struct Contents {
     pub objects: HashMap<Uuid, TaskInventory>,
-    /// ScriptRunningReply: (object, item) -> (running, mono).
-    pub running: HashMap<(Uuid, Uuid), (bool, Option<bool>)>,
+    /// ScriptRunningReply: (object, item) -> (running, runtime).
+    pub running: HashMap<(Uuid, Uuid), (bool, Option<aurora_net::scripts::ScriptRuntime>)>,
 }
 
 /// "YYYY-MM-DD HH:MM:SS lsl2 script" (LLViewerAssetType: new script

@@ -14,6 +14,7 @@ use crate::{
         widgets::{Floater, flat_button, icon_button},
     },
 };
+use aurora_net::scripts::ScriptRuntime;
 use egui::{Id, RichText, Vec2};
 
 #[derive(Default)]
@@ -423,7 +424,20 @@ fn footer(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, actions: &mut 
         ui.add_enabled_ui(
             e.can_edit && e.loaded && e.saving.is_none() && (e.target.object.is_nil() || e.running.is_some()),
             |ui| {
-                crate::ui::widgets::checkbox(ui, p, &mut e.mono, "Mono").on_hover_text(aurora_i18n::tr!("script-mono-hint"));
+                // The Legacy Viewer's `compile_target` combo (llpreviewscript.cpp):
+                // LSO, Mono, LSL on Lua, Lua. Lua targets stay disabled
+                // outside Lua regions, falling back to Mono on save.
+                egui::ComboBox::from_id_salt((id, "script_target"))
+                    .selected_text(e.runtime.label())
+                    .show_ui(ui, |ui| {
+                        for runtime in ScriptRuntime::ALL {
+                            ui.add_enabled_ui(e.lua_enabled || !runtime.needs_lua(), |ui| {
+                                ui.selectable_value(&mut e.runtime, runtime, runtime.label());
+                            });
+                        }
+                    })
+                    .response
+                    .on_hover_text(aurora_i18n::tr!("script-target-hint"));
             },
         );
     });
@@ -823,7 +837,7 @@ pub(super) fn dialogs(
                 if flat_button(ui, p, aurora_i18n::tr!("script-menu-revert")).clicked() {
                     let end = e.source.chars().count();
                     editing::replace(ctx, original_id, &mut e.source, 0..end, &e.baseline);
-                    e.mono = e.baseline_mono;
+                    e.runtime = e.baseline_runtime;
                     e.experience.selected = e.experience.baseline;
                     e.tools.revert = false;
                 }
@@ -1012,7 +1026,7 @@ mod tests {
                 e.saving = Some(super::super::PendingSave {
                     request: Uuid::from_u128(11),
                     source: String::new(),
-                    mono: true,
+                    runtime: ScriptRuntime::Mono,
                     experience: None,
                     running: false,
                 });

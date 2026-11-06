@@ -82,6 +82,7 @@ mod tests {
             opensim: Default::default(),
             currency_symbol: String::new(),
             export_supported: false,
+            lua_enabled: false,
         });
         w
     }
