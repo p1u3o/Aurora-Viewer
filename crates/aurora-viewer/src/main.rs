@@ -67,6 +67,7 @@ mod login_favorites;
 mod login_places;
 mod login_wait;
 mod lsl_keywords;
+mod lua_keywords;
 #[cfg(target_os = "macos")]
 mod mac_quit;
 mod machine_id;

@@ -557,7 +557,9 @@ fn source(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, settings: &Scr
                             let (gutter, _) = ui.allocate_exact_size(Vec2::new(56.0, 1.0), egui::Sense::hover());
                             let interactive = e.loaded && (e.can_read || !e.source.is_empty());
                             let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap: f32| {
-                                let mut job = e.highlighter.custom(text.as_str(), p, font.clone(), settings, &query, insensitive);
+                                let mut job =
+                                    e.highlighter
+                                        .custom(text.as_str(), p, font.clone(), settings, &query, insensitive, e.runtime.is_lua());
                                 // panel_script_ed.xml enables wrapping; only the visual rows change.
                                 job.wrap.max_width = if settings.word_wrap { wrap } else { f32::INFINITY };
                                 e.folding.sync(text.as_str());

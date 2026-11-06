@@ -331,7 +331,7 @@ mod tests {
                 object: Uuid::nil(),
                 item: Uuid::from_u128(1),
             };
-            let original = "vector c = <0.1,0.2,0.3>; vector d = <1,0,0>;";
+            let original = "vector c = <0.1,0.2,0.3>; vector d = <1,0,0>;\ndefault { state_entry() { llSay(0, \"hi\"); } }";
             let request = editors.open(target, "Colors".into(), true, editable).expect("load");
             editors.loaded(request, target, Ok(original.into()));
             for n in 0..4 {

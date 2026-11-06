@@ -378,6 +378,105 @@ pub(crate) fn highlight(source: &str) -> Vec<(Range<usize>, ColorRole)> {
     tokens(source).into_iter().map(|token| (token.bytes, token.kind.role())).collect()
 }
 
+/// A Lua word's role from the bundled SLua catalog (`crate::lua_keywords`,
+/// generated from secondlife/lsl-definitions): keywords, types, events,
+/// functions, then constants.
+fn lua_keyword(name: &str) -> Option<Kind> {
+    crate::lua_keywords::word(name).map(|group| match group {
+        Group::Control => Kind::Keyword,
+        Group::Type => Kind::Type,
+        Group::Event => Kind::Event,
+        Group::Function => Kind::Function,
+        Group::Constant => Kind::Constant,
+    })
+}
+
+fn tokens_lua(source: &str) -> Vec<Token> {
+    let bytes = source.as_bytes();
+    let mut result = Vec::new();
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        let start = cursor;
+        // Every cursor movement below ends on a UTF-8 boundary.
+        let c = source[cursor..].chars().next().expect("cursor inside source");
+        let kind = if bytes[cursor..].starts_with(b"--[[") {
+            // Plain `--[[` blocks; the rare `--[=[` levels fall back to a
+            // line comment below, which colors the same lines.
+            cursor = source[cursor + 4..].find("]]").map_or(bytes.len(), |n| cursor + 4 + n + 2);
+            Kind::Comment
+        } else if bytes[cursor..].starts_with(b"--") {
+            cursor = source[cursor..].find('\n').map_or(bytes.len(), |n| cursor + n);
+            Kind::Comment
+        } else if c == '"' || c == '\'' {
+            let quote = c;
+            cursor += 1;
+            while cursor < bytes.len() {
+                let c = source[cursor..].chars().next().expect("cursor inside string");
+                cursor += c.len_utf8();
+                if c == quote {
+                    break;
+                }
+                if c == '\\'
+                    && let Some(escaped) = source[cursor..].chars().next()
+                {
+                    cursor += escaped.len_utf8();
+                }
+            }
+            Kind::String
+        } else if bytes[cursor..].starts_with(b"[[") {
+            cursor = source[cursor + 2..].find("]]").map_or(bytes.len(), |n| cursor + 2 + n + 2);
+            Kind::String
+        } else if c.is_ascii_digit() || (c == '.' && bytes.get(cursor + 1).is_some_and(u8::is_ascii_digit)) {
+            cursor = number_end(bytes, cursor);
+            if source[start..cursor].contains(['.', 'e', 'E'])
+                && !source[start..cursor].starts_with("0x")
+                && !source[start..cursor].starts_with("0X")
+            {
+                Kind::Float
+            } else {
+                Kind::Number
+            }
+        } else if identifier_start(c) {
+            cursor += c.len_utf8();
+            while let Some(c) = source[cursor..].chars().next() {
+                if c != '_' && !c.is_alphanumeric() {
+                    break;
+                }
+                cursor += c.len_utf8();
+            }
+            Kind::Variable
+        } else {
+            cursor += c.len_utf8();
+            if c.is_whitespace() {
+                while let Some(c) = source[cursor..].chars().next() {
+                    if !c.is_whitespace() {
+                        break;
+                    }
+                    cursor += c.len_utf8();
+                }
+            }
+            Kind::Plain
+        };
+        result.push(Token {
+            bytes: start..cursor,
+            kind,
+        });
+    }
+    // Skip comments and whitespace when recognizing calls (`print(`,
+    // `ll.Say(`): a reverse pass avoids repeatedly scanning long comments.
+    let mut next_code = "";
+    for token in result.iter_mut().rev() {
+        let text = &source[token.bytes.clone()];
+        if token.kind == Kind::Variable {
+            token.kind = lua_keyword(text).unwrap_or(if next_code == "(" { Kind::Function } else { Kind::Variable });
+        }
+        if token.kind != Kind::Comment && !text.chars().all(char::is_whitespace) {
+            next_code = text;
+        }
+    }
+    result
+}
+
 #[derive(PartialEq)]
 struct Style {
     font: FontId,
@@ -424,6 +523,9 @@ pub(super) struct Highlighter {
     /// The keywords' generation the job was colored with
     /// (`lsl_keywords::generation`): a region's own keywords recolor it.
     keywords: u64,
+    /// The language the cached job was colored in: flipping a document
+    /// between LSL and Lua recolors it even when the text is unchanged.
+    lua: bool,
     job: LayoutJob,
     pub colors: Vec<ColorLiteral>,
 }
@@ -431,7 +533,7 @@ pub(super) struct Highlighter {
 impl Highlighter {
     #[cfg(test)]
     pub(super) fn layout(&mut self, source: &str, p: &Palette, font: FontId) -> LayoutJob {
-        self.custom(source, p, font, &ScriptSettings::default(), "", false)
+        self.custom(source, p, font, &ScriptSettings::default(), "", false, false)
     }
 
     pub(super) fn custom(
@@ -442,17 +544,21 @@ impl Highlighter {
         settings: &ScriptSettings,
         query: &str,
         insensitive: bool,
+        lua: bool,
     ) -> LayoutJob {
         let style = Style::new(p, font, settings, query, insensitive);
         let keywords = lsl_keywords::generation();
-        if self.style.as_ref() != Some(&style) || self.job.text != source || self.keywords != keywords {
+        if self.style.as_ref() != Some(&style) || self.job.text != source || self.keywords != keywords || self.lua != lua {
             self.keywords = keywords;
+            self.lua = lua;
             let mut job = LayoutJob {
                 text: source.into(),
                 ..Default::default()
             };
-            let tokens = tokens(source);
-            self.colors = color_literals(source, &tokens);
+            // Lua has no `<r, g, b>` vector literals: skip the swatches
+            // rather than flagging its comparisons.
+            let tokens = if lua { tokens_lua(source) } else { tokens(source) };
+            self.colors = if lua { Vec::new() } else { color_literals(source, &tokens) };
             for token in tokens {
                 let format = TextFormat {
                     font_id: style.font.clone(),
@@ -556,6 +662,7 @@ mod tests {
             &ScriptSettings::default(),
             "0",
             false,
+            false,
         );
         assert_eq!(job.text, source);
         assert_eq!(highlighter.colors.len(), 2);
@@ -620,6 +727,119 @@ mod tests {
                 ("name", Kind::Variable),
             ]
         );
+    }
+
+    fn lex_lua(source: &str) -> Vec<(&str, Kind)> {
+        let tokens = tokens_lua(source);
+        let mut cursor = 0;
+        for token in &tokens {
+            assert_eq!(token.bytes.start, cursor);
+            cursor = token.bytes.end;
+        }
+        assert_eq!(cursor, source.len());
+        tokens.into_iter().map(|t| (&source[t.bytes], t.kind)).collect()
+    }
+
+    #[test]
+    fn lua_roles_cover_keywords_calls_strings_and_comments() {
+        // Lua has no `default` state: top-level code runs at startup and
+        // handlers register through `LLEvents:on` (slua_definitions.yaml).
+        let source = "local greeting = \"Hi\"; -- trail\n--[[ block ]]\nll.Say(0, greeting)\n\nLLEvents:on(\"touch_start\", function(events)\n    if n // 2 > 0x10 then ll.Say(0, [[Touched.]] .. tostring(nil)) end\nend)";
+        let parsed = lex_lua(source);
+        for (text, kind) in [
+            ("local", Kind::Keyword),
+            ("greeting", Kind::Variable),
+            ("\"Hi\"", Kind::String),
+            ("-- trail", Kind::Comment),
+            ("--[[ block ]]", Kind::Comment),
+            ("ll", Kind::Function),
+            ("Say", Kind::Function),
+            ("LLEvents", Kind::Type),
+            ("on", Kind::Function),
+            ("\"touch_start\"", Kind::String),
+            ("function", Kind::Keyword),
+            ("events", Kind::Variable),
+            ("if", Kind::Keyword),
+            ("n", Kind::Variable),
+            ("2", Kind::Number),
+            ("0x10", Kind::Number),
+            ("then", Kind::Keyword),
+            ("[[Touched.]]", Kind::String),
+            ("tostring", Kind::Function),
+            ("nil", Kind::Constant),
+            ("end", Kind::Keyword),
+        ] {
+            assert!(parsed.contains(&(text, kind)), "{text}: {parsed:?}");
+            assert!(parsed.iter().filter(|(t, _)| *t == text).all(|(_, k)| *k == kind));
+        }
+        assert_eq!(lua_keyword("while"), Some(Kind::Keyword));
+        assert_eq!(lua_keyword("true"), Some(Kind::Constant));
+        assert_eq!(lua_keyword("vector"), Some(Kind::Type));
+        assert_eq!(lua_keyword("touch_start"), Some(Kind::Event));
+        assert_eq!(lua_keyword("print"), Some(Kind::Function));
+        assert_eq!(lua_keyword("goto"), None);
+        assert_eq!(lua_keyword("getfenv"), None);
+    }
+
+    #[test]
+    fn lua_comments_strings_and_division_do_not_bleed_into_code() {
+        assert_eq!(
+            lex_lua("-- a // b\nx = 1 -- c"),
+            vec![
+                ("-- a // b", Kind::Comment),
+                ("\n", Kind::Plain),
+                ("x", Kind::Variable),
+                (" ", Kind::Plain),
+                ("=", Kind::Plain),
+                (" ", Kind::Plain),
+                ("1", Kind::Number),
+                (" ", Kind::Plain),
+                ("-- c", Kind::Comment),
+            ]
+        );
+        assert_eq!(
+            lex_lua("a // b"),
+            vec![
+                ("a", Kind::Variable),
+                (" ", Kind::Plain),
+                ("/", Kind::Plain),
+                ("/", Kind::Plain),
+                (" ", Kind::Plain),
+                ("b", Kind::Variable)
+            ]
+        );
+        assert_eq!(
+            lex_lua("s = \"a\\\"b\" .. 'c'"),
+            vec![
+                ("s", Kind::Variable),
+                (" ", Kind::Plain),
+                ("=", Kind::Plain),
+                (" ", Kind::Plain),
+                ("\"a\\\"b\"", Kind::String),
+                (" ", Kind::Plain),
+                (".", Kind::Plain),
+                (".", Kind::Plain),
+                (" ", Kind::Plain),
+                ("'c'", Kind::String),
+            ]
+        );
+        // Unfinished blocks and strings still consume every byte.
+        assert_eq!(lex_lua("--[[ open"), vec![("--[[ open", Kind::Comment)]);
+        assert_eq!(lex_lua("[[open"), vec![("[[open", Kind::String)]);
+    }
+
+    #[test]
+    fn lua_documents_color_without_vector_swatches_and_recolor_on_language_flip() {
+        let source = "ll.Say(0, \"Hi\")\n\nLLEvents:on(\"touch_start\", function(events)\n    ll.Say(0, \"Touched.\")\nend)";
+        let mut highlighter = Highlighter::default();
+        let palette = Theme::default().palette();
+        let font = FontId::monospace(14.0);
+        let settings = ScriptSettings::default();
+        let lsl = highlighter.custom(source, &palette, font.clone(), &settings, "", false, false);
+        let lua = highlighter.custom(source, &palette, font, &settings, "", false, true);
+        let colors = |job: &egui::text::LayoutJob| job.sections.iter().map(|s| s.format.color).collect::<Vec<_>>();
+        assert_ne!(colors(&lsl), colors(&lua));
+        assert!(highlighter.colors.is_empty());
     }
 
     #[test]
