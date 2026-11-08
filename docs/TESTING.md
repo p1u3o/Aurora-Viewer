@@ -12111,6 +12111,7 @@ rendered Gerstner spectrum at all qualities and several depths.
 |---|---|
 | `AURORA_DEMO_WATER=medium` | Offline coast, moving hull, pillars, wading and submerged avatars |
 | `AURORA_DEMO_WATER=off:exclusion` | Invisible water exclusion above/below the surface; use `medium` for enhanced water |
+| `AURORA_DEMO_WATER=off:render-as-water` | Pool slab shaded by the water pass at its own height; use `medium` for enhanced water |
 | `AURORA_DEMO_WATER_ACTIONS=dive` | Local native water animation and jump/entry preview |
 | `AURORA_DEMO_WATER_ANIMS=<folder>` | Read-only folder containing the twelve native water clips |
 | `AURORA_DEMO_WATER_SHADERS=1` | Load water shader sources for offline material iteration |
@@ -12123,6 +12124,8 @@ No grey texture, scene-depth occlusion, shadow or reflection should appear.
 Repeat with `AURORA_CPU_CULL=1` and with MSAA; Ctrl+Alt+T reveals the hidden
 faces. Actual edited faces and persistence across reconnect need human grid
 validation, following the same checkbox/confirmation flow as the Legacy Viewer.
+
+Render as water: compare `off:render-as-water-control` with `off:render-as-water`, then with `medium:render-as-water`. The slab carries the still-water diffuse on every face; the water pass shades it at the slab's own height with waves, reflections and fog, while the control shows the flat texture. Repeat with `AURORA_CPU_CULL=1` to cover both culling paths.
 
 The enhanced-water master is disabled by default (2026-10-19), including missing/partial saved preferences and Aurora section reset. Individual effects stay selected for an explicit opt-in; saved on/off choices survive reload and graphics-preset changes. The explicit "All Aurora" bulk choice still enables water effects. Only the global activation carries the shared experimental warning triangle and its localized tooltip in Preferences › Aurora › Water. Compare disabled and enabled FR/EN captures: individual controls have no warning marks, disabled effect controls stay readable and the global warning must not overlap text or its switch.
 

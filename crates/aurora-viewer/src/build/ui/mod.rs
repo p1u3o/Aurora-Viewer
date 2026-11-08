@@ -156,6 +156,8 @@ pub enum Confirm {
     DeleteMedia,
     /// WaterExclusionSurfacesWarning.
     HideWater,
+    /// Aurora addition: still-water faces join the water pass.
+    RenderAsWater,
     /// ReflectionProbeApplied.
     Probe,
 }

@@ -377,6 +377,13 @@ impl FaceDraw {
         self.tex_id == aurora_prim::te::WATER_EXCLUSION_TEXTURE && self.pbr_alpha.is_none() && self.te_alpha >= 0.999
     }
 
+    /// A "render as water" face (Build: still-water diffuse, opaque, no
+    /// maps). Like the exclusion faces it leaves the colour pools and is
+    /// shaded by the water pass instead, at its own surface height.
+    fn render_as_water(&self) -> bool {
+        self.tex_id == aurora_prim::te::RENDER_AS_WATER_TEXTURE && self.pbr_alpha.is_none() && self.te_alpha >= 0.999
+    }
+
     /// Its zero alpha hides the whole face, as LL never draws it: a
     /// Blinn-Phong face, or a blended glTF material. An opaque glTF
     /// material ignores its base color alpha and a masked one leaves it to
@@ -691,7 +698,9 @@ fn cull_face(f: &FaceDraw, idx: usize, first: bool) -> CullFace {
 /// Faces listed by the CPU even with the GPU lists: blended (sorted back
 /// to front) and glowing ones.
 fn is_special(faces: &[FaceDraw]) -> bool {
-    faces.iter().any(|f| f.pass == Pass::Blend || (f.glow && f.pass != Pass::Hidden))
+    faces
+        .iter()
+        .any(|f| f.pass == Pass::Blend || f.render_as_water() || (f.glow && f.pass != Pass::Hidden))
 }
 
 struct TerrainChunk {
@@ -4808,6 +4817,8 @@ impl Scene {
             .unwrap_or_else(|| view.planes[4].truncate().normalize_or_zero());
         struct Local {
             water_exclusion: Vec<DrawCmd>,
+            /// "render as water" faces, drawn by the water pass.
+            water_surface: Vec<DrawCmd>,
             opaque: Vec<DrawCmd>,
             opaque2: Vec<DrawCmd>,
             mask: Vec<DrawCmd>,
@@ -4834,6 +4845,7 @@ impl Scene {
         }
         let new_local = || Local {
             water_exclusion: Vec::new(),
+            water_surface: Vec::new(),
             opaque: Vec::new(),
             opaque2: Vec::new(),
             mask: Vec::new(),
@@ -5015,6 +5027,12 @@ impl Scene {
                     if full && in_view && f.water_exclusion() && avatar.is_none() && !g.rigged {
                         l.water_exclusion.push(cmd);
                     }
+                    // A "render as water" face is shaded by the water pass at
+                    // its own surface height, in both culling modes: the GPU
+                    // tables carry no bin for it (Hidden), this CPU list does.
+                    if in_view && f.render_as_water() && avatar.is_none() && !g.rigged {
+                        l.water_surface.push(cmd);
+                    }
                     continue;
                 }
                 if full {
@@ -5094,6 +5112,7 @@ impl Scene {
         .into_iter()
         .reduce(|mut a, mut b| {
             a.water_exclusion.append(&mut b.water_exclusion);
+            a.water_surface.append(&mut b.water_surface);
             a.opaque.append(&mut b.opaque);
             a.opaque2.append(&mut b.opaque2);
             a.mask.append(&mut b.mask);
@@ -5121,6 +5140,7 @@ impl Scene {
         self.visit_tmp = visit;
         self.lists.opaque = result.opaque;
         self.lists.water_exclusion = result.water_exclusion;
+        self.lists.water.extend(result.water_surface);
         self.lists.opaque_two_sided = result.opaque2;
         self.lists.mask = result.mask;
         self.lists.mask_two_sided = result.mask2;
@@ -6122,6 +6142,11 @@ fn classify(f: &FaceDraw, tex_alpha: AlphaKind) -> Pass {
     // fully transparent face, or the transparent texture (unused layers of
     // mesh heads and bodies): nothing to draw
     if f.fully_transparent() || (f.base_slot == aurora_render::textures::TRANSPARENT && f.pbr_alpha.is_none()) {
+        return Pass::Hidden;
+    }
+    // A "render as water" face leaves the colour pools: the water pass
+    // shades it instead, at its own surface height.
+    if f.render_as_water() {
         return Pass::Hidden;
     }
     // A system body part: the avatar pool decides, not the texture alone.
@@ -7129,6 +7154,30 @@ mod tests {
         face.pbr_alpha = None;
         face.tex_id = aurora_prim::te::TRANSPARENT_TEXTURE;
         assert!(!face.water_exclusion(), "ordinary transparency must not hide water");
+    }
+
+    #[test]
+    fn render_as_water_is_invisible_but_keeps_its_water_draw() {
+        let mut face = FaceDraw {
+            tex_id: aurora_prim::te::RENDER_AS_WATER_TEXTURE,
+            base_slot: 7,
+            ..test_face(Pass::Hidden, true)
+        };
+        assert_eq!(classify(&face, AlphaKind::Opaque), Pass::Hidden);
+        assert!(face.render_as_water());
+        assert_eq!(cull_face(&face, 0, true).bits, aurora_render::gpu_cull::pass::HIDDEN | FACE_FIRST);
+        assert!(
+            is_special(&[face]),
+            "a render-as-water face must visit the CPU lists in both culling modes"
+        );
+        face.te_alpha = 0.5;
+        assert!(!face.render_as_water());
+        face.te_alpha = 1.0;
+        face.pbr_alpha = Some(0);
+        assert!(!face.render_as_water());
+        face.pbr_alpha = None;
+        face.tex_id = aurora_prim::te::DEFAULT_TEXTURE;
+        assert!(!face.render_as_water(), "an ordinary texture must not join the water pass");
     }
 
     /// LLVOAvatar::renderSkinned / renderTransparent: the system body is

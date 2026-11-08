@@ -71,7 +71,7 @@ pub fn update(
         }
     }
     if crate::ao::water_demo::mode().is_none() && camera.free().is_none() {
-        let (eye, target) = if mode.contains("exclusion") {
+        let (eye, target) = if mode.contains("exclusion") || mode.contains("render-as-water") {
             (Vec3::new(48.0, 111.0, 28.0), Vec3::new(48.0, 127.0, 19.0))
         } else if mode.contains("parts-") {
             let x = if mode.contains("parts-feet") { 62.0 } else { 52.0 };
@@ -209,6 +209,33 @@ pub fn update(
                 "",
             ));
         }
+        if let Some(handle) = world.main_region {
+            world.apply(NetEvent::ObjectUpdates { handle, objects });
+        }
+        return changed;
+    }
+    if mode.contains("render-as-water") {
+        // A pool slab whose faces carry the still-water diffuse: the water
+        // pass shades them at the slab's own height, like region water.
+        // The -control mode shows the same slab with the flat texture.
+        let mut te = super::te([1.0; 4], 0, true, 0.0);
+        for face in &mut Arc::make_mut(&mut te).faces {
+            face.texture = if mode.contains("render-as-water-control") {
+                aurora_prim::te::DEFAULT_TEXTURE
+            } else {
+                aurora_prim::te::RENDER_AS_WATER_TEXTURE
+            };
+        }
+        objects.push(super::prim(
+            99530,
+            Vec3::new(48.0, 127.0, 21.2),
+            Quat::IDENTITY,
+            Vec3::new(8.0, 8.0, 0.3),
+            box_shape,
+            te,
+            Default::default(),
+            "",
+        ));
         if let Some(handle) = world.main_region {
             world.apply(NetEvent::ObjectUpdates { handle, objects });
         }
