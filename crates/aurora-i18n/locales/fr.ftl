@@ -8971,7 +8971,7 @@ import-local-clear = Retirer de la sélection
 import-local-rez = Placer un prim pour cet aperçu
 ui-context-sit-stand = S'asseoir / Se lever
 ui-context-save-backup = Sauvegarde
-ui-context-save-collada = Collada
+ui-context-save-collada = Save as Dae
 ui-context-remove-from-display-exceptions = Retirer des exceptions d'affichage
 ui-context-script-info = Infos sur les Scripts
 

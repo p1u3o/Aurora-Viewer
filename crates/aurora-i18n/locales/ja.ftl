@@ -8953,7 +8953,7 @@ import-local-clear = 選択から外す
 import-local-rez = このプレビュー用のプリムを置く
 ui-context-sit-stand = 座る／立つ
 ui-context-save-backup = バックアップ
-ui-context-save-collada = Collada
+ui-context-save-collada = Save as Dae
 ui-context-remove-from-display-exceptions = 表示の例外から削除する
 ui-context-script-info = スクリプト情報
 

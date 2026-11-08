@@ -648,6 +648,7 @@ impl App {
             }
             self.flush_build();
         }
+        self.poll_object_export();
     }
 }
 

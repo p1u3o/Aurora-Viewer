@@ -688,6 +688,7 @@ impl App {
             CtxAction::RefreshTextures(id) => self.refresh_object_textures(id),
             CtxAction::RefreshAvatarTextures(id) => self.refresh_avatar_textures(id),
             CtxAction::Rebake => self.rebake(),
+            CtxAction::SaveCollada(id) => self.begin_object_export(id),
             CtxAction::Take(id) | CtxAction::TakeCopy(id) => {
                 let copy = matches!(act, CtxAction::TakeCopy(_));
                 if let Some(idx) = self.world.objects.index_of_uuid(&id) {

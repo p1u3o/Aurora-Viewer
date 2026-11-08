@@ -106,6 +106,7 @@ mod money_tracker;
 mod monitor;
 mod movement;
 mod object_actions;
+mod object_export;
 mod object_menu;
 mod object_menu_demo;
 mod outfit_portrait;
@@ -677,6 +678,8 @@ pub struct App {
     /// The objects to delete once confirmed: one from a world menu, the
     /// selected rows of the Area Search menu.
     delete_confirm: Option<(Vec<uuid::Uuid>, String)>,
+    /// "Save as ▸ Collada" in flight (app/object_export.rs).
+    object_export: object_export::ObjectExport,
     /// "Freeze" / "Eject" waiting for an answer (app/land_moderation.rs).
     moderation_ask: Option<land_moderation::Ask>,
     /// The object menus' questions and script queue (app/object_menu.rs).
@@ -1686,6 +1689,7 @@ impl App {
             context_menu_was: false,
             delete_confirm: None,
             moderation_ask: None,
+            object_export: Default::default(),
             object_menu: Default::default(),
             place_confirm: None,
             suitcase_ask: None,

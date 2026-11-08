@@ -415,6 +415,9 @@ pub enum CtxAction {
     /// Take / take a copy into the inventory (derez_objects).
     Take(Uuid),
     TakeCopy(Uuid),
+    /// "Save as ▸ Collada" of an object or attachment: the linkset to a
+    /// `.dae` file (app/object_export.rs).
+    SaveCollada(Uuid),
     /// Delete to the trash (LLSelectMgr::selectDelete), asking first when
     /// it is locked, not copyable or not ours.
     Delete(Uuid),
