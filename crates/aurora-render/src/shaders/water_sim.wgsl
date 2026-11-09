@@ -107,7 +107,10 @@ fn simulate(@builtin(global_invocation_id) id: vec3<u32>) {
             let near_edge = exp(-edge * edge * 5.0);
             contact_mask=max(contact_mask,exp(-edge*edge*2.0));
             foam += near_edge * (0.16 + 0.08 * sin(fx.clock.x * 1.6 + dot(world,vec2<f32>(1.4,1.7)))) * dt;
-            if (edge < -0.2) { velocity *= 0.5; foam *= 0.5; }
+            // Hollow pool rims (motion.w == 1.0) foam at their edge
+            // without damping the open water inside; solid obstacles
+            // (motion.w == 0.0) still calm their interior.
+            if (edge < -0.2 && e.motion.w == 0.0) { velocity *= 0.5; foam *= 0.5; }
         }
     }
     if ((fx.counts.z & 2u) != 0u) {

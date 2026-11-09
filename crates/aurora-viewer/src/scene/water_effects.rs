@@ -4,7 +4,7 @@
 use super::{Scene, anchors, anim, water_contacts};
 use crate::world::World;
 use aurora_render::{WaterEffects, WaterEvent, WaterGround};
-use glam::{Mat4, Vec2, Vec3};
+use glam::{Mat4, Quat, Vec2, Vec3};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::time::Instant;
@@ -23,6 +23,10 @@ pub struct Effects {
     impacts: Vec<crate::movement::water_jump::Impact>,
     bodies: water_contacts::Bodies,
     visible: HashMap<Uuid, u32>,
+    /// 'Render as water' pool slabs (world rect + level), refreshed with
+    /// the candidate scan. Emitters test them alongside the region plane.
+    prim: Vec<PrimWater>,
+    prim_at: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -53,6 +57,89 @@ fn water_at(world: &World, p: Vec3) -> Option<f32> {
             .then(|| r.info.as_ref().map(|i| i.water_height))
             .flatten()
     })
+}
+
+/// A 'render as water' prim face, approximated by its object's horizontal
+/// top slab. Pools are boxes and the water face is their top; tilted faces
+/// keep the flat region behaviour (no pool surface).
+#[derive(Clone, Copy, Debug)]
+pub struct PrimWater {
+    pub min: Vec2,
+    pub max: Vec2,
+    pub level: f32,
+}
+
+impl PrimWater {
+    /// World XZ inside the slab's rect, padded by 'pad' metres.
+    fn contains(&self, xy: Vec2, pad: f32) -> bool {
+        xy.cmpge(self.min - Vec2::splat(pad)).all() && xy.cmple(self.max + Vec2::splat(pad)).all()
+    }
+
+    /// An object center near enough to touch the slab.
+    fn near(&self, center: Vec3, pad: f32) -> bool {
+        self.contains(center.truncate(), pad) && (center.z - self.level).abs() < pad
+    }
+
+    /// Whether an object's z-range crosses the slab's plane.
+    fn crosses(&self, z: f32, z_extent: f32) -> bool {
+        (z - self.level).abs() <= z_extent + 0.2
+    }
+}
+
+/// Top slab of an object whose top face is near horizontal: the slab's
+/// rect is the rotated box's world AABB, its level the box's top.
+fn prim_surface(p: Vec3, r: Quat, half: Vec3) -> Option<PrimWater> {
+    if !p.is_finite() || !half.is_finite() || half.min_element() <= 0.0 {
+        return None;
+    }
+    if (r * Vec3::Z).z.abs() < 0.9 {
+        return None;
+    }
+    let extent = (r * Vec3::X).abs() * half + (r * Vec3::Y).abs() * half + (r * Vec3::Z).abs() * half;
+    Some(PrimWater {
+        min: p.truncate() - extent.truncate(),
+        max: p.truncate() + extent.truncate(),
+        level: p.z + extent.z,
+    })
+}
+
+/// Pool slabs stamped into the ground field so the GPU sim admits their
+/// events: a bed just under the slab keeps the cell alive without reading
+/// as terrain shore (see the pool path in 'water_pixel').
+fn stamp_prim_ground(heights: &mut [[f32; 2]], origin: Vec2, extent: f32, prim: &[PrimWater]) {
+    if heights.len() != 4096 || !extent.is_finite() || extent <= 0.0 {
+        return;
+    }
+    let cell = extent / 64.0;
+    for s in prim {
+        if s.max.x < origin.x || s.min.x > origin.x + extent || s.max.y < origin.y || s.min.y > origin.y + extent {
+            continue;
+        }
+        let lo = ((s.min - origin) / cell).floor().clamp(Vec2::ZERO, Vec2::splat(63.0));
+        let hi = ((s.max - origin) / cell).ceil().clamp(Vec2::ZERO, Vec2::splat(63.0));
+        for y in lo.y as usize..=hi.y as usize {
+            for x in lo.x as usize..=hi.x as usize {
+                heights[y * 64 + x] = [s.level - 0.02, s.level];
+            }
+        }
+    }
+}
+
+/// One hollow foam rect per pool slab: pool rims foam like shores. The
+/// sim skips the interior damping for hollow rects (see 'water_sim');
+/// solid obstacles still send a zero motion w.
+fn pool_edge_contact(s: PrimWater, time: f32) -> WaterEvent {
+    let center = (s.min + s.max) * 0.5;
+    WaterEvent {
+        position: center.extend(s.level).extend(time).to_array(),
+        motion: [1.0, 0.0, 0.0, 1.0],
+        params: [
+            ((s.max.x - s.min.x) * 0.5).clamp(0.1, 20.0),
+            2.0,
+            s.level,
+            ((s.max.y - s.min.y) * 0.5).clamp(0.1, 20.0),
+        ],
+    }
 }
 
 impl Effects {
@@ -92,6 +179,24 @@ impl Effects {
         if !impact.position.is_finite() || !impact.speed.is_finite() {
             return;
         }
+        // A raised pool has no impact state of its own: an entry inside a
+        // slab's rect sits on the slab's level, not the region plane below.
+        let impact = if self.prim.is_empty() {
+            impact
+        } else {
+            let z = impact.position.z;
+            let level = self
+                .prim
+                .iter()
+                .filter(|s| s.contains(impact.position.truncate(), 0.0))
+                .map(|s| s.level)
+                .find(|l| (l - z).abs() < 1.5)
+                .unwrap_or(z);
+            crate::movement::water_jump::Impact {
+                position: impact.position.with_z(level),
+                ..impact
+            }
+        };
         let big = impact.kind == Kind::Cannonball;
         let strength = (impact.speed * if big { 0.28 } else { 0.18 }).clamp(if big { 1.4 } else { 0.7 }, if big { 3.5 } else { 2.2 });
         if settings.interactions {
@@ -168,6 +273,17 @@ impl Effects {
             });
             state.splash_at = time;
         }
+        // A hard entry into a pool slab carries the cannonball's foam
+        // ring: the region path gets it from its impact state, which a
+        // raised pool never enters. Gated to slab levels so region water
+        // only meets it beside an at-grade pool.
+        if settings.interactions && velocity.z < -3.0 && self.prim.iter().any(|s| (s.level - water).abs() < 0.05) {
+            self.events.push(WaterEvent {
+                position: surface.extend(time).to_array(),
+                motion: [0.0, 0.0, velocity.z, (velocity.z.abs() * 0.2).clamp(0.7, 3.0)],
+                params: [radius.clamp(0.15, 3.0), 6.0, water, 0.0],
+            });
+        }
     }
 
     fn update(
@@ -196,7 +312,7 @@ impl Effects {
         let origin = anchor - Vec2::splat(range);
         if self.ground.extent != extent || self.ground.origin != origin.to_array() || time - self.ground_at > 0.5 {
             self.ground_at = time;
-            let heights: Vec<[f32; 2]> = (0..4096usize)
+            let mut heights: Vec<[f32; 2]> = (0..4096usize)
                 .into_par_iter()
                 .map(|i| {
                     let xy = origin + (Vec2::new((i % 64) as f32, (i / 64) as f32) + Vec2::splat(0.5)) * extent / 64.0;
@@ -205,6 +321,7 @@ impl Effects {
                     [world.ground_height(p).unwrap_or(w - 100.0), w]
                 })
                 .collect();
+            stamp_prim_ground(&mut heights, origin, extent, &self.prim);
             self.ground = WaterGround {
                 region: world.main_region.unwrap_or(0),
                 origin: origin.to_array(),
@@ -217,6 +334,40 @@ impl Effects {
             self.impacts.clear();
             self.history.clear();
             return (Vec::new(), Vec::new(), self.ground.clone());
+        }
+        // Pool slabs only matter to the foam, ripple, spray and bubble
+        // switches; without one the list stays empty and every pool test
+        // below is a skipped loop.
+        let pool_work = settings.flags() & (4 | 16 | 64 | 128) != 0;
+        if !pool_work {
+            self.prim.clear();
+        }
+        let now = Instant::now();
+        if pool_work && (self.prim.is_empty() || time - self.prim_at > 0.35) {
+            self.prim_at = time;
+            let mut pools: Vec<(f32, PrimWater)> = scene
+                .gpu
+                .par_iter()
+                .enumerate()
+                .filter_map(|(i, g)| {
+                    if g.is_avatar || g.rigged || g.hud || g.owner_avatar.is_some() || g.faces.is_empty() {
+                        return None;
+                    }
+                    if !g.faces.iter().any(|f| f.render_as_water()) {
+                        return None;
+                    }
+                    let o = world.objects.get(i)?;
+                    if world.derender.contains(&o.full_id) || !world.parcel_object_visible(i) {
+                        return None;
+                    }
+                    let (p, r, _) = Scene::object_transform(world, i, now, 0)?;
+                    let s = prim_surface(p, r, o.scale.abs() * 0.5)?;
+                    let middle = (s.min + s.max) * 0.5;
+                    Some((middle.distance_squared(eye.truncate()), s))
+                })
+                .collect();
+            pools.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+            self.prim = pools.into_iter().take(16).map(|(_, s)| s).collect();
         }
         if self.candidates.is_empty() || time - self.scan_at > 0.35 {
             self.scan_at = time;
@@ -234,16 +385,23 @@ impl Effects {
                         return None;
                     }
                     let height = object.scale.z.abs().max(if g.is_avatar { 2.0 } else { 0.0 });
-                    let w = water_at(world, g.center)?;
                     let nearby_avatar = g.is_avatar && g.center.distance_squared(eye) < range * range;
-                    (nearby_avatar || (!g.is_avatar && (g.center.z - w).abs() < height * 0.5 + 8.0)).then_some((distance, i))
+                    let region = water_at(world, g.center)
+                        .is_some_and(|w| nearby_avatar || (!g.is_avatar && (g.center.z - w).abs() < height * 0.5 + 8.0));
+                    // Pool slabs keep their own swimmers: an object touching
+                    // a slab far above the region water is still a candidate.
+                    let pool = (nearby_avatar || !g.is_avatar)
+                        && self
+                            .prim
+                            .iter()
+                            .any(|s| s.near(g.center, if g.is_avatar { 8.0 } else { height * 0.5 + 8.0 }));
+                    (region || pool).then_some((distance, i))
                 })
                 .collect();
             near.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
             self.candidates = near.into_iter().take(96).map(|(_, i)| i).collect();
             self.visible = water_contacts::visibility(scene, world, &self.candidates);
         }
-        let now = Instant::now();
         let mut contacts = Vec::new();
         let body_samples = crate::frame_par::fold(
             &self.candidates,
@@ -264,9 +422,11 @@ impl Effects {
                 let Some((p, r, _)) = Scene::object_transform(world, idx, now, 0) else {
                     return samples;
                 };
-                let Some(water) = water_at(world, p) else {
+                let region = water_at(world, p);
+                if region.is_none() && self.prim.iter().all(|s| !s.near(p, 8.0)) {
                     return samples;
-                };
+                }
+                let water = region.unwrap_or(f32::NAN);
                 let Some(slot) = scene.palette_slots.get(&o.full_id) else {
                     return samples;
                 };
@@ -291,17 +451,40 @@ impl Effects {
                         continue;
                     }
                     let water = water_at(world, center).unwrap_or(water);
-                    let ground = self.ground.sample(center.truncate()).map(|p| p[0]).unwrap_or(water - 20.0);
-                    let surface = aurora_render::water_effects::surface_level(center.truncate(), time, settings, water, ground);
-                    samples.push(water_contacts::Sample {
-                        id: o.full_id,
-                        part,
-                        matrix,
-                        level: water,
-                        surface,
-                        ground,
-                        carrier_z: world.water_visual_dz(&o.full_id),
-                    });
+                    if water.is_finite() {
+                        let ground = self.ground.sample(center.truncate()).map(|p| p[0]).unwrap_or(water - 20.0);
+                        let surface = aurora_render::water_effects::surface_level(center.truncate(), time, settings, water, ground);
+                        samples.push(water_contacts::Sample {
+                            id: o.full_id,
+                            part,
+                            matrix,
+                            level: water,
+                            surface,
+                            ground,
+                            carrier_z: world.water_visual_dz(&o.full_id),
+                        });
+                    }
+                    // The same joint inside a pool slab samples the slab:
+                    // flat slab level, open water under it (a pool has no
+                    // terrain shore to damp the placement or to starve the
+                    // footfall below).
+                    if !self.prim.is_empty() {
+                        let wet = world.water_visual_dz(&o.full_id);
+                        for s in &self.prim {
+                            if !s.contains(center.truncate(), 0.6) || (center.z - s.level).abs() > 0.6 {
+                                continue;
+                            }
+                            samples.push(water_contacts::Sample {
+                                id: o.full_id,
+                                part,
+                                matrix,
+                                level: s.level,
+                                surface: s.level,
+                                ground: s.level - 2.4,
+                                carrier_z: wet,
+                            });
+                        }
+                    }
                 }
                 samples
             },
@@ -319,6 +502,9 @@ impl Effects {
             }
         }
 
+        // Pool slabs, snapshotted for the loop: the emitters borrow the
+        // lists mutably while testing the slabs.
+        let slabs = self.prim.clone();
         for &idx in &self.candidates.clone() {
             let Some(o) = world.objects.get(idx) else {
                 continue;
@@ -335,31 +521,61 @@ impl Effects {
             let Some((p, r, _)) = Scene::object_transform(world, idx, now, 0) else {
                 continue;
             };
-            let Some(water) = water_at(world, p) else {
+            let region = water_at(world, p);
+            if region.is_none() && slabs.iter().all(|s| !s.near(p, 8.0)) {
                 continue;
-            };
+            }
             if !o.is_avatar() {
                 // Root and linked pieces participate; attachments are excluded above.
                 let half = o.scale.abs() * 0.5;
                 let z_extent = (r * Vec3::X).z.abs() * half.x + (r * Vec3::Y).z.abs() * half.y + (r * Vec3::Z).z.abs() * half.z;
-                if p.z - z_extent > water + 0.2 || p.z + z_extent < water - 0.2 {
-                    // Keep the approach velocity for the first visible impact.
-                    self.history.insert((o.full_id, 10), Contact::new(p, time - 0.02));
-                    continue;
+                if let Some(water) = region {
+                    if p.z - z_extent > water + 0.2 || p.z + z_extent < water - 0.2 {
+                        // Keep the approach velocity for the first visible impact.
+                        self.history.insert((o.full_id, 10), Contact::new(p, time - 0.02));
+                    } else {
+                        let emitted = self.events.len();
+                        self.emit((o.full_id, 10), p, half.truncate().min_element().max(0.2), water, time, settings);
+                        for event in &mut self.events[emitted..] {
+                            event.params[3] = half.truncate().max_element().clamp(0.3, 12.0);
+                        }
+                        if settings.contact_foam && contacts.len() < 64 {
+                            let axis = (r * Vec3::X).truncate().normalize_or(Vec2::X);
+                            contacts.push(WaterEvent {
+                                position: p.extend(time).to_array(),
+                                motion: [axis.x, axis.y, 0.0, 0.0],
+                                params: [half.x.clamp(0.1, 20.0), 2.0, water, half.y.clamp(0.1, 20.0)],
+                            });
+                        }
+                    }
                 }
-                let emitted = self.events.len();
-                self.emit((o.full_id, 10), p, half.truncate().min_element().max(0.2), water, time, settings);
-                for event in &mut self.events[emitted..] {
-                    event.params[3] = half.truncate().max_element().clamp(0.3, 12.0);
+                // Pool slabs at their own level: wading and floating
+                // objects disturb pool water far above the region plane.
+                // History slots 12..16 mirror the region's slot 10; the
+                // slot follows the slab so two pools do not share a timer.
+                for (si, s) in slabs.iter().enumerate() {
+                    if !s.crosses(p.z, z_extent) || !s.contains(p.truncate(), half.truncate().max_element()) {
+                        continue;
+                    }
+                    self.emit(
+                        (o.full_id, 12 + (si as u8 % 4)),
+                        p,
+                        half.truncate().min_element().max(0.2),
+                        s.level,
+                        time,
+                        settings,
+                    );
                 }
-                if settings.contact_foam && contacts.len() < 64 {
-                    let axis = (r * Vec3::X).truncate().normalize_or(Vec2::X);
-                    contacts.push(WaterEvent {
-                        position: p.extend(time).to_array(),
-                        motion: [axis.x, axis.y, 0.0, 0.0],
-                        params: [half.x.clamp(0.1, 20.0), 2.0, water, half.y.clamp(0.1, 20.0)],
-                    });
+            }
+        }
+        // Pool rims foam like shores: one hollow rect per slab, on top of
+        // whatever the touching objects above already contributed.
+        if settings.contact_foam {
+            for s in self.prim.iter() {
+                if contacts.len() >= 64 {
+                    break;
                 }
+                contacts.push(pool_edge_contact(*s, time));
             }
         }
         for impact in std::mem::take(&mut self.impacts) {
@@ -408,6 +624,128 @@ impl Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn prim_slabs_need_a_level_top_face() {
+        let p = Vec3::new(10.0, 20.0, 30.0);
+        let half = Vec3::new(2.0, 1.0, 0.25);
+        let s = prim_surface(p, Quat::IDENTITY, half).expect("a flat slab is a pool");
+        assert_eq!((s.min, s.max), (Vec2::new(8.0, 19.0), Vec2::new(12.0, 21.0)));
+        assert!((s.level - 30.25).abs() < 1e-6);
+        assert!(s.contains(Vec2::new(10.0, 20.0), 0.0));
+        assert!(!s.contains(Vec2::new(12.5, 20.0), 0.0));
+        assert!(s.contains(Vec2::new(12.5, 20.0), 0.6));
+        assert!(s.near(Vec3::new(10.0, 20.0, 30.2), 0.5));
+        assert!(!s.near(Vec3::new(10.0, 20.0, 32.0), 0.5));
+        assert!(s.crosses(30.0, 0.5));
+        assert!(!s.crosses(32.0, 0.5));
+        // A wall (top face vertical) is no pool.
+        let wall = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        assert!(prim_surface(p, wall, half).is_none());
+        assert!(prim_surface(p, Quat::IDENTITY, Vec3::ZERO).is_none());
+    }
+
+    #[test]
+    fn stamped_ground_carries_the_pool_level() {
+        let pool = PrimWater {
+            min: Vec2::ZERO,
+            max: Vec2::splat(4.0),
+            level: 22.0,
+        };
+        let mut heights = vec![[1.0, 20.0]; 4096];
+        stamp_prim_ground(&mut heights, Vec2::ZERO, 128.0, &[pool]);
+        // A 2 m texel: the 4 m slab stamps its 3x3 cells.
+        assert_eq!(heights[0], [22.0 - 0.02, 22.0]);
+        assert_eq!(heights[65], [22.0 - 0.02, 22.0]);
+        assert_eq!(heights[4095], [1.0, 20.0]);
+        // A slab outside the field stamps nothing.
+        stamp_prim_ground(
+            &mut heights,
+            Vec2::ZERO,
+            128.0,
+            &[PrimWater {
+                min: Vec2::splat(500.0),
+                max: Vec2::splat(504.0),
+                level: 22.0,
+            }],
+        );
+        assert_eq!(heights[63], [1.0, 20.0]);
+    }
+
+    #[test]
+    fn pool_entries_snap_the_impact_to_the_slab() {
+        use crate::movement::water_jump::{Impact, Kind};
+        let mut effects = Effects {
+            prim: vec![PrimWater {
+                min: Vec2::ZERO,
+                max: Vec2::splat(4.0),
+                level: 22.0,
+            }],
+            ..Default::default()
+        };
+        effects.emit_impact(
+            Impact {
+                position: Vec3::new(2.0, 2.0, 21.0),
+                speed: 8.0,
+                kind: Kind::Cannonball,
+            },
+            1.0,
+            WaterEffects::default(),
+        );
+        assert!(!effects.events.is_empty());
+        assert!(effects.events.iter().all(|e| (e.params[2] - 22.0).abs() < 1e-6));
+        assert!(effects.events.iter().any(|e| e.params[1] == 6.0));
+        // Far from any slab the region level survives.
+        effects.events.clear();
+        effects.emit_impact(
+            Impact {
+                position: Vec3::new(60.0, 60.0, 20.5),
+                speed: 8.0,
+                kind: Kind::Cannonball,
+            },
+            2.0,
+            WaterEffects::default(),
+        );
+        assert!(effects.events.iter().all(|e| (e.params[2] - 20.5).abs() < 1e-6));
+    }
+
+    #[test]
+    fn fast_pool_entries_carry_a_foam_ring() {
+        let mut effects = Effects {
+            prim: vec![PrimWater {
+                min: Vec2::new(-4.0, -4.0),
+                max: Vec2::new(4.0, 4.0),
+                level: 22.0,
+            }],
+            ..Default::default()
+        };
+        let id = (Uuid::nil(), 12);
+        effects.emit(id, Vec3::new(0.0, 0.0, 24.0), 0.3, 22.0, 1.0, WaterEffects::default());
+        effects.emit(id, Vec3::new(0.0, 0.0, 21.9), 0.3, 22.0, 1.1, WaterEffects::default());
+        let rings: Vec<&WaterEvent> = effects.events.iter().filter(|e| e.params[1] == 6.0).collect();
+        assert_eq!(rings.len(), 1);
+        assert!((rings[0].params[2] - 22.0).abs() < 1e-6);
+        // The same fall without a slab stays ringless.
+        let mut dry = Effects::default();
+        dry.emit(id, Vec3::new(0.0, 0.0, 24.0), 0.3, 20.0, 1.0, WaterEffects::default());
+        dry.emit(id, Vec3::new(0.0, 0.0, 19.9), 0.3, 20.0, 1.1, WaterEffects::default());
+        assert!(dry.events.iter().all(|e| e.params[1] != 6.0));
+    }
+
+    #[test]
+    fn pool_rims_are_hollow_contacts() {
+        let s = PrimWater {
+            min: Vec2::ZERO,
+            max: Vec2::splat(4.0),
+            level: 22.0,
+        };
+        let c = pool_edge_contact(s, 3.0);
+        assert_eq!(c.params[1], 2.0);
+        assert_eq!((c.params[0], c.params[3]), (2.0, 2.0));
+        assert!((c.params[2] - 22.0).abs() < 1e-6);
+        assert_eq!(c.motion[3], 1.0, "hollow rims foam without calming their interior");
+        assert_eq!(c.position[3], 3.0);
+    }
+
     #[test]
     fn low_quality_keeps_entry_sheets_and_expires_spent_contact_impulses() {
         use crate::movement::water_jump::{Impact, Kind};

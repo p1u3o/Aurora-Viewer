@@ -1389,11 +1389,14 @@ fn water_pixel(in: WaterOut) -> vec4<f32> {
     color = mix(fb, color, min(1.0, fade * 60.0));
     if((water_fx.counts.z &14u)!=0u) {
         let p=in.world_pos.xy;let bed=water_fx_bed(p);let depth=max(in.level-bed.x,0.0);
+        // A stamped pool slab reads far from the region level: its rim
+        // foams from the field, never from the terrain breaker below.
+        let pool=abs(bed.y-frame.params.y)>0.2;
         let field=water_fx_sample(p);
         // Shore depth always comes from terrain, never an avatar or submerged
         // mesh in the opaque depth. Contact refinement is masked below.
         var foam=smoothstep(0.3,0.95,water_fx_foam(p))*0.55;
-        if(water_fx_on(2u) && depth<2.0) {
+        if(water_fx_on(2u) && !pool && depth<2.0) {
             // Travel along the depth gradient: the front approaches every coast orientation.
             let phase=depth*3.4+frame.camera_pos.w*1.25+water_fx_noise(p*0.32)*1.1;
             let breaker=pow(max(sin(phase),0.0),4.0);
@@ -1419,7 +1422,7 @@ fn water_pixel(in: WaterOut) -> vec4<f32> {
         // Fine breaking filaments already have a narrow, resolved footprint.
         // Applying the coarse accumulation threshold twice erased slow swimmers.
         if(water_fx_on(4u)){foam+=smoothstep(0.018,0.18,wake.w)*water_foam_coverage(p,1.0,footprint)*0.55;}
-        foam=clamp(foam,0.0,1.0)*smoothstep(0.0,0.06,depth);
+        foam=clamp(foam,0.0,1.0)*select(smoothstep(0.0,0.06,depth),1.0,pool);
         let nl=max(frame.sun_dir.z,0.0);
         var foam_light=(frame.sky_horizon.rgb*0.3+frame.sun_color.rgb*nl*shadow/PI)*0.75;
         if(is_classic_sky()) {

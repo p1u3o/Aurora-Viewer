@@ -380,7 +380,8 @@ impl FaceDraw {
     /// A "render as water" face (Build: still-water diffuse, opaque, no
     /// maps). Like the exclusion faces it leaves the colour pools and is
     /// shaded by the water pass instead, at its own surface height.
-    fn render_as_water(&self) -> bool {
+    /// Seen by the water effects (pool slabs), in `scene::water_effects`.
+    pub(super) fn render_as_water(&self) -> bool {
         self.tex_id == aurora_prim::te::RENDER_AS_WATER_TEXTURE && self.pbr_alpha.is_none() && self.te_alpha >= 0.999
     }
 
