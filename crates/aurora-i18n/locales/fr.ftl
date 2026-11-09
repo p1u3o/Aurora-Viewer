@@ -3216,6 +3216,8 @@ ui-land-experiences-blocked-experiences = Exp. bloquées :
 ui-land-access-export-completed-and-saved-to = { "Exportation terminée et sauvegardée dans " }{ $path }.
 ui-land-access-export = Exporter
 ui-options-exposure = Exposition
+ui-options-display-brightness = Luminosité de l'affichage
+ui-options-display-brightness-help = Éclaircit ou assombrit toute l'image après le tone mapping (1,0 = inchangé). Sans effet sur les photos enregistrées.
 ui-context-eject = Expulser
 ui-inventory-properties-experience = Expérience :
 demo-land-aurora-experience = Expérience Aurora

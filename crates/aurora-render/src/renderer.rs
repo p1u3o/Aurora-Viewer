@@ -196,7 +196,8 @@ struct PostU {
     auto_exposure: f32,
     /// A cut-out photo (cutout.rs): 1 the snapshot, 2 the live view.
     cutout: f32,
-    _pad: f32,
+    /// Manual display brightness after tone mapping (1 = unchanged).
+    display_brightness: f32,
     /// The part of the photo the frame draws ([`photo_part`]).
     photo_part: [f32; 4],
 }
@@ -7120,7 +7121,13 @@ impl Backend {
                 (true, true) => 1.0,
                 (true, false) => 2.0,
             },
-            _pad: 0.0,
+            // Snapshots bypass the manual display brightness, so captures
+            // stay display-independent.
+            display_brightness: if snapshot.is_some() {
+                1.0
+            } else {
+                self.settings.display_brightness.clamp(0.25, 4.0)
+            },
             photo_part: photo_part(f.photo_tile),
         };
         self.queue.write_buffer(&self.post_buffer, 0, bytemuck::bytes_of(&post));

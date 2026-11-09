@@ -603,6 +603,10 @@ pub struct Settings {
     /// Brightness of the real stars, 0.5 to 4 times the catalogue's.
     pub night_sky_gain: f32,
     pub exposure: f32,
+    /// Manual display brightness after tone mapping (Preferences › Graphics,
+    /// 0.25 to 4, 1 unchanged): the viewer's own SDR brightness, independent
+    /// of the OS slider. Snapshots bypass it.
+    pub display_brightness: f32,
     /// Contrast adaptive sharpening (Firestorm RenderCASSharpness, 0.4).
     pub sharpen: f32,
     /// Glow of faces with a glow value (Firestorm RenderGlow, on).
@@ -1994,6 +1998,7 @@ impl Default for Settings {
             night_sky_hour: Default::default(),
             night_sky_gain: crate::world::night_sky::DEFAULT_GAIN,
             exposure: 1.0,
+            display_brightness: 1.0,
             sharpen: 0.4,
             glow: true,
             bloom: false,
@@ -2980,6 +2985,7 @@ impl Settings {
         self.snapshot.sanitize();
         self.dof.sanitize();
         self.exposure = self.exposure.clamp(0.25, 4.0);
+        self.display_brightness = self.display_brightness.clamp(0.25, 4.0);
         self.screen_indirect_intensity = if self.screen_indirect_intensity.is_finite() {
             self.screen_indirect_intensity.clamp(0.0, 4.0)
         } else {
@@ -3294,6 +3300,7 @@ impl Settings {
                 Tonemapper::KhronosNeutral
             },
             hdr: self.hdr_emissive,
+            display_brightness: self.display_brightness.clamp(0.25, 4.0),
             shadow_resolution: self.shadow_params().0,
             projector_shadow_limit: if self.projector_shadows { self.projector_shadow_limit } else { 0 },
             ssao: self.ssao,
@@ -3496,6 +3503,24 @@ mod tests {
             let json = serde_json::to_string(&settings).expect("synthetic settings JSON");
             let loaded: super::Settings = serde_json::from_str(&json).expect("saved synthetic settings");
             assert_eq!(loaded.chat_console_max_lines, expected);
+        }
+    }
+
+    #[test]
+    fn display_brightness_defaults_sanitizes_and_reaches_the_renderer() {
+        use super::Settings;
+        assert_eq!(Settings::default().display_brightness, 1.0);
+        for (saved, expected) in [(0.1, 0.25), (1.0, 1.0), (10.0, 4.0)] {
+            let settings = Settings {
+                display_brightness: saved,
+                ..Settings::default()
+            }
+            .sanitized();
+            assert_eq!(settings.display_brightness, expected);
+            assert_eq!(settings.render_settings().display_brightness, expected);
+            let json = serde_json::to_string(&settings).expect("synthetic settings JSON");
+            let loaded: Settings = serde_json::from_str(&json).expect("saved synthetic settings");
+            assert_eq!(loaded.display_brightness, expected);
         }
     }
 

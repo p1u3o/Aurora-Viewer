@@ -722,6 +722,22 @@ fn light(cx: &mut Cx) {
             r.response.on_disabled_hover_text(tr!("ui-options-needs-hdr-emissive"));
             r.inner
         });
+        // Always enabled: this is the viewer's own SDR brightness, not the
+        // scene exposure above (greyed without HDR and Emissive).
+        cx.row(
+            tr!("ui-options-display-brightness"),
+            tr!("ui-options-display-brightness-help"),
+            &field!(display_brightness),
+            |ui, s| {
+                ui.add(
+                    egui::Slider::new(&mut s.display_brightness, 0.25..=4.0)
+                        .custom_parser(aurora_i18n::parse_number)
+                        .logarithmic(true)
+                        .trailing_fill(true),
+                )
+                .changed()
+            },
+        );
         cx.toggle(
             tr!("ui-options-glow"),
             tr!("ui-options-glow-around-glowing-faces-as-in-firestorm"),

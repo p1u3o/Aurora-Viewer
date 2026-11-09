@@ -29,7 +29,9 @@ struct PostParams {
     // shows through each pixel; 1: the photo, straight color and coverage,
     // 2: the live view, over a checkerboard
     cutout: f32,
-    _pad: f32,
+    // Manual display brightness after tone mapping (1 = unchanged); the
+    // padding slot the struct had before
+    display_brightness: f32,
     // the part of the photo this frame draws, in fractions of the photo
     // (left, top, width, height; 0, 0, 1, 1 outside a tiled photo): the
     // glow's 512 x 512 texels are the whole photo's, as in one pass
@@ -345,6 +347,9 @@ fn fs_post(in: Out) -> @location(0) vec4<f32> {
     } else if (post.cutout > 0.5) {
         alpha = cutout_cover(in.uv);
     }
+    // Manual display brightness after tone mapping (1 = unchanged):
+    // snapshots set it to 1, so captures stay display-independent.
+    m *= post.display_brightness;
     if (post.output_srgb < 0.5) {
         // target is not an sRGB format: encode manually
         m = linear_to_srgb(m);
