@@ -377,14 +377,6 @@ impl FaceDraw {
         self.tex_id == aurora_prim::te::WATER_EXCLUSION_TEXTURE && self.pbr_alpha.is_none() && self.te_alpha >= 0.999
     }
 
-    /// A "render as water" face (Build: still-water diffuse, opaque, no
-    /// maps). Like the exclusion faces it leaves the colour pools and is
-    /// shaded by the water pass instead, at its own surface height.
-    /// Seen by the water effects (pool slabs), in `scene::water_effects`.
-    pub(super) fn render_as_water(&self) -> bool {
-        self.tex_id == aurora_prim::te::RENDER_AS_WATER_TEXTURE && self.pbr_alpha.is_none() && self.te_alpha >= 0.999
-    }
-
     /// Aurora-only marker (TERRAIN_HOLE_TEXTURE) that punches a hole in the
     /// terrain behind the face. Same guards as water exclusion: opaque,
     /// no PBR alpha, full texture-entry alpha.
@@ -7151,30 +7143,6 @@ mod tests {
         face.pbr_alpha = None;
         face.tex_id = aurora_prim::te::TRANSPARENT_TEXTURE;
         assert!(!face.water_exclusion(), "ordinary transparency must not hide water");
-    }
-
-    #[test]
-    fn render_as_water_is_invisible_but_keeps_its_water_draw() {
-        let mut face = FaceDraw {
-            tex_id: aurora_prim::te::RENDER_AS_WATER_TEXTURE,
-            base_slot: 7,
-            ..test_face(Pass::Hidden, true)
-        };
-        assert_eq!(classify(&face, AlphaKind::Opaque), Pass::Hidden);
-        assert!(face.render_as_water());
-        assert_eq!(cull_face(&face, 0, true).bits, aurora_render::gpu_cull::pass::HIDDEN | FACE_FIRST);
-        assert!(
-            is_special(&[face]),
-            "a render-as-water face must visit the CPU lists in both culling modes"
-        );
-        face.te_alpha = 0.5;
-        assert!(!face.render_as_water());
-        face.te_alpha = 1.0;
-        face.pbr_alpha = Some(0);
-        assert!(!face.render_as_water());
-        face.pbr_alpha = None;
-        face.tex_id = aurora_prim::te::DEFAULT_TEXTURE;
-        assert!(!face.render_as_water(), "an ordinary texture must not join the water pass");
     }
 
     #[test]

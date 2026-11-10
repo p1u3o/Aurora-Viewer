@@ -499,9 +499,6 @@ fn footer(ui: &mut egui::Ui, p: &Palette, tool: &mut BuildTool, world: &mut Worl
         .iter()
         .all(|x| is_hide_water(&x.te, tool.face_legacy(env, world, x.idx, x.face, &x.te).as_ref()));
     let has_pbr = sel.iter().any(|x| BuildTool::gltf_asset(world, x.idx, x.face).is_some());
-    let surface = sel
-        .iter()
-        .all(|x| is_render_as_water(&x.te, tool.face_legacy(env, world, x.idx, x.face, &x.te).as_ref()));
     if let Some(value) = check(
         &mut right,
         p,
@@ -512,20 +509,6 @@ fn footer(ui: &mut egui::Ui, p: &Palette, tool: &mut BuildTool, world: &mut Worl
     ) {
         if value {
             tool.ui.confirm = Some(Confirm::HideWater);
-        } else {
-            tool.edit_faces(world, |f, _, _| f.texture = DEFAULT_TEXTURE);
-        }
-    }
-    if let Some(value) = check(
-        &mut right,
-        p,
-        surface,
-        false,
-        aurora_i18n::tr!("build-ui-texture-render-as-water"),
-        !has_pbr && tool.ui.tex_tab != 2,
-    ) {
-        if value {
-            tool.ui.confirm = Some(Confirm::RenderAsWater);
         } else {
             tool.edit_faces(world, |f, _, _| f.texture = DEFAULT_TEXTURE);
         }
