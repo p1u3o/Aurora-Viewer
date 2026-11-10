@@ -1,6 +1,7 @@
 //! Right-click menus: opening the world menu on what is under the cursor
 //! (LLToolPie::handleRightClickPick), what its entries depend on, and the
 //! actions chosen in any menu of the interface (ui/context.rs).
+use super::object_export::ExportFormat;
 use super::*;
 use crate::interaction::{self, Action};
 use crate::ui::context::{CtxAction, Facts, ObjectFacts, Target};
@@ -688,7 +689,9 @@ impl App {
             CtxAction::RefreshTextures(id) => self.refresh_object_textures(id),
             CtxAction::RefreshAvatarTextures(id) => self.refresh_avatar_textures(id),
             CtxAction::Rebake => self.rebake(),
-            CtxAction::SaveCollada(id) => self.begin_object_export(id),
+            CtxAction::SaveCollada(id) => self.begin_object_export(id, ExportFormat::Collada),
+            CtxAction::SaveGltf(id) => self.begin_object_export(id, ExportFormat::Gltf),
+            CtxAction::SaveGlb(id) => self.begin_object_export(id, ExportFormat::Glb),
             CtxAction::Take(id) | CtxAction::TakeCopy(id) => {
                 let copy = matches!(act, CtxAction::TakeCopy(_));
                 if let Some(idx) = self.world.objects.index_of_uuid(&id) {

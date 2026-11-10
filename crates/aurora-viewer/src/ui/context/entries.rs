@@ -331,6 +331,8 @@ fn object_menu(ui: &mut Builder, f: &Facts, key: ObjKey, id: Uuid, offset: Vec3,
         true,
         CtxAction::SaveCollada(id),
     );
+    ui.item_if("cube", aurora_i18n::tr!("ui-context-save-gltf"), true, CtxAction::SaveGltf(id));
+    ui.item_if("cube", aurora_i18n::tr!("ui-context-save-glb"), true, CtxAction::SaveGlb(id));
     ui.separator();
     ui.item_if("trash-filled", aurora_i18n::tr!("common-delete"), o.delete, CtxAction::Delete(id));
     ui.separator();
@@ -920,6 +922,8 @@ fn save_as_submenu(ui: &mut Builder, id: Uuid) {
             true,
             CtxAction::SaveCollada(id),
         );
+        ui.item_if("cube", aurora_i18n::tr!("ui-context-save-gltf"), true, CtxAction::SaveGltf(id));
+        ui.item_if("cube", aurora_i18n::tr!("ui-context-save-glb"), true, CtxAction::SaveGlb(id));
     });
 }
 

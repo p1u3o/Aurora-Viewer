@@ -8972,6 +8972,8 @@ import-local-rez = Placer un prim pour cet aperçu
 ui-context-sit-stand = S'asseoir / Se lever
 ui-context-save-backup = Sauvegarde
 ui-context-save-collada = Save as Dae
+ui-context-save-gltf = Save as glTF
+ui-context-save-glb = Save as GLB
 ui-context-remove-from-display-exceptions = Retirer des exceptions d'affichage
 ui-context-script-info = Infos sur les Scripts
 

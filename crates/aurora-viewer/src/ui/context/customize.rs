@@ -328,6 +328,8 @@ fn action_key(action: &CtxAction) -> String {
         CtxAction::Take(..) => "Take",
         CtxAction::TakeCopy(..) => "TakeCopy",
         CtxAction::SaveCollada(..) => "SaveCollada",
+        CtxAction::SaveGltf(..) => "SaveGltf",
+        CtxAction::SaveGlb(..) => "SaveGlb",
         CtxAction::Delete(..) => "Delete",
         CtxAction::DeleteConfirmed(..) => "DeleteConfirmed",
         CtxAction::Pay(..) => "Pay",

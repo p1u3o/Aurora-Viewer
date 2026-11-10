@@ -1,12 +1,14 @@
-//! Right-click "Save as ▸ Collada": export a linkset to a `.dae` file.
+//! Right-click "Save as Dae" / "Save as glTF": export a linkset to a
+//! `.dae`, `.gltf` or `.glb` file.
 //!
 //! The client gathers what it already renders: tessellated prims
 //! (`aurora_prim::generate_volume`), mesh assets at the finest held level of
 //! detail, sculpt maps, trees and their face textures, each placed with the
 //! world transform the scene draws it with. Textures save as PNG files next
-//! to the `.dae`; per-face texture-entry transforms are not baked. When the
+//! to the file; per-face texture-entry transforms are not baked. When the
 //! picked file's directory is not writable (a sandboxed portal save), they
-//! embed in the `.dae` as `data:` URIs instead.
+//! embed instead: as `data:` URIs in the `.dae` and `.gltf`, while a `.glb`
+//! always carries them in its binary chunk.
 //!
 //! Mesh, sculpt and texture assets download in the background: the export
 //! waits for them up to a deadline, then writes whatever is ready and
@@ -15,6 +17,7 @@
 use super::context_menu::linkset_root;
 use crate::build;
 use crate::export_collada::{ExportDocument, ExportGeometry, ExportMaterial, ExportNode, ExportPart, write_collada};
+use crate::export_gltf::{BinLocation, write_glb, write_gltf};
 use crate::scene::Scene;
 use crate::world::notifications::{Data, Kind};
 use aurora_prim::params::{LL_PCODE_LEGACY_GRASS, LL_PCODE_LEGACY_TREE, LL_PCODE_TREE_NEW, LL_PCODE_VOLUME};
@@ -33,7 +36,29 @@ const MESH_LOD: u8 = 3;
 /// How long the export waits for mesh and sculpt downloads.
 const FETCH_GRACE: Duration = Duration::from_secs(45);
 
-/// "Save as ▸ Collada" in flight (at most one).
+/// Which file format the export writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ExportFormat {
+    /// Collada 1.4.1 `.dae` (write_collada).
+    Collada,
+    /// glTF 2.0 JSON with a sibling `.bin`.
+    Gltf,
+    /// glTF 2.0 binary container, textures embedded.
+    Glb,
+}
+
+impl ExportFormat {
+    /// The save dialog's filter and default extension.
+    fn dialog(self) -> (&'static str, &'static str) {
+        match self {
+            ExportFormat::Collada => ("DAE", "dae"),
+            ExportFormat::Gltf => ("glTF", "gltf"),
+            ExportFormat::Glb => ("GLB", "glb"),
+        }
+    }
+}
+
+/// An object export in flight (at most one).
 #[derive(Default)]
 pub(super) struct ObjectExport {
     pending: Option<PendingExport>,
@@ -44,6 +69,8 @@ struct PendingExport {
     id: Uuid,
     /// Default file stem for the save dialog.
     name: String,
+    /// The format the menu entry chose.
+    format: ExportFormat,
     /// The save dialog runs on its own thread; the path arrives here.
     rx: Option<mpsc::Receiver<Option<PathBuf>>>,
     path: Option<PathBuf>,
@@ -65,8 +92,8 @@ enum MeshStatus {
 }
 
 impl super::App {
-    /// "Save as ▸ Collada" of the object menu: ask where, then gather.
-    pub(super) fn begin_object_export(&mut self, id: Uuid) {
+    /// "Save as Dae" / "Save as glTF" of the object menu: ask where, then gather.
+    pub(super) fn begin_object_export(&mut self, id: Uuid, format: ExportFormat) {
         let Some(idx) = self.world.objects.index_of_uuid(&id) else {
             return;
         };
@@ -81,17 +108,19 @@ impl super::App {
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| "object".to_string());
         let stem = sanitize_stem(&name);
+        let (filter_name, extension) = format.dialog();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let path = rfd::FileDialog::new()
-                .set_file_name(format!("{stem}.dae"))
-                .add_filter("DAE", &["dae"])
+                .set_file_name(format!("{stem}.{extension}"))
+                .add_filter(filter_name, &[extension])
                 .save_file();
             let _ = tx.send(path);
         });
         self.object_export.pending = Some(PendingExport {
             id: root_id,
             name,
+            format,
             rx: Some(rx),
             path: None,
             fetch_start: None,
@@ -310,20 +339,50 @@ impl super::App {
         }
         // Free the decoded meshes before writing the files.
         pending.mesh_cache.clear();
-        let (images, embedded) = self.object_export_write_textures(&pending, &path, &doc, &mut skipped);
-        let text = write_collada(&doc, &images);
-        match std::fs::write(&path, text) {
+        let bodies = self.object_export_bake_textures(&pending, &doc, &mut skipped);
+        // Textures and (for .gltf) the vertex buffer go next to the file
+        // when the directory allows it; what cannot be written embeds.
+        let (bytes, texture_count, embedded) = match pending.format {
+            ExportFormat::Collada => {
+                let (images, embedded) = write_texture_files(&bodies, &path);
+                (write_collada(&doc, &images).into_bytes(), images.len(), embedded)
+            }
+            ExportFormat::Gltf => {
+                let (images, embedded) = write_texture_files(&bodies, &path);
+                let stem = path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .map_or_else(|| "object".to_string(), sanitize_stem);
+                let bin_name = format!("{stem}.bin");
+                let export = write_gltf(&doc, &images, BinLocation::SiblingFile(&bin_name));
+                let json = match std::fs::write(path.with_file_name(&bin_name), &export.bin) {
+                    Ok(()) => export.json,
+                    Err(e) => {
+                        log::info!("object export: cannot write {bin_name} ({e}); embedding the vertex buffer");
+                        write_gltf(&doc, &images, BinLocation::Embedded).json
+                    }
+                };
+                (json.into_bytes(), images.len(), embedded)
+            }
+            // The GLB carries its textures in its binary chunk: a
+            // sandboxed save loses nothing.
+            ExportFormat::Glb => {
+                let textures: HashMap<Uuid, Vec<u8>> = bodies.iter().cloned().collect();
+                (write_glb(&doc, &textures), textures.len(), 0)
+            }
+        };
+        match std::fs::write(&path, bytes) {
             Ok(()) => {
                 log::info!(
                     "object export: saved {} nodes and {} textures to {}",
                     doc.nodes.len(),
-                    images.len(),
+                    texture_count,
                     path.display()
                 );
                 let mut body = format!(
                     "Saved {} prims and {} textures to {}.",
                     doc.nodes.len(),
-                    images.len(),
+                    texture_count,
                     path.display()
                 );
                 if embedded > 0 {
@@ -350,27 +409,18 @@ impl super::App {
         }
     }
 
-    /// Full-resolution PNGs of the used face textures, next to the `.dae`
-    /// when the directory is writable. A sandboxed portal save (Flatpak)
-    /// only grants the picked file itself, so textures that cannot be
-    /// written next to it embed in the file as `data:` URIs instead.
-    /// Returns the asset ids to their `init_from` values, and how many of
-    /// those are embedded.
-    fn object_export_write_textures(
+    /// Full-resolution PNGs of the used face textures, in first-use order.
+    /// A texture still downloading or impossible to encode is reported in
+    /// `skipped` and left out.
+    fn object_export_bake_textures(
         &mut self,
         pending: &PendingExport,
-        path: &std::path::Path,
         doc: &ExportDocument,
         skipped: &mut Vec<String>,
-    ) -> (HashMap<Uuid, String>, usize) {
+    ) -> Vec<(Uuid, Vec<u8>)> {
         let used: std::collections::HashSet<Uuid> = doc.materials.iter().filter_map(|material| material.texture).collect();
-        let stem = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .map_or_else(|| "object".to_string(), sanitize_stem);
-        let mut images = HashMap::new();
-        let mut embedded = 0;
-        for (index, id) in pending.textures.iter().filter(|id| used.contains(id)).enumerate() {
+        let mut bodies = Vec::new();
+        for id in pending.textures.iter().filter(|id| used.contains(id)) {
             let pixels = self.scene.textures.preview_source(id).bake_image(*id);
             let Some(pixels) = pixels else {
                 skipped.push(format!("texture {id}: still downloading"));
@@ -380,20 +430,38 @@ impl super::App {
                 skipped.push(format!("texture {id}: could not encode"));
                 continue;
             };
-            let filename = format!("{stem}_tex{index}.png");
-            match std::fs::write(path.with_file_name(&filename), &png) {
-                Ok(()) => {
-                    images.insert(*id, filename);
-                }
-                Err(e) => {
-                    log::info!("object export: cannot write {filename} ({e}); embedding texture {id}");
-                    images.insert(*id, data_uri(&png));
-                    embedded += 1;
-                }
+            bodies.push((*id, png));
+        }
+        bodies
+    }
+}
+
+/// Write the baked PNGs next to the exported file. A sandboxed portal save
+/// (Flatpak) only grants the picked file itself, so a texture that cannot
+/// be written next to it embeds as a Collada/glTF `data:` URI instead.
+/// Returns the asset ids to their `init_from`/`uri` values, and how many
+/// of those are embedded.
+fn write_texture_files(bodies: &[(Uuid, Vec<u8>)], path: &std::path::Path) -> (HashMap<Uuid, String>, usize) {
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map_or_else(|| "object".to_string(), sanitize_stem);
+    let mut images = HashMap::new();
+    let mut embedded = 0;
+    for (index, (id, png)) in bodies.iter().enumerate() {
+        let filename = format!("{stem}_tex{index}.png");
+        match std::fs::write(path.with_file_name(&filename), png) {
+            Ok(()) => {
+                images.insert(*id, filename);
+            }
+            Err(e) => {
+                log::info!("object export: cannot write {filename} ({e}); embedding texture {id}");
+                images.insert(*id, data_uri(png));
+                embedded += 1;
             }
         }
-        (images, embedded)
     }
+    (images, embedded)
 }
 
 /// Decoded faces of a mesh asset, downloading it when missing.
