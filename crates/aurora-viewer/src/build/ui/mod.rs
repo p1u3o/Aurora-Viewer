@@ -27,7 +27,6 @@ mod mesh;
 mod object;
 pub(crate) mod particles;
 mod replace;
-mod shape_preview;
 pub(in crate::build) mod texture;
 mod texture_preview;
 mod tools;
@@ -156,6 +155,10 @@ pub enum Confirm {
     DeleteMedia,
     /// WaterExclusionSurfacesWarning.
     HideWater,
+    /// Aurora addition: still-water faces join the water pass.
+    RenderAsWater,
+    /// Aurora-only terrain hole confirmation.
+    HideTerrain,
     /// ReflectionProbeApplied.
     Probe,
 }

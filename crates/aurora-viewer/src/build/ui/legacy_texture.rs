@@ -220,7 +220,7 @@ fn bp_panel(ui: &mut egui::Ui, p: &Palette, tool: &mut BuildTool, world: &mut Wo
             });
         },
     );
-    let has_alpha = diffuse.and_then(|id| env.scene.textures.has_alpha(&id)).unwrap_or(false);
+    let has_alpha = diffuse.and_then(|id| env.scene.textures.has_alpha_channel(&id)).unwrap_or(false);
     let opaque = sel.iter().all(|x| x.te.color[3] >= 1.0);
     let default = if has_alpha { alpha_mode::BLEND } else { alpha_mode::NONE };
     let (mode, mixed) = same(bp.iter().map(|m| m.as_ref().map(|m| m.diffuse_alpha_mode).unwrap_or(default)));
@@ -499,6 +499,9 @@ fn footer(ui: &mut egui::Ui, p: &Palette, tool: &mut BuildTool, world: &mut Worl
         .iter()
         .all(|x| is_hide_water(&x.te, tool.face_legacy(env, world, x.idx, x.face, &x.te).as_ref()));
     let has_pbr = sel.iter().any(|x| BuildTool::gltf_asset(world, x.idx, x.face).is_some());
+    let surface = sel
+        .iter()
+        .all(|x| is_render_as_water(&x.te, tool.face_legacy(env, world, x.idx, x.face, &x.te).as_ref()));
     if let Some(value) = check(
         &mut right,
         p,
@@ -509,6 +512,37 @@ fn footer(ui: &mut egui::Ui, p: &Palette, tool: &mut BuildTool, world: &mut Worl
     ) {
         if value {
             tool.ui.confirm = Some(Confirm::HideWater);
+        } else {
+            tool.edit_faces(world, |f, _, _| f.texture = DEFAULT_TEXTURE);
+        }
+    }
+    if let Some(value) = check(
+        &mut right,
+        p,
+        surface,
+        false,
+        aurora_i18n::tr!("build-ui-texture-render-as-water"),
+        !has_pbr && tool.ui.tex_tab != 2,
+    ) {
+        if value {
+            tool.ui.confirm = Some(Confirm::RenderAsWater);
+        } else {
+            tool.edit_faces(world, |f, _, _| f.texture = DEFAULT_TEXTURE);
+        }
+    }
+    let terrain = sel
+        .iter()
+        .all(|x| is_hide_terrain(&x.te, tool.face_legacy(env, world, x.idx, x.face, &x.te).as_ref()));
+    if let Some(value) = check(
+        &mut right,
+        p,
+        terrain,
+        false,
+        aurora_i18n::tr!("build-ui-texture-occlude-terrain"),
+        !has_pbr && tool.ui.tex_tab != 2,
+    ) {
+        if value {
+            tool.ui.confirm = Some(Confirm::HideTerrain);
         } else {
             tool.edit_faces(world, |f, _, _| f.texture = DEFAULT_TEXTURE);
         }

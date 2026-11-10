@@ -2,7 +2,7 @@
 //! panel_fs_tools_texture.xml of the Legacy Viewer, originally LGPL 2.1): the PBR,
 //! Blinn-Phong and Media sub-tabs of the selected faces, copy / paste of
 //! face parameters and the face options under them (repeats per meter,
-//! hide water, mapping, material sync).
+//! hide water, render as water, mapping, material sync).
 //!
 //! Every value is read over the selected faces: when they differ the
 //! control shows a mixed value ("Multiple").
@@ -389,14 +389,12 @@ impl BuildTool {
     }
 }
 
-/// A face without a legacy material derives its alpha mode from the diffuse.
+/// A face without a legacy material derives its alpha mode from the format of
+/// the diffuse (LLPanelFace::createDefaultMaterial). Blending a texture whose
+/// texels are all opaque keeps its face in the opaque pass (`classify`).
 pub(super) fn default_legacy(env: &Env, te: &TextureFace) -> LegacyMaterial {
     LegacyMaterial {
-        diffuse_alpha_mode: if env.scene.textures.has_alpha(&te.texture).unwrap_or(false) {
-            alpha_mode::BLEND
-        } else {
-            alpha_mode::NONE
-        },
+        diffuse_alpha_mode: env.scene.textures.default_alpha_mode(&te.texture),
         ..Default::default()
     }
 }
@@ -1138,7 +1136,7 @@ fn blinn_phong(ui: &mut egui::Ui, p: &Palette, tool: &mut BuildTool, world: &mut
             ui.label("%");
         });
         // alpha mode, mask cutoff
-        let has_alpha = tex.and_then(|t| env.scene.textures.has_alpha(&t)).unwrap_or(false);
+        let has_alpha = tex.and_then(|t| env.scene.textures.has_alpha_channel(&t)).unwrap_or(false);
         let transp_zero = sel.iter().all(|x| x.te.color[3] >= 1.0);
         let default_mode = if has_alpha { alpha_mode::BLEND } else { alpha_mode::NONE };
         let (mode, mode_mixed) = same(
@@ -1369,6 +1367,20 @@ fn is_hide_water(te: &TextureFace, m: Option<&LegacyMaterial>) -> bool {
     te.texture == IMG_ALPHA_GRAD && te.color[3] >= 1.0 && m.is_none_or(|m| m.normal_map.is_nil() && m.specular_map.is_nil())
 }
 
+// A "render as water" face (still-water diffuse, opaque, no maps).
+fn is_render_as_water(te: &TextureFace, m: Option<&LegacyMaterial>) -> bool {
+    te.texture == aurora_prim::te::RENDER_AS_WATER_TEXTURE
+        && te.color[3] >= 1.0
+        && m.is_none_or(|m| m.normal_map.is_nil() && m.specular_map.is_nil())
+}
+
+/// An "occlude terrain" face: the hole marker, opaque, no maps.
+fn is_hide_terrain(te: &TextureFace, m: Option<&LegacyMaterial>) -> bool {
+    te.texture == aurora_prim::te::TERRAIN_HOLE_TEXTURE
+        && te.color[3] >= 1.0
+        && m.is_none_or(|m| m.normal_map.is_nil() && m.specular_map.is_nil())
+}
+
 #[cfg(test)]
 mod empty_map_tests {
     use super::*;
@@ -1483,6 +1495,22 @@ fn face_options(
             if let Some(v) = check(ui, p, water, false, aurora_i18n::tr!("build-ui-texture-occlude-water"), true) {
                 if v {
                     tool.ui.confirm = Some(Confirm::HideWater);
+                } else {
+                    tool.edit_faces(world, |f, _, _| f.texture = DEFAULT_TEXTURE);
+                }
+            }
+            let surface = sel.iter().all(|x| is_render_as_water(&x.te, legacy0.as_ref()));
+            if let Some(v) = check(ui, p, surface, false, aurora_i18n::tr!("build-ui-texture-render-as-water"), true) {
+                if v {
+                    tool.ui.confirm = Some(Confirm::RenderAsWater);
+                } else {
+                    tool.edit_faces(world, |f, _, _| f.texture = DEFAULT_TEXTURE);
+                }
+            }
+            let terrain = sel.iter().all(|x| is_hide_terrain(&x.te, legacy0.as_ref()));
+            if let Some(v) = check(ui, p, terrain, false, aurora_i18n::tr!("build-ui-texture-occlude-terrain"), true) {
+                if v {
+                    tool.ui.confirm = Some(Confirm::HideTerrain);
                 } else {
                     tool.edit_faces(world, |f, _, _| f.texture = DEFAULT_TEXTURE);
                 }

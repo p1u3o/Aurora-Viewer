@@ -598,6 +598,16 @@ pub(super) fn confirm_answer(ctx: &egui::Context, p: &Palette, c: &Confirm, id: 
             aurora_i18n::tr!("build-ui-floaters-checking-hide-water-overrides-texture-bumpiness-and-shininess-choices"),
             aurora_i18n::tr!("build-ui-floaters-continue"),
         ),
+        Confirm::RenderAsWater => (
+            aurora_i18n::tr!("build-ui-floaters-render-as-water"),
+            aurora_i18n::tr!("build-ui-floaters-checking-render-as-water-overrides-texture-bumpiness-and-shininess-choices"),
+            aurora_i18n::tr!("build-ui-floaters-continue"),
+        ),
+        Confirm::HideTerrain => (
+            aurora_i18n::tr!("build-ui-floaters-occlude-terrain"),
+            aurora_i18n::tr!("build-ui-floaters-checking-occlude-terrain-overrides-texture-bumpiness-and-shininess-choices"),
+            aurora_i18n::tr!("build-ui-floaters-continue"),
+        ),
         Confirm::Probe => (
             aurora_i18n::tr!("common-reflection-probe"),
             aurora_i18n::tr!("build-ui-floaters-this-prim-will-become-a-reflection-probe-it-will"),
@@ -676,6 +686,30 @@ fn confirm(ctx: &egui::Context, p: &Palette, tool: &mut BuildTool, world: &mut W
             let sel: Vec<(usize, u8)> = tool.sel_te(world);
             tool.edit_faces(world, |f, _, _| {
                 f.texture = aurora_prim::te::WATER_EXCLUSION_TEXTURE;
+                f.bump_shiny_fullbright &= 0x20;
+                f.color[3] = 1.0;
+            });
+            let puts = sel.into_iter().map(|(i, f)| (i, f, None)).collect();
+            tool.legacy_put(world, puts);
+        }
+        Confirm::RenderAsWater => {
+            // Like FSPanelFace::onCommitHideWater, with the still-water diffuse.
+            let sel: Vec<(usize, u8)> = tool.sel_te(world);
+            tool.edit_faces(world, |f, _, _| {
+                f.texture = aurora_prim::te::RENDER_AS_WATER_TEXTURE;
+                f.bump_shiny_fullbright &= 0x20;
+                f.color[3] = 1.0;
+            });
+            let puts = sel.into_iter().map(|(i, f)| (i, f, None)).collect();
+            tool.legacy_put(world, puts);
+        }
+        Confirm::HideTerrain => {
+            // same face edits as HideWater, with the terrain hole marker:
+            // the face itself stays invisible and the terrain behind it
+            // drops out of the local view
+            let sel: Vec<(usize, u8)> = tool.sel_te(world);
+            tool.edit_faces(world, |f, _, _| {
+                f.texture = aurora_prim::te::TERRAIN_HOLE_TEXTURE;
                 f.bump_shiny_fullbright &= 0x20;
                 f.color[3] = 1.0;
             });
