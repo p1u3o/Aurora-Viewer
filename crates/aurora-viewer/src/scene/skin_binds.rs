@@ -145,6 +145,8 @@ mod tests {
             local_rot: vec![glam::Quat::IDENTITY; joints],
             parent_scale: vec![glam::Vec3::ONE; joints],
             scale: vec![glam::Vec3::ONE; joints],
+            is_collision_volume: vec![false; joints],
+            end: vec![glam::Vec3::ZERO; joints],
             default_world_inv: vec![Mat4::IDENTITY; joints],
             order: (0..joints).collect(),
             names: (0..joints).map(|j| (format!("j{j}"), j)).collect(),

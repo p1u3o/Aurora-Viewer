@@ -391,6 +391,14 @@ pub struct DebugView {
     pub check_probe_sets: bool,
     pub probes: bool,
     pub skeletons: bool,
+    /// The avatars' posed collision volumes, sphere and end line each, the
+    /// volumes the Legacy Viewer's avatar picking tests. Port of
+    /// LLVOAvatar::renderCollisionVolumes (indra/newview/llvoavatar.cpp,
+    /// originally LGPL 2.1).
+    pub avatar_collision_volumes: bool,
+    /// The box the viewer actually tests avatar clicks against (see
+    /// `scene::picking`).
+    pub avatar_pick_box: bool,
     /// Detail level of the objects around the pointer, with the distance
     /// and the radius it comes from (Firestorm: Develop › Render Metadata ›
     /// LOD Info).
@@ -428,7 +436,15 @@ impl DebugView {
 
     /// An overlay drawn over the 3D view is on.
     pub fn any_overlay(&self) -> bool {
-        self.bounds || self.culling || self.lights || self.glow_objects || self.probes || self.skeletons || self.lod_info
+        self.bounds
+            || self.culling
+            || self.lights
+            || self.glow_objects
+            || self.probes
+            || self.skeletons
+            || self.avatar_collision_volumes
+            || self.avatar_pick_box
+            || self.lod_info
     }
 }
 

@@ -116,6 +116,12 @@ pub(super) fn worn_unrigged_mesh(o: &Object, g: &super::ObjGpu) -> bool {
     !g.rigged && !g.is_avatar && g.owner_avatar.is_some() && o.visual_volume().is_mesh()
 }
 
+/// Half extents of the box avatar clicks are tested against, around the
+/// avatar position (`ObjGpu::center`): 0.35 m sideways, 1 m down and up.
+/// The Dev Toolbox's picking-box overlay (O11) draws the same box, so the
+/// debug view cannot drift from what picking tests.
+pub const AVATAR_PICK_BOX_HALF: Vec3 = Vec3::new(0.35, 0.35, 1.0);
+
 pub fn ray_box(origin: Vec3, dir: Vec3, min: Vec3, max: Vec3) -> Option<f32> {
     let mut near = 0.0f32;
     let mut far = f32::INFINITY;
@@ -547,12 +553,7 @@ impl Scene {
             // pick. They must not redirect a texture onto a volume behind them.
             let (distance, face) = if g.is_avatar {
                 (
-                    ray_box(
-                        ray.0,
-                        ray.1,
-                        g.center - Vec3::new(0.35, 0.35, 1.0),
-                        g.center + Vec3::new(0.35, 0.35, 1.0),
-                    )?,
+                    ray_box(ray.0, ray.1, g.center - AVATAR_PICK_BOX_HALF, g.center + AVATAR_PICK_BOX_HALF)?,
                     None,
                 )
             } else {
@@ -680,12 +681,7 @@ impl Scene {
                 continue;
             }
             let t = if g.is_avatar {
-                ray_box(
-                    ray.0,
-                    ray.1,
-                    g.center - Vec3::new(0.35, 0.35, 1.0),
-                    g.center + Vec3::new(0.35, 0.35, 1.0),
-                )
+                ray_box(ray.0, ray.1, g.center - AVATAR_PICK_BOX_HALF, g.center + AVATAR_PICK_BOX_HALF)
             } else {
                 self.face_hit_mode(world, idx, ray, now, false, FacePick::Inventory).map(|h| h.t)
             };
@@ -1463,12 +1459,7 @@ impl Scene {
                 continue;
             }
             let t = if g.is_avatar {
-                ray_box(
-                    ray.0,
-                    ray.1,
-                    g.center - Vec3::new(0.35, 0.35, 1.0),
-                    g.center + Vec3::new(0.35, 0.35, 1.0),
-                )
+                ray_box(ray.0, ray.1, g.center - AVATAR_PICK_BOX_HALF, g.center + AVATAR_PICK_BOX_HALF)
             } else if mode == FacePick::Left {
                 self.face_hit_mode(world, idx, ray, now, false, mode).map(|h| h.t)
             } else {
@@ -1547,12 +1538,7 @@ impl Scene {
                 continue;
             }
             let t = if g.is_avatar {
-                ray_box(
-                    ray.0,
-                    ray.1,
-                    g.center - Vec3::new(0.35, 0.35, 1.0),
-                    g.center + Vec3::new(0.35, 0.35, 1.0),
-                )
+                ray_box(ray.0, ray.1, g.center - AVATAR_PICK_BOX_HALF, g.center + AVATAR_PICK_BOX_HALF)
             } else if ray_may_hit(g, ray) {
                 self.face_hit_mode(world, idx, ray, now, clicker, FacePick::Left).map(|h| h.t)
             } else {

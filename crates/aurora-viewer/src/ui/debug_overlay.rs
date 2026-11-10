@@ -26,6 +26,10 @@ const GREEN: Color32 = Color32::from_rgb(80, 220, 120);
 const RED: Color32 = Color32::from_rgb(240, 70, 70);
 const ORANGE: Color32 = Color32::from_rgb(245, 160, 50);
 const GREY: Color32 = Color32::from_gray(140);
+/// The avatars' posed collision volumes (O10).
+const VOLUME: Color32 = Color32::from_rgb(96, 165, 250);
+/// The box avatar clicks are tested against (O11).
+const PICK_BOX: Color32 = Color32::from_rgb(244, 114, 182);
 
 struct Lines<'a> {
     painter: egui::Painter,
@@ -57,15 +61,21 @@ impl Lines<'_> {
 
     /// Sphere as its three great circles.
     fn sphere(&self, c: Vec3, r: f32, color: Color32) {
+        self.ellipsoid(c, Quat::IDENTITY, Vec3::splat(r), color);
+    }
+
+    /// Ellipsoid as its three great circles, oriented by `rot`.
+    fn ellipsoid(&self, c: Vec3, rot: Quat, radii: Vec3, color: Color32) {
         const N: usize = 32;
         let pt = |axis: usize, i: usize| {
             let a = i as f32 / N as f32 * std::f32::consts::TAU;
             let (s, co) = a.sin_cos();
-            c + r * match axis {
-                0 => Vec3::new(co, s, 0.0),
-                1 => Vec3::new(co, 0.0, s),
-                _ => Vec3::new(0.0, co, s),
-            }
+            c + rot
+                * match axis {
+                    0 => Vec3::new(0.0, radii.y * co, radii.z * s),
+                    1 => Vec3::new(radii.x * co, 0.0, radii.z * s),
+                    _ => Vec3::new(radii.x * co, radii.y * s, 0.0),
+                }
         };
         for axis in 0..3 {
             for i in 0..N {
@@ -391,6 +401,61 @@ pub fn draw(
                 }
                 if let (Some(a), Some(b)) = (joint(j), joint(parent)) {
                     lines.seg(a, b, Color32::from_rgb(250, 204, 21));
+                }
+            }
+        }
+    }
+
+    // Port of LLVOAvatar::renderCollisionVolumes (indra/newview/llvoavatar.cpp,
+    // originally LGPL 2.1): the avatars' posed collision volumes, the volumes
+    // the Legacy Viewer's avatar picking tests. The Legacy Viewer draws them
+    // depth tested, dimmer when occluded; this overlay has no depth test, so
+    // one colour per avatar (as the skeletons overlay above).
+    if dv.avatar_collision_volumes || dv.avatar_pick_box {
+        let rig = &world.avatar_lib.rig;
+        let pelvis = world.avatar_lib.pelvis;
+        for (idx, o) in world.objects.avatars() {
+            let Some((pp, pr, _)) = Scene::object_transform(world, idx, now, 0) else {
+                continue;
+            };
+            if pp.distance(eye) > SKELETON_RANGE {
+                continue;
+            }
+            if dv.avatar_pick_box
+                && let Some(g) = scene.gpu.get(idx)
+            {
+                lines.obb(g.center, Quat::IDENTITY, crate::scene::picking::AVATAR_PICK_BOX_HALF, PICK_BOX);
+            }
+            if dv.avatar_collision_volumes {
+                let Some(poses) = world.avatar_poses.get(&o.full_id) else {
+                    continue;
+                };
+                // a point of a joint, from its default-pose local space to
+                // the posed world: the skeletons' `joint` closure, given the
+                // point to place instead of only the joint's origin
+                let placed = |j: usize, local: Vec3| -> Option<Vec3> {
+                    let m = poses.get(j)?;
+                    let rest = rig.default_world_inv.get(j)?.inverse().transform_point3(local);
+                    Some(pp + pr * (m.transform_point3(rest) - pelvis))
+                };
+                for j in 0..rig.is_collision_volume.len().min(poses.len()) {
+                    if !rig.is_collision_volume[j] {
+                        continue;
+                    }
+                    let Some(m) = poses.get(j) else {
+                        continue;
+                    };
+                    // the volume keeps its own scale in the palette matrix:
+                    // that scale is the ellipsoid's radii
+                    let (radii, rot, _) = m.to_scale_rotation_translation();
+                    let Some(center) = placed(j, Vec3::ZERO) else {
+                        continue;
+                    };
+                    let Some(end) = placed(j, rig.end[j]) else {
+                        continue;
+                    };
+                    lines.ellipsoid(center, pr * rot, radii, VOLUME);
+                    lines.seg(center, end, VOLUME);
                 }
             }
         }

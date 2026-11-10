@@ -42,6 +42,13 @@ pub struct Rig {
     /// never inherited (LLXformMatrix).
     pub scale: Vec<Vec3>,
     pub default_world_inv: Vec<Mat4>,
+    /// The skeleton's collision volumes (avatar_skeleton.xml), the volumes
+    /// the Legacy Viewer's avatar picking tests; drawn posed by the Dev
+    /// Toolbox's O10 overlay.
+    pub is_collision_volume: Vec<bool>,
+    /// The joint's `end` attribute, local space (avatar_skeleton.xml); the
+    /// collision volumes draw it in the same overlay.
+    pub end: Vec<Vec3>,
     /// Depth-first order (parents before children).
     pub order: Vec<usize>,
     pub names: HashMap<String, usize>,
@@ -87,6 +94,8 @@ impl Rig {
         let mut local_rot = Vec::with_capacity(n);
         let mut parent_scale = Vec::with_capacity(n);
         let mut scale = Vec::with_capacity(n);
+        let mut is_collision_volume = Vec::with_capacity(n);
+        let mut end = Vec::with_capacity(n);
         for (i, j) in sk.joints.iter().take(n).enumerate() {
             names.insert(j.name.clone(), i);
             for a in &j.aliases {
@@ -97,6 +106,8 @@ impl Rig {
             local_rot.push(aurora_assets::skeleton::maya_q_xyz(j.rot_euler_deg));
             parent_scale.push(j.parent.and_then(|p| sk.joints.get(p)).map(|p| p.scale).unwrap_or(Vec3::ONE));
             scale.push(j.scale);
+            is_collision_volume.push(j.is_collision_volume);
+            end.push(j.end);
         }
         let order = depth_first(&parent);
         let pelvis = names.get("mPelvis").copied().unwrap_or(0);
@@ -114,6 +125,8 @@ impl Rig {
             local_rot,
             parent_scale,
             scale,
+            is_collision_volume,
+            end,
             default_world_inv: vec![Mat4::IDENTITY; n],
             order,
             names,
