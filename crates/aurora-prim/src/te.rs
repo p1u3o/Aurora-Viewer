@@ -14,7 +14,7 @@ pub const TRANSPARENT_TEXTURE: Uuid = Uuid::from_u128(0x8dcd4a48_2d37_4909_9f78_
 pub const WATER_EXCLUSION_TEXTURE: Uuid = Uuid::from_u128(0xe97cf410_8e61_7005_ec06_629eba4cd1fb);
 /// Still-water diffuse whose faces Build's "Render as water" shades with the
 /// region water shader instead of the flat texture.
-pub const RENDER_AS_WATER_TEXTURE: Uuid = Uuid::from_u128(0x0ad2cace_fd4f_7301_f453_1eb29800a729);
+pub const RENDER_AS_WATER_TEXTURE: Uuid = Uuid::from_u128(0x74ad7d74_d6db_8003_a369_2e1524005c19);
 /// Blank (white) texture.
 pub const BLANK_TEXTURE: Uuid = Uuid::from_u128(0x5748decc_f629_461c_9a36_a35a221fe21f);
 
