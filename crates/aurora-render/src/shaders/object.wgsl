@@ -684,6 +684,16 @@ fn fs_depth_portal(in: DepthOut) {
     portal_clip(records[in.record], in.world_pos);
 }
 
+// Depth prepass of terrain with a viewer-local hole (TERRAIN_HOLE_TEXTURE):
+// like fs_depth_portal, plus the exclusion mask the hole faces drew.
+// Only terrain draws use it; anything seen through the hole keeps its depth.
+@fragment
+fn fs_depth_hole(in: DepthOut) {
+    let rec = records[in.record];
+    portal_clip(rec, in.world_pos);
+    if (terrain_holed(in.world_pos)) { discard; }
+}
+
 // Depth prepass for alpha-masked faces: alpha test only.
 @fragment
 fn fs_depth_mask(in: VsOut) {
@@ -779,6 +789,16 @@ fn fs_depth_portal_normal(in: DepthMaskOut, @builtin(front_facing) front: bool) 
     let rec = records[in.record];
     portal_clip(rec, in.world_pos);
     return depth_normal(in.normal, front, in.motion_cur, in.motion_prev, normal_composition(rec));
+}
+
+// Terrain with a viewer-local hole, with the prepass mesh normals (GTAO):
+// DepthMaskOut already carries the world position fs_depth_normal lacks.
+@fragment
+fn fs_depth_hole_normal(in: DepthMaskOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let rec = records[in.record];
+    portal_clip(rec, in.world_pos);
+    if (terrain_holed(in.world_pos)) { discard; }
+    return depth_normal(in.normal, front, in.motion_cur, in.motion_prev, 0.0);
 }
 
 // fs_depth_mask with the normal.

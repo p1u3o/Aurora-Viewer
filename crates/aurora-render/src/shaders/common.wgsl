@@ -1134,6 +1134,17 @@ fn water_excluded(world_pos:vec3<f32>) -> bool {
     return textureLoad(water_exclusion_mask,pixel,0).r<0.5;
 }
 
+// Terrain hole (TERRAIN_HOLE_TEXTURE, Aurora-only): a face with the marker
+// texture shares the exclusion mask, and the terrain shaders discard where
+// the mask hides. Reflections keep their own view's terrain: the mask only
+// matches the main view that drew it. The depth prepass and the shadows run
+// before the mask pass and read its previous frame: static holes converge
+// after one frame, moving ones (or a moving camera) trail by one at most.
+fn terrain_holed(world_pos:vec3<f32>) -> bool {
+    if(in_reflection_pass()){return false;}
+    return water_excluded(world_pos);
+}
+
 fn water_scene_light(world_pos:vec3<f32>) -> vec3<f32> {
     if(!water_fx_on(256u)) { return vec3<f32>(1.0); }
     if(!camera_underwater() && water_excluded(world_pos)){return vec3<f32>(1.0);}

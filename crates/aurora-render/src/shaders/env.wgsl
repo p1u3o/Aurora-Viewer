@@ -829,6 +829,9 @@ fn terrain_pbr_shaded(in: TerrainPbrOut) -> Shaded {
 
 @fragment
 fn fs_terrain(in: TerrainOut) -> @location(0) vec4<f32> {
+    if (terrain_holed(in.world_pos)) {
+        discard;
+    }
     let col = terrain_color(in);
     if (reflection_clip(in.world_pos)) {
         discard;
@@ -838,6 +841,9 @@ fn fs_terrain(in: TerrainOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_terrain_g(in: TerrainOut) -> GOut {
+    if (terrain_holed(in.world_pos)) {
+        discard;
+    }
     var o: GOut;
     o.color = vec4<f32>(terrain_color(in), 1.0);
     o.gbuf = vec4<f32>(oct_encode(normalize(in.normal)), 1.0, 0.0);
@@ -846,6 +852,9 @@ fn fs_terrain_g(in: TerrainOut) -> GOut {
 
 @fragment
 fn fs_terrain_pbr(in: TerrainPbrOut) -> @location(0) vec4<f32> {
+    if (terrain_holed(in.world_pos)) {
+        discard;
+    }
     let shaded = terrain_pbr_shaded(in);
     if (reflection_clip(in.world_pos)) {
         discard;
@@ -855,6 +864,9 @@ fn fs_terrain_pbr(in: TerrainPbrOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_terrain_pbr_g(in: TerrainPbrOut) -> GOut {
+    if (terrain_holed(in.world_pos)) {
+        discard;
+    }
     var o: GOut;
     let shaded = terrain_pbr_shaded(in);
     o.color = shaded.color;
@@ -865,6 +877,9 @@ fn fs_terrain_pbr_g(in: TerrainPbrOut) -> GOut {
 // Match the main terrain mask before writing either single-sample depth or
 // MSAA depth. Alpha-only sampling skips ORM, normal and emissive maps.
 fn terrain_depth_mask(in: TerrainPbrOut) {
+    if (terrain_holed(in.world_pos)) {
+        discard;
+    }
     let dx = dpdx(in.region_pos);
     let dy = dpdy(in.region_pos);
     let blend_dx = dpdx(vec2<f32>(in.comp, in.blend_noise));
@@ -907,6 +922,9 @@ fn vs_shadow_terrain(in: VsIn) -> TerrainShadowOut {
 // composition and triplanar alpha as colour, depth and picking. Derivatives
 // precede the material branch so neighbouring fragments can use other modes.
 fn terrain_shadow_mask(in: TerrainShadowOut) {
+    if (terrain_holed(in.world_pos)) {
+        discard;
+    }
     let dx = dpdx(in.region_pos);
     let dy = dpdy(in.region_pos);
     let blend_dx = dpdx(vec2<f32>(in.comp, in.blend_noise));
@@ -947,6 +965,9 @@ fn fs_terrain_depth_normal(in: TerrainPbrOut, @builtin(front_facing) front: bool
 // vertex uv holds the composition): classic and opaque PBR terrain.
 @fragment
 fn fs_terrain_pick(in: TerrainOut) -> @location(0) vec4<u32> {
+    if (terrain_holed(in.world_pos)) {
+        discard;
+    }
     return vec4<u32>(in.record + 1u, bitcast<u32>(in.clip.z), bitcast<u32>(in.uv.x), bitcast<u32>(in.uv.y));
 }
 

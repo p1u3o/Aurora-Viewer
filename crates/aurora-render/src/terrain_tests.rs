@@ -492,12 +492,14 @@ fn wgsl_function<'a>(source: &'a str, name: &str) -> &'a str {
     panic!("unterminated WGSL function");
 }
 
-#[test]
-fn pbr_terrain_shadow_depth_and_paintmap_holes_agree_on_gpu() {
+/// Depth writes of the production terrain shadow/depth entry points with an
+/// exclusion mask holding `mask_value` (255: intact ground, 0: holed
+/// everywhere). One depth map per entry point, five viewport cases each.
+fn render_terrain_depth_masks(mask_value: u8) -> Option<Vec<Vec<f32>>> {
     let _guard = crate::test_gpu::lock();
     let instance = wgpu::Instance::default();
     let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
-        return;
+        return None;
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).expect("terrain masks GPU");
     let common = include_str!("shaders/common.wgsl");
@@ -516,6 +518,14 @@ fn pbr_terrain_shadow_depth_and_paintmap_holes_agree_on_gpu() {
 @group(0) @binding(3) var tex_sampler: sampler;
 @group(0) @binding(4) var lin_clamp: sampler;
 @group(0) @binding(6) var alpha_ramp: texture_2d_array<f32>;
+// Minimal frame for the hole discard under test: only what water_excluded
+// and in_reflection_pass read. Identity view-projection, main view.
+struct HoleFrame {
+    view_proj: mat4x4<f32>,
+    misc: vec4<f32>,
+};
+@group(0) @binding(7) var<uniform> frame: HoleFrame;
+@group(0) @binding(8) var water_exclusion_mask: texture_2d<f32>;
 @group(3) @binding(1) var shadow_clamp: sampler;
 fn shadow_surface(vi: u32, sample_index: u32) -> TerrainShadowOut {
     let uv = vec2<f32>(f32((vi << 1u) & 2u), f32(vi & 2u));
@@ -554,6 +564,9 @@ fn shadow_surface(vi: u32, sample_index: u32) -> TerrainShadowOut {
         wgsl_function(env, "terrain_transform_tangent").to_owned(),
         env[env.find("const TERRAIN_ALPHA_RAMP:").unwrap()..env.find("fn terrain_color(").unwrap()].to_owned(),
         wgsl_function(object, "portal_clip").to_owned(),
+        wgsl_function(common, "in_reflection_pass").to_owned(),
+        wgsl_function(common, "water_excluded").to_owned(),
+        wgsl_function(common, "terrain_holed").to_owned(),
         wgsl_function(env, "terrain_shadow_mask").to_owned(),
         wgsl_function(env, "terrain_depth_mask").to_owned(),
         format!("@fragment {}", wgsl_function(env, "fs_shadow_terrain")),
@@ -656,6 +669,50 @@ fn shadow_surface(vi: u32, sample_index: u32) -> TerrainShadowOut {
         ..Default::default()
     });
     let ramp_view = alpha_ramp_view(&device, &queue);
+    // Exclusion mask the hole discard reads: one texel row is enough, as the
+    // identity frame below projects every test position onto it.
+    let hole_mask = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("terrain hole test mask"),
+        size: wgpu::Extent3d {
+            width: 256,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        hole_mask.as_image_copy(),
+        &[mask_value; 256],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(256),
+            rows_per_image: Some(1),
+        },
+        wgpu::Extent3d {
+            width: 256,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
+    let hole_view = hole_mask.create_view(&Default::default());
+    let frame_words = [
+        1.0f32, 0.0, 0.0, 0.0, //
+        0.0, 1.0, 0.0, 0.0, //
+        0.0, 0.0, 1.0, 0.0, //
+        0.0, 0.0, 0.0, 1.0, //
+        0.0, 0.0, 0.0, 0.0, // misc: main view, not a reflection pass
+    ];
+    let frame_bytes: Vec<u8> = frame_words.into_iter().flat_map(f32::to_le_bytes).collect();
+    let frame_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: &frame_bytes,
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
     let layout_entries = [
         wgpu::BindGroupLayoutEntry {
             binding: 0,
@@ -709,6 +766,26 @@ fn shadow_surface(vi: u32, sample_index: u32) -> TerrainShadowOut {
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             count: None,
         },
+        wgpu::BindGroupLayoutEntry {
+            binding: 7,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 8,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        },
     ];
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: None,
@@ -739,7 +816,21 @@ fn shadow_surface(vi: u32, sample_index: u32) -> TerrainShadowOut {
             binding: 4,
             resource: wgpu::BindingResource::Sampler(&clamp_sampler),
         },
+        wgpu::BindGroupEntry {
+            binding: 7,
+            resource: frame_buffer.as_entire_binding(),
+        },
+        wgpu::BindGroupEntry {
+            binding: 8,
+            resource: wgpu::BindingResource::TextureView(&hole_view),
+        },
     ];
+    // The shadow pass skips the scene-only clamp sampler but needs the frame
+    // and the exclusion mask for the hole discard.
+    let mut shadow_layout_entries = layout_entries[..5].to_vec();
+    shadow_layout_entries.extend_from_slice(&layout_entries[6..]);
+    let mut shadow_group_entries = group_entries[..5].to_vec();
+    shadow_group_entries.extend_from_slice(&group_entries[6..]);
     let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
         layout: &layout,
@@ -749,12 +840,12 @@ fn shadow_surface(vi: u32, sample_index: u32) -> TerrainShadowOut {
     // does. A mistaken dependency on lin_clamp must fail pipeline creation.
     let shadow_resources_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: None,
-        entries: &layout_entries[..5],
+        entries: &shadow_layout_entries,
     });
     let shadow_resources = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
         layout: &shadow_resources_layout,
-        entries: &group_entries[..5],
+        entries: &shadow_group_entries,
     });
     // Exercise the actual shadow layout and bind-group constructor, too:
     // this pass deliberately has no scene frame group to supply samplers.
@@ -876,6 +967,14 @@ fn shadow_surface(vi: u32, sample_index: u32) -> TerrainShadowOut {
         let bytes = readback.get_mapped_range(..).expect("mask depth");
         depth_maps.push(crate::readback::f32s(&bytes));
     }
+    Some(depth_maps)
+}
+
+#[test]
+fn pbr_terrain_shadow_depth_and_paintmap_holes_agree_on_gpu() {
+    let Some(depth_maps) = render_terrain_depth_masks(255) else {
+        return;
+    };
     assert_eq!(
         &depth_maps[0][..64 * 40],
         &depth_maps[1][..64 * 40],
@@ -890,6 +989,21 @@ fn shadow_surface(vi: u32, sample_index: u32) -> TerrainShadowOut {
         &depth_maps[0][3 * 512..4 * 512],
         "paintmap selects the inverse alpha layer"
     );
+}
+
+#[test]
+fn terrain_hole_mask_discards_terrain_on_gpu() {
+    // A black exclusion mask holes the ground everywhere: neither entry
+    // point may write depth in any of the five mask cases.
+    let Some(depth_maps) = render_terrain_depth_masks(0) else {
+        return;
+    };
+    for (pass, maps) in depth_maps.iter().enumerate() {
+        for case in 0..5 {
+            let kept = maps[case * 512..(case + 1) * 512].iter().filter(|v| **v < 0.5).count();
+            assert_eq!(kept, 0, "holed terrain must write no depth (pass {pass}, case {case})");
+        }
+    }
 }
 
 /// Separate texture sizes model two production bindless pages, without

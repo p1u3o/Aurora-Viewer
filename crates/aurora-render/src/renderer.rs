@@ -893,6 +893,12 @@ struct Pipelines {
     pre_terrain: wgpu::RenderPipeline,
     pre_terrain_normal: wgpu::RenderPipeline,
     pre_terrain_msaa: Option<wgpu::RenderPipeline>,
+    /// Terrain with a viewer-local hole (TERRAIN_HOLE_TEXTURE): the shared
+    /// depth-only position plus portal clipping and the exclusion-mask
+    /// discard, so holed ground writes no depth for the scene to test.
+    pre_terrain_hole: wgpu::RenderPipeline,
+    pre_terrain_hole_normal: wgpu::RenderPipeline,
+    pre_terrain_hole_msaa: Option<wgpu::RenderPipeline>,
     opaque: wgpu::RenderPipeline,
     opaque_2s: wgpu::RenderPipeline,
     mask: wgpu::RenderPipeline,
@@ -1546,6 +1552,10 @@ struct FrameGroups {
     mask: wgpu::BindGroup,
     /// Prepass and scene pass A: no scene copy / depth reads.
     a: wgpu::BindGroup,
+    /// Sun, projector and probe shadows: like `a`, but a dummy depth map
+    /// where the atlas being written would be sampled (the terrain hole
+    /// discard needs the frame and the exclusion mask there).
+    shadow: wgpu::BindGroup,
     /// Scene pass B: everything.
     b: wgpu::BindGroup,
     /// Own uniforms: [0] water reflection, [1] mirror, [2] probe,
@@ -3656,9 +3666,11 @@ impl Backend {
             bind_group_layouts: &[Some(frame_layout), Some(records_layout), Some(tex_layout)],
             immediate_size: 0,
         });
+        // Group 0 for the terrain hole discard (frame, exclusion mask),
+        // like the scene layout: the other shadow shaders ignore it.
         let shadow_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("shadow"),
-            bind_group_layouts: &[None, Some(records_layout), Some(tex_layout), Some(shadow_layout)],
+            bind_group_layouts: &[Some(frame_layout), Some(records_layout), Some(tex_layout), Some(shadow_layout)],
             immediate_size: 0,
         });
         let a2c = [("ALPHA_TO_COVERAGE", if samples > 1 { 1.0 } else { 0.0 })];
@@ -4162,11 +4174,22 @@ impl Backend {
         let pre_mask = pre("prepass mask", "vs_main", Some("fs_depth_mask"), Some(wgpu::Face::Back));
         let pre_mask_2s = pre("prepass mask 2s", "vs_main", Some("fs_depth_mask"), None);
         let pre_terrain = pre("terrain depth", "vs_terrain_pbr", Some("fs_terrain_depth"), Some(wgpu::Face::Back));
+        // Same vertex position as the shared depth prepass (vs_depth), plus
+        // the exclusion-mask discard. Only the terrain lists draw with it;
+        // anything seen through the hole keeps its own depth.
+        let pre_terrain_hole = pre("terrain hole depth", "vs_depth", Some("fs_depth_hole"), Some(wgpu::Face::Back));
         let pre_terrain_msaa = (samples > 1).then(|| {
             pipe(PipeDesc {
                 format: None,
                 depth_compare: wgpu::CompareFunction::Greater,
                 ..base("terrain msaa depth", "vs_terrain_pbr", "fs_terrain_depth")
+            })
+        });
+        let pre_terrain_hole_msaa = (samples > 1).then(|| {
+            pipe(PipeDesc {
+                format: None,
+                depth_compare: wgpu::CompareFunction::Greater,
+                ..base("terrain hole msaa depth", "vs_depth", "fs_depth_hole")
             })
         });
         // both sides: a double-sided blended face casts either way, the
@@ -4211,6 +4234,14 @@ impl Backend {
             "terrain depth normals",
             "vs_terrain_pbr",
             "fs_terrain_depth_normal",
+            Some(wgpu::Face::Back),
+        );
+        // DepthMaskOut already carries the world position that DepthNormalOut
+        // lacks, for the same discard with mesh normals (GTAO/FSR).
+        let pre_terrain_hole_normal = pre_n(
+            "terrain hole depth normals",
+            "vs_depth_mask_normal",
+            "fs_depth_hole_normal",
             Some(wgpu::Face::Back),
         );
         let pre_normal_portal = [
@@ -4421,6 +4452,9 @@ impl Backend {
             pre_terrain,
             pre_terrain_normal,
             pre_terrain_msaa,
+            pre_terrain_hole,
+            pre_terrain_hole_normal,
+            pre_terrain_hole_msaa,
             opaque,
             opaque_2s,
             mask,
@@ -4744,7 +4778,8 @@ impl Backend {
                   contact: &wgpu::TextureView,
                   il: &wgpu::TextureView,
                   sample_water: bool,
-                  sample_mask: bool| {
+                  sample_mask: bool,
+                  sample_shadow: bool| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some(label),
                 layout,
@@ -4767,14 +4802,15 @@ impl Backend {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        // the captures of a probe read its own shadow map
-                        resource: wgpu::BindingResource::TextureView(
-                            if std::ptr::eq(buffer, &refl_buffers[2]) || std::ptr::eq(buffer, &refl_buffers[8]) {
-                                probe_shadow_view
-                            } else {
-                                shadow_view
-                            },
-                        ),
+                        // the captures of a probe read its own shadow map;
+                        // the shadow passes writing the atlas take a dummy
+                        resource: wgpu::BindingResource::TextureView(if !sample_shadow {
+                            &dummies.depth
+                        } else if std::ptr::eq(buffer, &refl_buffers[2]) || std::ptr::eq(buffer, &refl_buffers[8]) {
+                            probe_shadow_view
+                        } else {
+                            shadow_view
+                        }),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
@@ -4899,6 +4935,7 @@ impl Backend {
                 &dummies.black,
                 false,
                 false,
+                true,
             ),
             a: mk(
                 "frame a",
@@ -4912,6 +4949,21 @@ impl Backend {
                 il,
                 false,
                 true,
+                true,
+            ),
+            shadow: mk(
+                "frame shadow",
+                frame_buffer,
+                ao,
+                water,
+                mirror,
+                &dummies.black,
+                &dummies.depth,
+                contact,
+                il,
+                false,
+                true,
+                false,
             ),
             b: mk(
                 "frame b",
@@ -4923,6 +4975,7 @@ impl Backend {
                 &t.depth_ss,
                 contact,
                 il,
+                true,
                 true,
                 true,
             ),
@@ -4939,6 +4992,7 @@ impl Backend {
                     &dummies.black,
                     false,
                     false,
+                    true,
                 ),
                 mk(
                     "frame mirror",
@@ -4952,6 +5006,7 @@ impl Backend {
                     &dummies.black,
                     false,
                     false,
+                    true,
                 ),
                 mk(
                     "frame probe capture",
@@ -4965,6 +5020,7 @@ impl Backend {
                     &dummies.black,
                     false,
                     false,
+                    true,
                 ),
                 mk(
                     "frame impostor 0",
@@ -4978,6 +5034,7 @@ impl Backend {
                     &dummies.black,
                     false,
                     false,
+                    true,
                 ),
                 mk(
                     "frame impostor 1",
@@ -4991,6 +5048,7 @@ impl Backend {
                     &dummies.black,
                     false,
                     false,
+                    true,
                 ),
                 mk(
                     "frame HUD",
@@ -5004,6 +5062,7 @@ impl Backend {
                     &dummies.black,
                     false,
                     false,
+                    true,
                 ),
                 mk(
                     "frame drawn pick",
@@ -5017,6 +5076,7 @@ impl Backend {
                     &dummies.black,
                     false,
                     false,
+                    true,
                 ),
                 mk(
                     "frame water exterior",
@@ -5030,6 +5090,7 @@ impl Backend {
                     &dummies.black,
                     false,
                     false,
+                    true,
                 ),
                 mk(
                     "frame probe irradiance capture",
@@ -5043,6 +5104,7 @@ impl Backend {
                     &dummies.black,
                     false,
                     false,
+                    true,
                 ),
             ],
         }
@@ -7247,7 +7309,10 @@ impl Backend {
                     {
                         continue;
                     }
-                    if terrain && (c.alpha || !shadow_depth_only) {
+                    // Terrain always takes its own shadow pipeline: the hole
+                    // discard lives there, and opaque ground keeps the same
+                    // depth-only vertex position through it.
+                    if terrain {
                         shadow_terrain_lists[ci].push(c.cmd);
                     } else if c.alpha || !shadow_depth_only {
                         shadow_alpha_lists[ci].push(c.cmd);
@@ -7715,6 +7780,7 @@ impl Backend {
                 });
                 let cpu_ranges = rg.shadow.iter().chain(&rg.shadow_alpha).chain(&rg.shadow_terrain);
                 if gpu_on || cpu_ranges.chain(&rg.spot).chain(&rg.spot_terrain).any(|r| r.1 > 0) {
+                    pass.set_bind_group(0, &self.groups.shadow, &[]);
                     pass.set_bind_group(1, &self.records_bind_group, &[]);
                     pass.set_bind_group(2, &scene.textures, &[]);
                     pass.set_vertex_buffer(0, scene.vertices.slice(..));
@@ -7754,6 +7820,9 @@ impl Backend {
                         Merge(k) => {
                             if let Some(merges) = &merges {
                                 self.shadow_merge.merge(&mut pass, k, &merges[k], size);
+                                // merge() binds its own group 0: put the frame
+                                // back for the alpha-tested casters below
+                                pass.set_bind_group(0, &self.groups.shadow, &[]);
                             }
                         }
                         Spots => {
@@ -7853,8 +7922,13 @@ impl Backend {
             } else {
                 &self.pipelines.pre_terrain
             };
-            draw(&mut pass, pre_pipes[0], rg.terrain);
-            draw(&mut pass, pre_pipes[0], rg.terrain_pbr);
+            let terrain_hole_pipe = if normals.is_some() {
+                &self.pipelines.pre_terrain_hole_normal
+            } else {
+                &self.pipelines.pre_terrain_hole
+            };
+            draw(&mut pass, terrain_hole_pipe, rg.terrain);
+            draw(&mut pass, terrain_hole_pipe, rg.terrain_pbr);
             draw(&mut pass, terrain_pipe, rg.terrain_mask);
             let pre = if occl { &self.occlusion.pre1 } else { &self.indirect };
             draw_from(&mut pass, pre_pipes[0], pre, rg.opaque);
@@ -8181,6 +8255,7 @@ impl Backend {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
+                pass.set_bind_group(0, &self.groups.shadow, &[]);
                 pass.set_bind_group(1, &self.records_bind_group, &[]);
                 pass.set_bind_group(2, &scene.textures, &[]);
                 pass.set_vertex_buffer(0, scene.vertices.slice(..));
@@ -8398,8 +8473,13 @@ impl Backend {
                 if let Some(terrain) = &self.pipelines.pre_terrain_msaa {
                     draw(&mut pass, terrain, rg.terrain_mask);
                 }
-                draw(&mut pass, &pipes[0], rg.terrain);
-                draw(&mut pass, &pipes[0], rg.terrain_pbr);
+                if let Some(hole) = &self.pipelines.pre_terrain_hole_msaa {
+                    draw(&mut pass, hole, rg.terrain);
+                    draw(&mut pass, hole, rg.terrain_pbr);
+                } else {
+                    draw(&mut pass, &pipes[0], rg.terrain);
+                    draw(&mut pass, &pipes[0], rg.terrain_pbr);
+                }
                 for (b, (pipe, r)) in [(&pipes[0], rg.opaque), (&pipes[1], rg.opaque_2s)].into_iter().enumerate() {
                     draw(&mut pass, pipe, r);
                     draw_bin(&mut pass, Some(pipe), b, b);

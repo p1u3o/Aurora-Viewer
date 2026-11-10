@@ -1278,6 +1278,10 @@ black into an R8 mask with independent nearest-interface depth. This follows
 surface shading and above-water fog. Ordinary objects, shadows, reflection
 captures and underwater fog retain their own depth and visibility. Attachments
 and rigged meshes do not generate exclusions, as in the Legacy Viewer.
+A face with the Aurora-only `TERRAIN_HOLE_TEXTURE` marker shares the same mask
+and bin; every terrain entry point (colour, depth prepasses, shadows, picking)
+discards where the mask hides, so the ground behind it drops out of the main
+view, with no hole in reflections.
 
 `world/beacons.rs` keeps the saved source filters and property-lines switch,
 and the session's ownership and particle visibility switches.

@@ -72,7 +72,10 @@ const TYPICAL: J2kInfo = J2kInfo {
 /// viewer-local alpha ramp is invisible in colour; its geometry goes to
 /// the separate water exclusion pass (LLDrawPoolWaterExclusion::render).
 pub fn is_builtin_transparent(id: &Uuid) -> bool {
-    *id == aurora_prim::te::TRANSPARENT_TEXTURE || *id == super::avatar::IMG_INVISIBLE || *id == aurora_prim::te::WATER_EXCLUSION_TEXTURE
+    *id == aurora_prim::te::TRANSPARENT_TEXTURE
+        || *id == super::avatar::IMG_INVISIBLE
+        || *id == aurora_prim::te::WATER_EXCLUSION_TEXTURE
+        || *id == aurora_prim::te::TERRAIN_HOLE_TEXTURE
 }
 
 fn first_bytes(px: f32) -> usize {
@@ -1488,6 +1491,7 @@ impl TextureStreamer {
                 aurora_prim::te::TRANSPARENT_TEXTURE,
                 super::avatar::IMG_INVISIBLE,
                 aurora_prim::te::WATER_EXCLUSION_TEXTURE,
+                aurora_prim::te::TERRAIN_HOLE_TEXTURE,
             ]
             .into_iter()
             .map(|id| {

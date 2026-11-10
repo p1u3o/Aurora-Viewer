@@ -12,6 +12,13 @@ pub const DEFAULT_TEXTURE: Uuid = Uuid::from_u128(0x89556747_24cb_43ed_920b_47ca
 pub const TRANSPARENT_TEXTURE: Uuid = Uuid::from_u128(0x8dcd4a48_2d37_4909_9f78_f7a9eb4ef903);
 /// Viewer-local alpha ramp used by Legacy water exclusion surfaces (IMG_ALPHA_GRAD).
 pub const WATER_EXCLUSION_TEXTURE: Uuid = Uuid::from_u128(0xe97cf410_8e61_7005_ec06_629eba4cd1fb);
+/// Still-water diffuse whose faces Build's "Render as water" shades with the
+/// region water shader instead of the flat texture.
+pub const RENDER_AS_WATER_TEXTURE: Uuid = Uuid::from_u128(0x0ad2cace_fd4f_7301_f453_1eb29800a729);
+/// Marker texture that punches a viewer-local hole in the terrain behind
+/// the face carrying it (Aurora-only, like water exclusion): the face
+/// itself is never drawn, and terrain fragments behind it are discarded.
+pub const TERRAIN_HOLE_TEXTURE: Uuid = Uuid::from_u128(0xc253ce19_1fc3_69b5_6287_c720868bea23);
 /// Blank (white) texture.
 pub const BLANK_TEXTURE: Uuid = Uuid::from_u128(0x5748decc_f629_461c_9a36_a35a221fe21f);
 
