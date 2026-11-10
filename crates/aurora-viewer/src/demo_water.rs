@@ -71,7 +71,9 @@ pub fn update(
         }
     }
     if crate::ao::water_demo::mode().is_none() && camera.free().is_none() {
-        let (eye, target) = if mode.contains("exclusion") || mode.contains("render-as-water") {
+        let (eye, target) = if mode.contains("render-as-water") {
+            (Vec3::new(43.0, 118.0, 26.0), Vec3::new(48.0, 126.0, 21.3))
+        } else if mode.contains("exclusion") {
             (Vec3::new(48.0, 111.0, 28.0), Vec3::new(48.0, 127.0, 19.0))
         } else if mode.contains("parts-") {
             let x = if mode.contains("parts-feet") { 62.0 } else { 52.0 };
@@ -236,8 +238,29 @@ pub fn update(
             Default::default(),
             "",
         ));
+        // -wade puts an avatar in the pool, so its own ripples and footfall
+        // foam show without dragging anything into the slab by hand.
+        if mode.contains("wade") {
+            let mut avatar = super::action_avatar(false);
+            avatar.local_id = 99502;
+            avatar.full_id = Uuid::from_u128(99502);
+            avatar.position = Vec3::new(48.0 + 2.5 * (time * 0.5).sin(), 126.0, 21.4);
+            avatar.rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+            avatar.name_values = "FirstName STRING RW SV Pool\nLastName STRING RW SV Walker".into();
+            objects.push(avatar);
+        }
         if let Some(handle) = world.main_region {
             world.apply(NetEvent::ObjectUpdates { handle, objects });
+            if mode.contains("wade") {
+                static POOL_ANIMATED: AtomicBool = AtomicBool::new(false);
+                if !POOL_ANIMATED.swap(true, Ordering::Relaxed) {
+                    world.apply(NetEvent::AvatarAnimations {
+                        sources: Vec::new(),
+                        avatar: Uuid::from_u128(99502),
+                        anims: vec![(CONTACT_ANIM, 1)],
+                    });
+                }
+            }
         }
         return changed;
     }

@@ -95,6 +95,9 @@ struct Motion {
 pub(super) struct Sample {
     pub id: Uuid,
     pub part: usize,
+    /// A 'render as water' pool slab, not the region plane: the same joint
+    /// meets both surfaces, and each keeps its own motion history.
+    pub pool: bool,
     pub matrix: Mat4,
     pub level: f32,
     pub surface: f32,
@@ -116,6 +119,7 @@ impl Bodies {
         let Sample {
             id,
             part,
+            pool,
             matrix,
             level,
             surface,
@@ -131,7 +135,10 @@ impl Bodies {
         {
             return;
         }
-        let key = (id, part as u8);
+        // The pool bit keeps a joint's slab contacts apart from its region
+        // ones: sharing a key made each pair of samples cancel (dt of about
+        // zero) and no pool wake was ever emitted.
+        let key = (id, part as u8 | u8::from(pool) << 7);
         let contact = section(matrix, surface);
         let foot = part < 2;
         let bottom = matrix.w_axis.z - (Mat3::from_mat4(matrix).transpose() * Vec3::Z).length();
@@ -417,6 +424,7 @@ mod tests {
             Sample {
                 id: Uuid::nil(),
                 part,
+                pool: false,
                 matrix,
                 level: 0.0,
                 surface: 0.0,
@@ -440,6 +448,7 @@ mod tests {
                     Sample {
                         id: Uuid::nil(),
                         part,
+                        pool: false,
                         matrix: volume(Vec3::new(0.0, part as f32, z - 0.1), Vec3::splat(0.12)),
                         level: 0.0,
                         surface: z,
@@ -497,6 +506,7 @@ mod tests {
                     Sample {
                         id: Uuid::nil(),
                         part,
+                        pool: false,
                         matrix: volume(
                             Vec3::new(time, part as f32 * 0.4 - 0.2, height + lift * phase.cos()),
                             Vec3::new(0.14, 0.065, 0.06),
@@ -584,6 +594,7 @@ mod tests {
                     Sample {
                         id: Uuid::nil(),
                         part: 0,
+                        pool: false,
                         matrix: volume(
                             Vec3::new(if moving { time } else { 0.0 }, 0.0, if moving { -0.1 } else { 0.04 }),
                             Vec3::splat(0.06),
@@ -618,6 +629,7 @@ mod tests {
                 Sample {
                     id: Uuid::nil(),
                     part: 2,
+                    pool: false,
                     matrix,
                     level: 0.0,
                     surface: (t * 3.0).sin() * 0.1,
@@ -897,5 +909,44 @@ mod tests {
         assert!(PARTS.iter().all(|name| lib.rig.names.contains_key(*name)));
         assert_eq!(system_mask("hair"), 0);
         assert_eq!(system_mask("skirt"), 0);
+    }
+
+    /// A wading avatar meets the region water and a 'render as water' pool
+    /// slab in the same frame. Each surface must keep its own motion history:
+    /// one shared key made every pool sample cancel on a zero frame delta and
+    /// the pool never rippled.
+    #[test]
+    fn a_joint_in_a_pool_and_in_the_region_water_keeps_both_histories() {
+        let (mut bodies, mut events) = (Bodies::default(), Vec::new());
+        for frame in 0..=180 {
+            let time = frame as f32 / 60.0;
+            for pool in [false, true] {
+                let level = if pool { 21.35 } else { 20.0 };
+                let matrix = volume(Vec3::new(time, 0.0, level), Vec3::splat(0.1));
+                bodies.sample(
+                    Sample {
+                        id: Uuid::nil(),
+                        part: 0,
+                        pool,
+                        matrix,
+                        level,
+                        surface: level,
+                        ground: level - 2.0,
+                        carrier_z: 0.0,
+                    },
+                    time,
+                    WaterEffects::default(),
+                    &mut events,
+                );
+            }
+        }
+        let wakes = |level: f32| {
+            events
+                .iter()
+                .filter(|e| e.params[1] == 4.0 && (e.params[2] - level).abs() < 1e-3)
+                .count()
+        };
+        assert!(wakes(20.0) > 0, "the region water keeps its own wake");
+        assert!(wakes(21.35) > 0, "the pool slab wakes at its own level");
     }
 }

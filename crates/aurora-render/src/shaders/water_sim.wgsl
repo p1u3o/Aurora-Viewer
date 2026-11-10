@@ -106,7 +106,11 @@ fn simulate(@builtin(global_invocation_id) id: vec3<u32>) {
             let edge = length(max(q,vec2<f32>(0.0))) + min(max(q.x,q.y),0.0);
             let near_edge = exp(-edge * edge * 5.0);
             contact_mask=max(contact_mask,exp(-edge*edge*2.0));
-            foam += near_edge * (0.16 + 0.08 * sin(fx.clock.x * 1.6 + dot(world,vec2<f32>(1.4,1.7)))) * dt;
+            // A hollow pool rim (motion.w == 1.0) stands where a shore would,
+            // so it foams as strongly as one; solid obstacles keep the faint
+            // contact trace that only marks what was disturbed.
+            let trace = 0.16 + 0.08 * sin(fx.clock.x * 1.6 + dot(world,vec2<f32>(1.4,1.7)));
+            foam += near_edge * select(trace, 0.62 + 0.26 * sin(fx.clock.x * 1.6 + dot(world,vec2<f32>(1.4,1.7))), e.motion.w == 1.0) * dt;
             // Hollow pool rims (motion.w == 1.0) foam at their edge
             // without damping the open water inside; solid obstacles
             // (motion.w == 0.0) still calm their interior.

@@ -968,8 +968,12 @@ struct WaterOut {
 fn water_vertex(in: VsIn) -> WaterOut {
     let rec = records[in.instance];
     var wp = rec.model * vec4<f32>(in.pos, 1.0);
+    let level = wp.z;
     var wave = vec3<f32>(0.0);
-    if(water_fx_on(1u) || water_fx_on(16u)){wave=water_fx_wave(wp.xy,wp.z);}
+    // A surface off the region's water height is a "render as water" slab:
+    // its own face has too few vertices to resolve a swell, and moving them
+    // would tilt the whole slab. Its waves stay in the fragment normals.
+    if(abs(level - frame.params.y) <= 0.2 && (water_fx_on(1u) || water_fx_on(16u))){wave=water_fx_wave(wp.xy,level);}
     // Huge void tiles cannot resolve waves. Fade their geometry to avoid aliasing.
     let tile = max(length(rec.model[0].xyz),length(rec.model[1].xyz));
     let geometry = 1.0-smoothstep(70.0,140.0,tile);
@@ -978,7 +982,7 @@ fn water_vertex(in: VsIn) -> WaterOut {
     var out: WaterOut;
     out.clip = frame.view_proj * wp;
     out.world_pos = wp.xyz;
-    out.level = (rec.model * vec4<f32>(in.pos,1.0)).z;
+    out.level = level;
     return out;
 }
 
@@ -1342,7 +1346,8 @@ fn water_pixel(in: WaterOut) -> vec4<f32> {
             radiance = s.rgb;
         }
     }
-    if (frame.misc.z > 0.5) {
+    let pool_surface = abs(in.level - frame.params.y) > 0.2;
+    if (frame.misc.z > 0.5 && !pool_surface) {
         let ruv = clamp(uv + n.xy * 0.035 / max(dmod * 0.25, 1.0), vec2<f32>(0.001), vec2<f32>(0.999));
         radiance = textureSampleLevel(water_refl_tex, lin_clamp, ruv, 0.0).rgb;
     } else if (frame.misc.y > 0.5) {
@@ -1395,7 +1400,9 @@ fn water_pixel(in: WaterOut) -> vec4<f32> {
         let field=water_fx_sample(p);
         // Shore depth always comes from terrain, never an avatar or submerged
         // mesh in the opaque depth. Contact refinement is masked below.
-        var foam=smoothstep(0.3,0.95,water_fx_foam(p))*0.55;
+        // A pool has no shoreline of its own: what the field keeps at its rim
+        // is all the foam it gets, so it is drawn at the shore's strength.
+        var foam=smoothstep(0.3,0.95,water_fx_foam(p))*select(0.55,0.85,pool);
         if(water_fx_on(2u) && !pool && depth<2.0) {
             // Travel along the depth gradient: the front approaches every coast orientation.
             let phase=depth*3.4+frame.camera_pos.w*1.25+water_fx_noise(p*0.32)*1.1;

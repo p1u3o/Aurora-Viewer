@@ -104,8 +104,10 @@ fn prim_surface(p: Vec3, r: Quat, half: Vec3) -> Option<PrimWater> {
 }
 
 /// Pool slabs stamped into the ground field so the GPU sim admits their
-/// events: a bed just under the slab keeps the cell alive without reading
-/// as terrain shore (see the pool path in 'water_pixel').
+/// events and shades them as open water: a deep bed under the slab keeps
+/// the cell alive, the swell at full strength and the rim foam at the
+/// shore's coverage, instead of reading as a two-centimetre shore that
+/// damps the first two and fades the foam out (see 'water_pixel').
 fn stamp_prim_ground(heights: &mut [[f32; 2]], origin: Vec2, extent: f32, prim: &[PrimWater]) {
     if heights.len() != 4096 || !extent.is_finite() || extent <= 0.0 {
         return;
@@ -119,7 +121,7 @@ fn stamp_prim_ground(heights: &mut [[f32; 2]], origin: Vec2, extent: f32, prim: 
         let hi = ((s.max - origin) / cell).ceil().clamp(Vec2::ZERO, Vec2::splat(63.0));
         for y in lo.y as usize..=hi.y as usize {
             for x in lo.x as usize..=hi.x as usize {
-                heights[y * 64 + x] = [s.level - 0.02, s.level];
+                heights[y * 64 + x] = [s.level - 20.0, s.level];
             }
         }
     }
@@ -457,6 +459,7 @@ impl Effects {
                         samples.push(water_contacts::Sample {
                             id: o.full_id,
                             part,
+                            pool: false,
                             matrix,
                             level: water,
                             surface,
@@ -477,6 +480,7 @@ impl Effects {
                             samples.push(water_contacts::Sample {
                                 id: o.full_id,
                                 part,
+                                pool: true,
                                 matrix,
                                 level: s.level,
                                 surface: s.level,
