@@ -36,6 +36,7 @@ mod dev_toolbox;
 mod disk_io;
 mod dof;
 mod export_collada;
+mod export_gltf;
 mod external_url;
 mod fast_hash;
 mod frame_par;
