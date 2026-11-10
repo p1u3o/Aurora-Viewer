@@ -3,7 +3,7 @@
 
 use super::{Scene, anchors, anim, water_contacts};
 use crate::world::World;
-use aurora_render::{WaterEffects, WaterEvent, WaterGround};
+use aurora_render::{PoolSlab, WaterEffects, WaterEvent, WaterGround};
 use glam::{Mat4, Quat, Vec2, Vec3};
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -112,16 +112,20 @@ fn stamp_prim_ground(heights: &mut [[f32; 2]], origin: Vec2, extent: f32, prim: 
     if heights.len() != 4096 || !extent.is_finite() || extent <= 0.0 {
         return;
     }
-    let cell = extent / 64.0;
     for s in prim {
-        if s.max.x < origin.x || s.min.x > origin.x + extent || s.max.y < origin.y || s.min.y > origin.y + extent {
+        // The camera query tests the same rects through
+        // `PoolSlab::covered_cells`: stamp and query cannot disagree.
+        let slab = PoolSlab {
+            min: s.min.to_array(),
+            max: s.max.to_array(),
+            level: s.level,
+        };
+        let Some((lo, hi)) = slab.covered_cells(origin.to_array(), extent) else {
             continue;
-        }
-        let lo = ((s.min - origin) / cell).floor().clamp(Vec2::ZERO, Vec2::splat(63.0));
-        let hi = ((s.max - origin) / cell).ceil().clamp(Vec2::ZERO, Vec2::splat(63.0));
-        for y in lo.y as usize..=hi.y as usize {
-            for x in lo.x as usize..=hi.x as usize {
-                heights[y * 64 + x] = [s.level - 20.0, s.level];
+        };
+        for y in lo.y..=hi.y {
+            for x in lo.x..=hi.x {
+                heights[(y * 64 + x) as usize] = [s.level - 20.0, s.level];
             }
         }
     }
@@ -324,11 +328,23 @@ impl Effects {
                 })
                 .collect();
             stamp_prim_ground(&mut heights, origin, extent, &self.prim);
+            // The camera query tests these rects exactly: inside a slab the
+            // camera takes the slab's level, outside the stamp is ignored.
+            let pools: std::sync::Arc<[PoolSlab]> = self
+                .prim
+                .iter()
+                .map(|s| PoolSlab {
+                    min: s.min.to_array(),
+                    max: s.max.to_array(),
+                    level: s.level,
+                })
+                .collect();
             self.ground = WaterGround {
                 region: world.main_region.unwrap_or(0),
                 origin: origin.to_array(),
                 extent,
                 heights: heights.into(),
+                pools,
             };
         }
         if settings.flags() & (4 | 16 | 64 | 128) == 0 {

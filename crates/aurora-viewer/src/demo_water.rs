@@ -71,7 +71,11 @@ pub fn update(
         }
     }
     if crate::ao::water_demo::mode().is_none() && camera.free().is_none() {
-        let (eye, target) = if mode.contains("render-as-water") {
+        let (eye, target) = if mode.contains("pool-haze") {
+            // Outside the raised pool but below its surface: the surroundings
+            // at pool height must stay clear, the pool alone keeps its haze.
+            (Vec3::new(42.5, 127.0, 20.8), Vec3::new(52.0, 127.0, 21.2))
+        } else if mode.contains("render-as-water") {
             (Vec3::new(43.0, 118.0, 26.0), Vec3::new(48.0, 126.0, 21.3))
         } else if mode.contains("exclusion") {
             (Vec3::new(48.0, 111.0, 28.0), Vec3::new(48.0, 127.0, 19.0))

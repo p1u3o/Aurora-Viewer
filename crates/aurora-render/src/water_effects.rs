@@ -138,6 +138,45 @@ pub struct WaterEvent {
     pub params: [f32; 4],
 }
 
+/// A 'render as water' pool slab (world rect + level): a local water
+/// volume, not a region plane. Kept alongside the stamped grid so the
+/// camera query can test the rect exactly; the GPU sim keeps reading the
+/// stamped cells.
+#[derive(Debug, Clone, Copy)]
+pub struct PoolSlab {
+    pub min: [f32; 2],
+    pub max: [f32; 2],
+    pub level: f32,
+}
+
+impl PoolSlab {
+    /// World XY strictly inside the slab's rect.
+    fn contains(&self, xy: Vec2) -> bool {
+        let min = Vec2::from_array(self.min);
+        let max = Vec2::from_array(self.max);
+        xy.cmpge(min).all() && xy.cmple(max).all()
+    }
+
+    /// Grid cells the slab's stamp covers, mirroring the overlap rule the
+    /// scene's stamp uses: whole overlapped cells, so the camera query and
+    /// the stamp can never disagree about which cells a slab owns.
+    pub fn covered_cells(&self, origin: [f32; 2], extent: f32) -> Option<(glam::UVec2, glam::UVec2)> {
+        if !extent.is_finite() || extent <= 0.0 {
+            return None;
+        }
+        let origin = Vec2::from_array(origin);
+        let cell = extent / 64.0;
+        let min = Vec2::from_array(self.min);
+        let max = Vec2::from_array(self.max);
+        if max.x < origin.x || min.x > origin.x + extent || max.y < origin.y || min.y > origin.y + extent {
+            return None;
+        }
+        let lo = ((min - origin) / cell).floor().clamp(Vec2::ZERO, Vec2::splat(63.0));
+        let hi = ((max - origin) / cell).ceil().clamp(Vec2::ZERO, Vec2::splat(63.0));
+        Some((lo.as_uvec2(), hi.as_uvec2()))
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct WaterGround {
     pub region: u64,
@@ -145,17 +184,77 @@ pub struct WaterGround {
     pub extent: f32,
     /// ground height, water height; unknown cells are deep void water.
     pub heights: std::sync::Arc<[[f32; 2]]>,
+    /// Pool slabs stamped into `heights` above, for the exact rect test.
+    pub pools: std::sync::Arc<[PoolSlab]>,
 }
 
 impl WaterGround {
     /// Camera-local macro waterline, sharing the displayed swell and shore
     /// damping with visual contacts. Never replace the region's physical plane.
+    /// Pool slabs are local volumes: their level applies only to a camera
+    /// inside the slab's rect. Outside every slab, stamped neighbours are
+    /// excluded, so a camera just outside a raised pool reads the region
+    /// water instead of the slab's level (else it would count as underwater
+    /// and haze everything below the slab plane, including dry surroundings).
     pub(crate) fn camera_level(&self, xy: Vec2, time: f32, settings: WaterEffects, fallback: f32) -> f32 {
         if self.heights.len() != 4096 || !self.extent.is_finite() || self.extent <= 0.0 {
             return fallback;
         }
-        let [ground, level] = self.sample(xy).unwrap_or([fallback - 20.0, fallback]);
+        if let Some(slab) = self.pools.iter().find(|s| s.contains(xy)) {
+            return surface_level(xy, time, settings, slab.level, slab.level - 0.02);
+        }
+        let [ground, level] = self.sample_unstamped(xy).unwrap_or([fallback - 20.0, fallback]);
         surface_level(xy, time, settings, level, ground)
+    }
+
+    /// Bilinear sample ignoring pool-stamped cells. With no pools this is
+    /// exactly `sample`; near a pool the dry side keeps the region water.
+    /// `None` only when every contributing cell is stamped (a sub-cell
+    /// fringe around a slab), where the caller falls back to the region plane.
+    fn sample_unstamped(&self, xy: Vec2) -> Option<[f32; 2]> {
+        if self.pools.is_empty() {
+            return self.sample(xy);
+        }
+        if !xy.is_finite() {
+            return None;
+        }
+        let origin = Vec2::from_array(self.origin);
+        let uv = (xy - origin) / self.extent;
+        if uv.cmplt(Vec2::ZERO).any() || uv.cmpgt(Vec2::ONE).any() {
+            return None;
+        }
+        let cell = (uv * 64.0 - Vec2::splat(0.5)).clamp(Vec2::ZERO, Vec2::splat(63.0));
+        let i = cell.floor().as_uvec2();
+        let j = (i + glam::UVec2::ONE).min(glam::UVec2::splat(63));
+        let f = cell.fract();
+        let nodes = [
+            (i.x, i.y, (1.0 - f.x) * (1.0 - f.y)),
+            (j.x, i.y, f.x * (1.0 - f.y)),
+            (i.x, j.y, (1.0 - f.x) * f.y),
+            (j.x, j.y, f.x * f.y),
+        ];
+        let mut acc = Vec2::ZERO;
+        let mut weight = 0.0f32;
+        for (x, y, w) in nodes {
+            if self.cell_stamped(x, y) {
+                continue;
+            }
+            acc += Vec2::from_array(self.heights[(y * 64 + x) as usize]) * w;
+            weight += w;
+        }
+        if weight <= 0.0 {
+            return None;
+        }
+        Some((acc / weight).to_array())
+    }
+
+    /// Whether the stamp covers this cell: the same whole-overlapped-cell
+    /// rule `PoolSlab::covered_cells` gives the scene's stamp.
+    fn cell_stamped(&self, x: u32, y: u32) -> bool {
+        self.pools.iter().any(|s| {
+            s.covered_cells(self.origin, self.extent)
+                .is_some_and(|(lo, hi)| x >= lo.x && x <= hi.x && y >= lo.y && y <= hi.y)
+        })
     }
 
     /// Same bilinear bathymetry reconstruction as water_fx_bed. Contacts must
@@ -644,6 +743,65 @@ mod tests {
         assert_eq!(shallow.camera_level(xy, 7.3, WaterEffects::default(), 20.0), 20.0);
     }
 
+    /// A raised pool stamped into the grid must not raise the camera
+    /// waterline outside its rect: the blue underwater haze belongs to the
+    /// pool alone, not to the dry surroundings at the same height.
+    #[test]
+    fn pool_slab_level_applies_only_inside_its_rect() {
+        let flat = WaterEffects {
+            waves: false,
+            ..Default::default()
+        };
+        let slab = PoolSlab {
+            min: [100.0, 100.0],
+            max: [108.0, 108.0],
+            level: 22.0,
+        };
+        assert_eq!(
+            slab.covered_cells([0.0, 0.0], 256.0),
+            Some((glam::UVec2::new(25, 25), glam::UVec2::new(27, 27)))
+        );
+        assert_eq!(slab.covered_cells([1000.0, 1000.0], 256.0), None);
+        assert_eq!(slab.covered_cells([0.0, 0.0], 0.0), None);
+        // Stamp exactly like the scene: whole overlapped cells read the slab.
+        let mut heights = vec![[0.0, 20.0]; 4096];
+        let (lo, hi) = slab.covered_cells([0.0, 0.0], 256.0).expect("pool cells");
+        for y in lo.y..=hi.y {
+            for x in lo.x..=hi.x {
+                heights[(y * 64 + x) as usize] = [slab.level - 0.02, slab.level];
+            }
+        }
+        let ground = WaterGround {
+            region: 1,
+            origin: [0.0; 2],
+            extent: 256.0,
+            heights: heights.into(),
+            pools: std::sync::Arc::from([slab]),
+        };
+        // Inside the pool the camera takes the slab's flat level.
+        assert_eq!(ground.camera_level(Vec2::new(104.0, 104.0), 7.3, flat, 20.0), 22.0);
+        assert_eq!(
+            ground.camera_level(Vec2::new(104.0, 104.0), 7.3, WaterEffects::default(), 20.0),
+            22.0
+        );
+        // A camera outside the rect but inside a stamped cell (4 m cells:
+        // the stamp bleeds a whole cell past the edge) reads region water.
+        assert_eq!(ground.camera_level(Vec2::new(99.0, 104.0), 7.3, flat, 20.0), 20.0);
+        // The ceil fringe past the far edge is region water too, never slab.
+        assert_eq!(ground.camera_level(Vec2::new(110.0, 104.0), 7.3, flat, 20.0), 20.0);
+        // Far from any pool nothing changes.
+        assert_eq!(ground.camera_level(Vec2::new(50.0, 50.0), 7.3, flat, 20.0), 20.0);
+        // Without pools the query is the plain bilinear sample.
+        let unpooled = WaterGround {
+            pools: std::sync::Arc::from([]),
+            ..ground
+        };
+        assert_eq!(
+            unpooled.camera_level(Vec2::new(99.0, 104.0), 7.3, flat, 20.0),
+            0.75 * 20.0 + 0.25 * 22.0
+        );
+    }
+
     #[test]
     fn furrow_atlas_has_a_trough_and_outgoing_shoulders_without_particles_or_foam() {
         let _gpu = crate::test_gpu::lock();
@@ -668,6 +826,7 @@ mod tests {
             origin: [-80.0; 2],
             extent: 160.0,
             heights: vec![[0.0, 20.0]; 4096].into(),
+            ..Default::default()
         };
         let mut events: Vec<_> = (0..25)
             .map(|i| {
