@@ -156,6 +156,10 @@ pub enum Confirm {
     DeleteMedia,
     /// WaterExclusionSurfacesWarning.
     HideWater,
+    /// Aurora addition: still-water faces join the water pass.
+    RenderAsWater,
+    /// Aurora-only terrain hole confirmation.
+    HideTerrain,
     /// ReflectionProbeApplied.
     Probe,
 }
