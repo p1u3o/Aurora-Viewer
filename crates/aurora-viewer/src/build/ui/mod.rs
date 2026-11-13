@@ -77,6 +77,9 @@ pub enum Request {
     },
     /// Focus slider moved (LLAgentCamera::setCameraZoomFraction).
     ZoomFraction(f32),
+    /// The Focus tool's builder-camera switch (`BuildSettings::build_view`):
+    /// the app owns the camera, so it enters or leaves the view.
+    BuildView(bool),
     AboutLand,
     BuyLand,
     Profile(Uuid),

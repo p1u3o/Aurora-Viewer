@@ -410,6 +410,9 @@ pub enum Action {
     /// The Controls window, on its Camera tab (Firestorm's View › Camera
     /// Controls).
     CameraControls,
+    /// Aurora's builder camera over the work, while the build tools are open
+    /// (`build/view.rs`). No Legacy Viewer equivalent.
+    BuildView,
     /// Change the viewing angle (Legacy Viewer View.ZoomIn / Out / Default).
     LensZoomIn,
     LensZoomOut,
@@ -673,6 +676,7 @@ pub fn sections() -> &'static Vec<(&'static str, Vec<(Action, &'static str)>)> {
                     (Action::LookAtLastChatter, aurora_i18n::tr!("keybinds-look-at-last-chatter")),
                     (Action::Flycam, aurora_i18n::tr!("joystick-flycam")),
                     (Action::CameraControls, aurora_i18n::tr!("controls-camera-title")),
+                    (Action::BuildView, aurora_i18n::tr!("keybinds-build-camera")),
                     (Action::LensZoomIn, aurora_i18n::tr!("keybinds-lens-zoom-in")),
                     (Action::LensZoomOut, aurora_i18n::tr!("keybinds-lens-zoom-out")),
                     (Action::LensZoomDefault, aurora_i18n::tr!("keybinds-lens-zoom-default")),
@@ -930,6 +934,8 @@ impl KeyBindings {
             (Action::LookAtLastChatter, [kmod(K::Backslash, true, false), None]),
             (Action::Flycam, [kalt(K::KeyF, false, true), None]),
             (Action::CameraControls, [kmod(K::KeyC, true, true), None]),
+            // Aurora's builder camera: no Legacy Viewer equivalent to copy.
+            (Action::BuildView, [kalt(K::KeyB, true, false), None]),
             (Action::LensZoomIn, [kmod(K::Digit0, true, false), kmod(K::Numpad0, true, false)]),
             (Action::LensZoomOut, [kmod(K::Digit8, true, false), kmod(K::Numpad8, true, false)]),
             (

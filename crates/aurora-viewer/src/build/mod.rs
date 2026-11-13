@@ -52,6 +52,7 @@ mod take_tests;
 pub mod task_inventory;
 pub mod texture_copy;
 pub mod ui;
+pub mod view;
 
 use crate::scene::Scene;
 use crate::world::World;
@@ -178,6 +179,17 @@ pub struct BuildSettings {
     /// steps only the field being typed in, and scrolls the panel over the
     /// others, so scrolling down the window edits nothing by accident.
     pub wheel_on_hover: bool,
+    /// Aurora: a builder's camera over the work while the tools are open
+    /// (`view.rs`): tilted down, panned with the movement keys, the avatar
+    /// staying where it is. Off by default, so building looks as the Legacy
+    /// Viewer's until it is chosen.
+    pub build_view: bool,
+    /// Its tilt below the horizon, in degrees (`view::TILT_RANGE`).
+    pub build_view_tilt: f32,
+    /// Metres between the work and its eye (`view::DISTANCE_RANGE`).
+    pub build_view_distance: f32,
+    /// Metres a second its pan moves (`view::SPEED_RANGE`).
+    pub build_view_speed: f32,
     /// RenderHighlightSelections.
     pub show_highlight: bool,
     /// RenderHiddenSelections (off): the outline edges on the far side of
@@ -749,6 +761,10 @@ impl Default for BuildSettings {
             scale_stretch_textures: true,
             follow_edit_object: false,
             wheel_on_hover: false,
+            build_view: false,
+            build_view_tilt: 40.0,
+            build_view_distance: 14.0,
+            build_view_speed: 12.0,
             show_highlight: true,
             show_hidden_selection: false,
             show_light_radius: false,
@@ -2388,6 +2404,15 @@ impl BuildTool {
                 .is_some_and(|idx| select_type(world, idx) != self.select_type(world));
             if !extend || other_space {
                 self.deselect_all(world);
+            Tool::Create | Tool::Focus => {
+                // Build view: the Focus tool's press took a prim (app.rs), so
+                // the cursor keeps moving it until the button comes up.
+                if self.grab.state.is_some() {
+                    self.grab_hover(world, cursor, mods);
+                }
+                if let Some(r) = self.rect.as_mut() {
+                    r.1 = cursor;
+                }
             }
         }
     }

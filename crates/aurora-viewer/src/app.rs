@@ -5493,6 +5493,7 @@ impl App {
             Action::SitGround => self.sit_stand_shortcut(),
             Action::Mouselook => self.toggle_mouselook(),
             Action::CameraControls => self.request_controls(false, true),
+            Action::BuildView => self.build_view_toggle(),
             Action::LensZoomIn | Action::LensZoomOut | Action::LensZoomDefault => {
                 // LLZoomer (indra/newview/llviewermenu.cpp): no RLVa check,
                 // the lens bounded by the fov limits only; it zooms from the
@@ -5515,7 +5516,10 @@ impl App {
                 }
             }
             Action::ResetCamera => {
-                if !self.photo_escape() {
+                if self.build_view_holds() {
+                    // the builder's camera gives the view back first
+                    self.build_view_set(false);
+                } else if !self.photo_escape() {
                     self.reset_camera_view();
                 }
             }
@@ -8033,6 +8037,7 @@ impl App {
             }
             Request::CopyContents { object, items } => self.copy_selected_contents(object, items),
             Request::ZoomFraction(f) => self.camera.set_zoom_fraction(f),
+            Request::BuildView(on) => self.build_view_set(on),
             Request::AboutLand => self.panels.about_land = true,
             // LLPanelLandInfo::onClickBuy: the land tool's selection
             Request::BuyLand => self.open_buy_land(buy_land::BuyLandSource::LandTool, false),
@@ -8463,6 +8468,35 @@ impl App {
         let hit = picked.visible_point();
         let ray = picked.ray.unwrap_or_else(|| self.build.cam.ray(x, y));
         let now = Instant::now();
+        // Build view: a press on a prim takes it, and the drag moves the work
+        // the way a modeller's would. The ground and the sky still orbit the
+        // eye. Aurora's builder camera has no Legacy Viewer counterpart, so
+        // this gesture only exists while `build_view` is on.
+        if self.build_view_holds()
+            && let Some(p) = hit
+        {
+            let idx = match picked.drawn.blend.or(picked.drawn.opaque) {
+                Some(d) => self.scene.record_object(d.record).map(|(idx, _)| idx),
+                None => self.scene.pick_at(&self.world, p, now),
+            };
+            if let Some(idx) = idx {
+                let surface = self.scene.left_touch_surface(&self.world, idx, ray);
+                let mods = crate::build::Mods {
+                    shift: self.shift,
+                    ctrl: self.ctrl,
+                    alt: self.alt,
+                };
+                self.build
+                    .grab_down(&mut self.world, idx, p, surface.unwrap_or_default(), self.cursor_pos, mods);
+                self.flush_build();
+                // an avatar or a worn prim refuses the grab: the click focuses
+                // it as it always did
+                if self.build.grab.state.is_some() {
+                    self.left_down = true;
+                    return true;
+                }
+            }
+        }
         if let Some(p) = hit {
             let idx = match picked.drawn.blend.or(picked.drawn.opaque) {
                 Some(d) => self.scene.record_object(d.record).map(|(idx, _)| idx),
@@ -9365,6 +9399,23 @@ impl App {
             // Route the first walking frame through steering as well.
             self.camera.fold_orbit(&mut self.world.agent);
             self.begin_mouse_steer();
+        if self.build_view_holds() {
+            // Aurora's builder camera takes the movement keys the same way:
+            // the avatar stays where it is, and the view pans over the work.
+            self.build_view_step(&i, dt);
+            if !self.build_view_holds() {
+                // closing the tools gave the view back: the keys belong to
+                // the avatar again from this frame on
+                self.input = i;
+                return;
+            }
+            self.input = MoveInput::default();
+            self.fb_since = None;
+            self.lr_since = None;
+            self.up_since = None;
+            self.turn_since = None;
+            self.cam_key_since = [None; 10];
+            return;
         }
         if self.mouse_mode == MouseMode::Steer {
             // Mouse steering (LLToolCamera::mMouseSteering): the mouse turns
@@ -25317,6 +25368,12 @@ impl ApplicationHandler for App {
                     }
                     None => false,
                 };
+                if self.build_view_holds() {
+                    // the builder's camera zooms its own distance instead of
+                    // the avatar's view behind it
+                    self.build_view_wheel(steps);
+                    return;
+                }
                 // (the free camera has no zoom: the wheel would change the
                 // avatar's view behind it, or enter mouselook)
                 if !on_media && self.camera.free().is_none() {

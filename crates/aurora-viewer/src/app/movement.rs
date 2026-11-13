@@ -4,6 +4,87 @@ use crate::movement::{Frame, Style};
 use uuid::Uuid;
 
 impl App {
+    /// Whether Aurora's builder camera holds the view (`build/view.rs`).
+    pub(super) fn build_view_holds(&self) -> bool {
+        self.camera.build_view().is_some()
+    }
+
+    /// Enter or leave the builder camera (the Focus tool's switch, or the
+    /// shortcut). Entering keeps the shot's side and stands the eye over the
+    /// work, tilted; leaving gives the view back to the avatar, gliding from
+    /// where the builder's focus was.
+    pub(super) fn build_view_set(&mut self, on: bool) {
+        if on == self.build_view_holds() || !self.in_world() {
+            return;
+        }
+        if on {
+            if self.camera.free().is_some() {
+                // the photo window's free camera owns the view
+                return;
+            }
+            let s = &self.settings.build;
+            let view = crate::build::view::BuildView::from_shot(
+                self.camera.position,
+                self.camera.target,
+                s.build_view_tilt,
+                s.build_view_distance,
+                s.build_view_speed,
+            );
+            self.camera.start_build_view(&mut self.world.agent, &self.settings.camera, view);
+        } else {
+            self.camera.end_build_view(&self.settings.camera);
+        }
+        self.settings.build.build_view = on;
+        if !self.demo {
+            self.settings.save();
+        }
+    }
+
+    pub(super) fn build_view_toggle(&mut self) {
+        self.build_view_set(!self.build_view_holds());
+    }
+
+    /// One frame of the builder camera: the movement keys pan it level,
+    /// Shift faster and Ctrl slower, Up / Down raise and lower the focus
+    /// (`update_move_input` keeps them from the avatar). Closing the tools, or
+    /// turning the switch off, gives the view back.
+    pub(super) fn build_view_step(&mut self, i: &crate::agent::MoveInput, dt: f32) {
+        if !self.build.open || !self.settings.build.build_view {
+            self.build_view_set(false);
+            return;
+        }
+        let axis = |pos: bool, neg: bool| f32::from(u8::from(pos)) - f32::from(u8::from(neg));
+        let m = crate::build::view::Move {
+            forward: axis(i.forward, i.back),
+            // the turn keys slide, as with the photo window's free camera
+            left: axis(i.turn_left || i.strafe_left, i.turn_right || i.strafe_right),
+            up: axis(i.up, i.down),
+            fast: self.shift,
+            slow: self.ctrl,
+        };
+        let (tilt, distance, speed) = (
+            self.settings.build.build_view_tilt,
+            self.settings.build.build_view_distance,
+            self.settings.build.build_view_speed,
+        );
+        if let Some(view) = self.camera.build_view_mut() {
+            view.set_tilt(tilt);
+            view.set_distance(distance);
+            view.set_speed(speed);
+            view.step(&m, dt);
+        }
+    }
+
+    /// The wheel over the builder camera: closer / farther, the distance kept
+    /// in the preference so that the view comes back as it was left.
+    pub(super) fn build_view_wheel(&mut self, steps: f32) {
+        let Some(view) = self.camera.build_view_mut() else {
+            return;
+        };
+        view.zoom(steps);
+        self.settings.build.build_view_distance = view.distance();
+    }
+
     pub(super) fn toggle_water_walk(&mut self) {
         self.toggle_water_mode(true);
     }

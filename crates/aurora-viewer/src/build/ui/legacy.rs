@@ -284,7 +284,7 @@ pub(super) fn body(
                         options.spacing_mut().slider_width = 80.0 * scale.x;
                     }
                     match mode {
-                        Tool::Focus => tools::focus_panel(&mut options, p, tool, mods, env),
+                        Tool::Focus => tools::focus_panel(&mut options, p, tool, s, mods, env),
                         Tool::Grab => tools::grab_panel(&mut options, p, tool, mods),
                         Tool::Create => tools::create_legacy_panel(&mut options, p, s),
                         Tool::Land => tools::land_panel(&mut options, p, tool, world, s),

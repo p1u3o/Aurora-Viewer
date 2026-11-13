@@ -40,8 +40,8 @@ fn radio(ui: &mut egui::Ui, p: &Palette, on: bool, text: &str) -> bool {
     crate::ui::widgets::radio(ui, p, on, RichText::new(text).size(12.0)).clicked()
 }
 
-/// Focus tool (focus_radio_group, slider zoom).
-pub fn focus_panel(ui: &mut egui::Ui, p: &Palette, tool: &mut BuildTool, mods: Mods, env: &mut Env) {
+/// Focus tool (focus_radio_group, slider zoom), plus Aurora's builder camera.
+pub fn focus_panel(ui: &mut egui::Ui, p: &Palette, tool: &mut BuildTool, s: &mut BuildSettings, mods: Mods, env: &mut Env) {
     let shown = match (mods.ctrl, mods.shift) {
         (true, true) => FocusMode::Pan,
         (true, false) => FocusMode::Orbit,
@@ -79,6 +79,13 @@ pub fn focus_panel(ui: &mut egui::Ui, p: &Palette, tool: &mut BuildTool, mods: M
         aurora_i18n::tr!("build-ui-tools-pan-camera-ctrl-shift"),
     ) {
         tool.focus_mode = FocusMode::Pan;
+    }
+    // Aurora's builder camera over the work (`build/view.rs`), with no Legacy
+    // Viewer equivalent. The switch only asks: the app owns the camera.
+    let before = s.build_view;
+    crate::ui::widgets::switch_labeled(ui, p, &mut s.build_view, aurora_i18n::tr!("build-view-title"));
+    if s.build_view != before {
+        tool.ui.requests.push(Request::BuildView(s.build_view));
     }
 }
 

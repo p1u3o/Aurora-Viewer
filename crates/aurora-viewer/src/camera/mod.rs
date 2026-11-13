@@ -415,6 +415,10 @@ pub struct Camera {
     /// The photo window's free camera: while set, the view is its own and
     /// the rest of the camera waits behind the avatar (`free.rs`).
     free: Option<FreeCamera>,
+    /// Aurora's builder camera, while it holds the view (`build/view.rs`):
+    /// the same "beside the state machine" place as `free`, so the third
+    /// person camera keeps its own state behind it.
+    build_view: Option<crate::build::view::BuildView>,
     pub flycam: Option<crate::joystick::flycam::Flycam>,
     /// Lens retained when flycam stops, until a reset or avatar movement.
     flycam_lens: Option<(f32, f32)>,
@@ -559,6 +563,7 @@ impl Default for Camera {
             dt: 0.0,
             initialized: false,
             free: None,
+            build_view: None,
             flycam: None,
             flycam_lens: None,
             fixed_view: None,
@@ -1375,6 +1380,43 @@ impl Camera {
 
     pub fn free_mut(&mut self) -> Option<&mut FreeCamera> {
         self.free.as_mut()
+    }
+
+    /// The builder camera, while it holds the view.
+    pub fn build_view(&self) -> Option<&crate::build::view::BuildView> {
+        self.build_view.as_ref()
+    }
+
+    pub fn build_view_mut(&mut self) -> Option<&mut crate::build::view::BuildView> {
+        self.build_view.as_mut()
+    }
+
+    /// Enter the builder camera from the current shot (build/view.rs).
+    /// Mouselook ends first, as for the free camera: the eye is the builder's
+    /// own, not the avatar's head. The photo window's free camera keeps the
+    /// view, so the tools never steal it.
+    pub fn start_build_view(&mut self, agent: &mut AgentState, s: &CameraSettings, view: crate::build::view::BuildView) {
+        if self.free.is_some() {
+            return;
+        }
+        self.clear_flycam();
+        if self.mouselook() {
+            self.change_to_default(agent, s);
+        }
+        self.roll = 0.0;
+        self.build_view = Some(view);
+    }
+
+    /// Back to the avatar, gliding from the builder's focus. True when the
+    /// builder camera held the view.
+    pub fn end_build_view(&mut self, s: &CameraSettings) -> bool {
+        if self.build_view.take().is_none() {
+            return false;
+        }
+        // the smoothing restarts from here, not from before the pan
+        self.smoothing_stop = true;
+        self.start_animation(s);
+        true
     }
 
     pub fn start_flycam(&mut self, s: &CameraSettings, from_mouselook: bool) {
@@ -2469,6 +2511,17 @@ impl Camera {
             // the free camera's own view; the avatar's waits for its return
             self.position = free.position;
             self.target = free.target();
+            self.fov_y = self.zoomed_fov(s, f.aspect);
+            self.anim = None;
+            return;
+        }
+        if let Some(view) = self.build_view {
+            // the builder's own eye over the work; the avatar's camera waits
+            // behind it as behind the free camera. RLVa's limits still apply
+            // to what `update` made of this pose.
+            let (eye, focus) = view.pose();
+            self.position = eye;
+            self.target = focus;
             self.fov_y = self.zoomed_fov(s, f.aspect);
             self.anim = None;
             return;

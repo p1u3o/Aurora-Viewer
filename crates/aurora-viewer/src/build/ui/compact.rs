@@ -559,7 +559,7 @@ pub fn body(ui: &mut egui::Ui, p: &Palette, tool: &mut BuildTool, world: &mut Wo
                     }
                 } else {
                     match tool.tool {
-                        Tool::Focus => tools::focus_panel(ui, p, tool, mods, env),
+                        Tool::Focus => tools::focus_panel(ui, p, tool, s, mods, env),
                         Tool::Grab => tools::grab_panel(ui, p, tool, mods),
                         Tool::Create => tools::create_panel(ui, p, s),
                         Tool::Land => {
