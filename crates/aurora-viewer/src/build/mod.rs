@@ -190,6 +190,10 @@ pub struct BuildSettings {
     pub build_view_distance: f32,
     /// Metres a second its pan moves (`view::SPEED_RANGE`).
     pub build_view_speed: f32,
+    /// Its lens: a field of view (false), or an orthographic one (true) that
+    /// shows the same picture at any depth (`view::ortho_proj`). Off by
+    /// default, as the perspective lens of the Legacy Viewer's tools.
+    pub build_view_ortho: bool,
     /// RenderHighlightSelections.
     pub show_highlight: bool,
     /// RenderHiddenSelections (off): the outline edges on the far side of
@@ -765,6 +769,7 @@ impl Default for BuildSettings {
             build_view_tilt: 40.0,
             build_view_distance: 14.0,
             build_view_speed: 12.0,
+            build_view_ortho: false,
             show_highlight: true,
             show_hidden_selection: false,
             show_light_radius: false,

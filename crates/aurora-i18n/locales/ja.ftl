@@ -3123,6 +3123,7 @@ ui-options-camera-clicking-your-avatar-does-not-return-the-camera-behind = タ�
 build-ui-tools-click-in-the-world-to-build = ワールド内をクリックしてビルドします。
 build-ui-tools-click-and-drag-to-move-the-camera = クリックとドラッグで、カメラを移動します
 build-view-title = ビルドカメラ
+build-view-ortho = 正投影レンズ
 keybinds-build-camera = ビルドカメラ
 build-ui-tools-click-and-drag-to-select-land = クリックとドラッグで、土地を選択します。
 build-ui-tools-click-and-hold-to-edit-land = クリックしたままにすると、土地を編集します。

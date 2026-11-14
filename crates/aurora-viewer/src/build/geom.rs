@@ -21,6 +21,9 @@ pub struct Cam {
     pub width: f32,
     pub height: f32,
     pub ppp: f32,
+    /// Half the world height the orthographic lens shows, while it holds the
+    /// view: no depth then, so the handles keep one screen size.
+    pub ortho_half_height: Option<f32>,
 }
 
 impl Default for Cam {
@@ -37,6 +40,7 @@ impl Default for Cam {
             width: 1.0,
             height: 1.0,
             ppp: 1.0,
+            ortho_half_height: None,
         }
     }
 }
@@ -58,6 +62,7 @@ impl Cam {
             width: width.max(1.0),
             height: height.max(1.0),
             ppp: ppp.max(0.1),
+            ortho_half_height: None,
         }
     }
 
@@ -77,8 +82,15 @@ impl Cam {
         }
     }
 
+    /// The builder camera's orthographic lens (build/view.rs): every pixel is
+    /// the same world size, so the handles no longer shrink with the depth.
+    pub fn with_ortho(mut self, half_height: Option<f32>) -> Cam {
+        self.ortho_half_height = half_height;
+        self
+    }
+
     pub fn direction_to(&self, p: Vec3) -> Vec3 {
-        if self.hud.is_some() {
+        if self.hud.is_some() || self.ortho_half_height.is_some() {
             self.at
         } else {
             (p - self.eye).normalize_or_zero()
@@ -90,13 +102,17 @@ impl Cam {
         if let Some(view) = self.hud {
             return view.unit();
         }
+        if let Some(half) = self.ortho_half_height {
+            // an orthographic view is a HUD: the same picture at any depth
+            return self.height / (2.0 * half.max(0.05));
+        }
         self.height / (2.0 * (self.fov_y * 0.5).tan())
     }
 
     /// World size of `px` screen pixels at `p` (LLManip: range * tan(px / view
     /// height * fov)).
     pub fn meters_for_pixels(&self, p: Vec3, px: f32) -> f32 {
-        if self.hud.is_some() {
+        if self.hud.is_some() || self.ortho_half_height.is_some() {
             return px / self.pixel_meter_ratio();
         }
         let range = (p - self.eye).length();
@@ -135,7 +151,10 @@ impl Cam {
         let near = un(ndc(1.0));
         let far = un(ndc(0.001));
         let dir = (far - near).try_normalize().unwrap_or(self.at);
-        (self.eye, dir)
+        // orthographic rays are parallel: each starts on the near plane under
+        // its own pixel, not at the eye
+        let origin = if self.ortho_half_height.is_some() { near } else { self.eye };
+        (origin, dir)
     }
 
     /// Clip-space position.

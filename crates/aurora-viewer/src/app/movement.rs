@@ -23,13 +23,14 @@ impl App {
                 return;
             }
             let s = &self.settings.build;
-            let view = crate::build::view::BuildView::from_shot(
+            let mut view = crate::build::view::BuildView::from_shot(
                 self.camera.position,
                 self.camera.target,
                 s.build_view_tilt,
                 s.build_view_distance,
                 s.build_view_speed,
             );
+            view.set_ortho(s.build_view_ortho);
             self.camera.start_build_view(&mut self.world.agent, &self.settings.camera, view);
         } else {
             self.camera.end_build_view(&self.settings.camera);
@@ -71,6 +72,7 @@ impl App {
             view.set_tilt(tilt);
             view.set_distance(distance);
             view.set_speed(speed);
+            view.set_ortho(self.settings.build.build_view_ortho);
             view.step(&m, dt);
         }
     }

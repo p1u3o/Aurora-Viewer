@@ -3521,8 +3521,21 @@ impl Camera {
         side * right + above * up
     }
 
+    /// The projection of the view: the builder camera's orthographic lens
+    /// while it is on (`build/view.rs`), the ordinary perspective otherwise.
     pub fn proj(&self, aspect: f32) -> Mat4 {
-        glam::camera::rh::proj::directx::perspective_infinite_reverse(self.fov_y, aspect.max(0.1), self.near)
+        let aspect = aspect.max(0.1);
+        if let Some(view) = self.build_view.filter(|v| v.ortho()) {
+            return view.ortho_proj(self.fov_y, aspect, self.near);
+        }
+        glam::camera::rh::proj::directx::perspective_infinite_reverse(self.fov_y, aspect, self.near)
+    }
+
+    /// Half the world height the orthographic lens shows, while it holds the
+    /// view: what `build::geom::Cam` needs to keep the edit handles a constant
+    /// size at any depth.
+    pub fn ortho_half_height(&self) -> Option<f32> {
+        self.build_view.filter(|v| v.ortho()).map(|v| v.ortho_half_height(self.fov_y))
     }
 
     /// The projection of a photo of `aspect` taken from a window of

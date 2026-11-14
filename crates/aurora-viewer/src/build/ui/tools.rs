@@ -87,6 +87,11 @@ pub fn focus_panel(ui: &mut egui::Ui, p: &Palette, tool: &mut BuildTool, s: &mut
     if s.build_view != before {
         tool.ui.requests.push(Request::BuildView(s.build_view));
     }
+    if s.build_view {
+        // its lens: a field of view, or parallel rays (`build/view.rs`); the
+        // app reads the preference every frame, so the switch needs no request
+        crate::ui::widgets::switch_labeled(ui, p, &mut s.build_view_ortho, aurora_i18n::tr!("build-view-ortho"));
+    }
 }
 
 /// Grab tool (move_radio_group).

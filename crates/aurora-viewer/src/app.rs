@@ -33,6 +33,7 @@ mod attention;
 mod audio_mute;
 mod avatar_render_settings;
 mod bridge;
+mod build_view_demo;
 mod busy_pause;
 mod gaming_mode;
 mod movelock;
@@ -2738,13 +2739,23 @@ impl App {
                     log::info!("demo touch_start: prim={local_id}, face={}, uv={:?}", surface.face, surface.uv);
                     self.world.system_message(aurora_i18n::tr!("app-demo-touch-start-simulated"));
                 }
-                NetCommand::ObjectGrabUpdate { surface, .. } => {
+                NetCommand::ObjectGrabUpdate {
+                    object, position, surface, ..
+                } => {
                     log::info!(
                         "demo touch / grab update: face={}, uv={:?}, st={:?}",
                         surface.face,
                         surface.uv,
                         surface.st
                     );
+                    // the simulator moves the prim the update names
+                    // (LLToolGrabBase::handleHoverActive): the demo is the
+                    // simulator, so a grab's drag shows here too
+                    if let Some(idx) = self.world.objects.index_of_uuid(object)
+                        && let Some(o) = self.world.objects.get_mut(idx)
+                    {
+                        o.position = *position;
+                    }
                 }
                 NetCommand::ObjectRelease { local_id, surface, .. } => {
                     log::info!("demo touch_end: prim={local_id}, face={}", surface.face);
@@ -11875,7 +11886,8 @@ impl App {
                 w as f32,
                 h as f32,
                 self.egui_ctx.pixels_per_point(),
-            );
+            )
+            .with_ortho(self.camera.ortho_half_height());
             if self.build.tool == crate::build::Tool::Edit
                 && self.build.hud_selected(&self.world)
                 && let Some(view) = drag_view
@@ -11900,7 +11912,8 @@ impl App {
                     w as f32,
                     h as f32,
                     self.egui_ctx.pixels_per_point(),
-                );
+                )
+                .with_ortho(self.camera.ortho_half_height());
             }
             let over_ui = self.ui_takes_pointer();
             let mods = crate::build::Mods {
@@ -12057,7 +12070,8 @@ impl App {
                     w as f32,
                     h as f32,
                     self.egui_ctx.pixels_per_point(),
-                );
+                )
+                .with_ortho(self.camera.ortho_half_height());
             }
             self.scene.update_beacons(&mut self.world, &self.settings.beacons, &cull);
             self.scene.held_at = hold.map(|h| h.at);
@@ -15407,6 +15421,11 @@ impl App {
         }
         if self.demo {
             self.particle_editor_demo();
+        }
+        // AURORA_DEMO_BUILD_VIEW: the builder camera over the work, then a
+        // prim dragged from it (app/build_view_demo.rs)
+        if self.demo {
+            self.build_view_demo();
         }
         // AURORA_DEMO_BUILD="mode,x,y[,part,dx,dy]": build tools script (build/demo.rs)
         if self.demo

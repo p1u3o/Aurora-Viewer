@@ -3165,6 +3165,7 @@ ui-options-camera-clicking-your-avatar-does-not-return-the-camera-behind = Garde
 build-ui-tools-click-in-the-world-to-build = Cliquez dans le monde pour construire.
 build-ui-tools-click-and-drag-to-move-the-camera = Cliquez et faites glisser pour bouger la caméra
 build-view-title = Caméra de construction
+build-view-ortho = Lentille orthographique
 keybinds-build-camera = Caméra de construction
 build-ui-tools-click-and-drag-to-select-land = Cliquez et faites glisser pour sélectionner le terrain.
 build-ui-tools-click-and-hold-to-edit-land = Cliquez et maintenez pour modifier le terrain.

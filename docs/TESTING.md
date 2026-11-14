@@ -2044,6 +2044,7 @@ when unfocused") is ignored during a screenshot.
 | `AURORA_DEMO_WORLD_CLICKS=<mode>` | Camera transparency, name-plate clicks, scripted attachments and the left button's script clicks |
 | `AURORA_DEMO_DIALOG=<mode>` | llDialog menu, every scripted object's window |
 | `AURORA_DEMO_BUILD="<script>"` | Script of the build tools |
+| `AURORA_DEMO_BUILD_VIEW=1\|ortho` | Builder camera over the work, then a prim dragged from it |
 | `AURORA_DEMO_TORTURED_PRIMS=1` | Hollow reversed sphere and ordinary prim controls |
 | `AURORA_DEMO_BEACONS=1` | Object beacons and World overlays |
 | `AURORA_DEMO_RENDER_TYPES=<kinds>` | Advanced › Rendering types: those kinds hidden from the start |
@@ -3272,6 +3273,18 @@ the next transition. `mesh-inspector-cycle-empty` makes lowest a real empty
 geometry: capture at 645 (no faces), 670 (high restored), and 750 (automatic
 restored). Returning from the empty level must not wait for camera movement,
 object updates or the periodic LOD sweep.
+
+**`AURORA_DEMO_BUILD_VIEW=1|ortho`** — the builder camera (`build/view.rs`,
+Aurora's own): the Focus tool opens at frame 560, and at 600 the eye stands
+over the nearest modifiable prim, eight metres short of it and tilted down. It
+pans forward from 610 to 650 (the movement keys' movement, neither the avatar
+nor the tools moving), takes the prim at 660 with the Focus tool's press, drags
+it right until 720 and releases it at 721. The log gives the prim's placement
+before and after (`demo build view: grabbed true, before …` then `after the
+drag …`): it must differ, and the capture around 700 shows it under the
+cursor. `ortho` also turns the orthographic lens on at 620
+(`build_view_ortho`): the same framing, no perspective, and the edit handles
+the same size at any depth. Capture both to compare them.
 
 **`AURORA_DEMO_BUILD_FOCUS=off|on`** — focus on the selection before taking
 a handle, with "Follow object while editing" disabled / enabled. With `off`,

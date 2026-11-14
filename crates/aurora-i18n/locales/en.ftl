@@ -3162,6 +3162,7 @@ ui-options-camera-clicking-your-avatar-does-not-return-the-camera-behind = Keep 
 build-ui-tools-click-in-the-world-to-build = Click in the world to build.
 build-ui-tools-click-and-drag-to-move-the-camera = Click and drag to move the camera
 build-view-title = Build camera
+build-view-ortho = Orthographic lens
 keybinds-build-camera = Build camera
 build-ui-tools-click-and-drag-to-select-land = Click and drag to select land.
 build-ui-tools-click-and-hold-to-edit-land = Click and hold to edit land.

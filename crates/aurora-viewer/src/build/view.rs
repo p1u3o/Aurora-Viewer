@@ -14,7 +14,7 @@
 //! turns it into a camera pose (`Camera::start_build_view`), picking is left
 //! alone, and `build/mod.rs` keeps the build tools as they are.
 
-use glam::Vec3;
+use glam::{Mat4, Vec3};
 
 /// Degrees below the horizon: level would be 0, straight down 90. A view
 /// never turns level (the work would be seen edge on) nor straight down (no
@@ -34,6 +34,9 @@ pub const SLOW: f32 = 0.3;
 const MAX_STEP_TIME: f32 = 0.2;
 /// One wheel click: the distance changes by this fraction.
 const ZOOM_STEP: f32 = 0.12;
+/// Far plane of the orthographic lens: a region is 256 m across, so this
+/// keeps four of them in depth without the perspective lens' infinite field.
+const ORTHO_FAR: f32 = 1024.0;
 
 fn clamp_tilt(degrees: f32) -> f32 {
     if degrees.is_finite() {
@@ -89,6 +92,8 @@ pub struct BuildView {
     distance: f32,
     /// Metres a second the pan moves at speed 1.
     speed: f32,
+    /// Whether the lens is orthographic rather than a field of view.
+    ortho: bool,
 }
 
 impl Default for BuildView {
@@ -99,6 +104,7 @@ impl Default for BuildView {
             tilt: 40.0,
             distance: 14.0,
             speed: 12.0,
+            ortho: false,
         }
     }
 }
@@ -121,6 +127,7 @@ impl BuildView {
             tilt: clamp_tilt(tilt),
             distance: clamp_distance(distance),
             speed: clamp_speed(speed),
+            ortho: false,
         }
     }
 
@@ -138,6 +145,39 @@ impl BuildView {
 
     pub fn set_speed(&mut self, speed: f32) {
         self.speed = clamp_speed(speed);
+    }
+
+    /// The lens: a field of view (false), or parallel rays (true).
+    pub fn set_ortho(&mut self, on: bool) {
+        self.ortho = on;
+    }
+
+    pub fn ortho(&self) -> bool {
+        self.ortho
+    }
+
+    /// Half the world height the orthographic lens shows: the perspective
+    /// lens' own picture of the work at the focus, so that switching keeps
+    /// the framing, and the wheel still zooms.
+    pub fn ortho_half_height(&self, fov_y: f32) -> f32 {
+        (self.distance * (fov_y * 0.5).tan()).max(0.05)
+    }
+
+    /// The orthographic projection of a view of `aspect`, reversed-Z like the
+    /// perspective lens (`Camera::proj`): 1 at the near plane, 0 at the far
+    /// one, so the renderer's depth test keeps working unchanged.
+    pub fn ortho_proj(&self, fov_y: f32, aspect: f32, near: f32) -> Mat4 {
+        let half_h = self.ortho_half_height(fov_y);
+        let half_w = half_h * aspect.max(0.1);
+        glam::camera::rh::proj::directx::orthographic(
+            -half_w,
+            half_w,
+            -half_h,
+            half_h,
+            // near and far swapped: the DirectX depth range reversed
+            ORTHO_FAR,
+            near.max(0.001),
+        )
     }
 
     /// Focus to eye, level: the direction the eye stands in.
@@ -323,6 +363,28 @@ mod tests {
         );
         let slow = (v.focus - before).length();
         assert!(fast > slow * 4.0, "fast {fast} is not clearly faster than slow {slow}");
+    }
+
+    #[test]
+    fn the_orthographic_lens_is_reversed_and_keeps_the_framing() {
+        let mut v = BuildView::default();
+        assert!(!v.ortho(), "the lens is a field of view until asked");
+        v.set_ortho(true);
+        assert!(v.ortho());
+        let (fov_y, aspect, near) = (0.8f32, 16.0 / 9.0, 0.1f32);
+        let p = v.ortho_proj(fov_y, aspect, near);
+        // view space: the camera looks down -Z
+        let depth = |z: f32| {
+            let c = p * glam::Vec4::new(0.0, 0.0, -z, 1.0);
+            c.z / c.w
+        };
+        assert!((depth(near) - 1.0).abs() < 1e-4, "near {} is not 1", depth(near));
+        assert!(depth(ORTHO_FAR).abs() < 1e-4, "far {} is not 0", depth(ORTHO_FAR));
+        assert!(depth(near) > depth(ORTHO_FAR / 2.0), "depth is not reversed");
+        // the same picture as the perspective lens at the focus
+        assert!((v.ortho_half_height(fov_y) - 14.0 * (fov_y * 0.5).tan()).abs() < 1e-5);
+        let corner = p * glam::Vec4::new(v.ortho_half_height(fov_y) * aspect, 0.0, -1.0, 1.0);
+        assert!((corner.x / corner.w - 1.0).abs() < 1e-4, "the width does not follow the aspect");
     }
 
     #[test]
