@@ -112,10 +112,22 @@ pub const CASTER_PLANES_ALL: [[f32; 4]; SHADOW_PLANES] = [PLANE_ALL; SHADOW_PLAN
 /// of the near side then the four of the far side, each (-x, -y), (+x, -y),
 /// (-x, +y), (+x, +y). `tan_x`, `tan_y`: tangents of the half angles.
 pub fn slice_corners(inv_view: Mat4, tan_x: f32, tan_y: f32, near: f32, far: f32) -> [Vec3; 8] {
+    slice_of_corners(inv_view, [(near * tan_x, near * tan_y), (far * tan_x, far * tan_y)], [near, far])
+}
+
+/// The same corners for a lens that shows the same box at every depth (an
+/// orthographic one, `ReceiverView::ortho`): `half_w`, `half_h` are its half
+/// width and height, whatever the depth.
+pub fn box_slice_corners(inv_view: Mat4, half_w: f32, half_h: f32, near: f32, far: f32) -> [Vec3; 8] {
+    slice_of_corners(inv_view, [(half_w, half_h); 2], [near, far])
+}
+
+fn slice_of_corners(inv_view: Mat4, half: [(f32, f32); 2], depths: [f32; 2]) -> [Vec3; 8] {
     let mut out = [Vec3::ZERO; 8];
-    for (i, d) in [near, far].into_iter().enumerate() {
+    for (i, d) in depths.into_iter().enumerate() {
+        let (half_w, half_h) = half[i];
         for (j, (sx, sy)) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)].into_iter().enumerate() {
-            out[i * 4 + j] = inv_view.transform_point3(Vec3::new(sx * d * tan_x, sy * d * tan_y, -d));
+            out[i * 4 + j] = inv_view.transform_point3(Vec3::new(sx * half_w, sy * half_h, -d));
         }
     }
     out
@@ -214,6 +226,39 @@ pub struct ReceiverView {
     pub tan_x: f32,
     pub tan_y: f32,
     pub near: f32,
+    /// Half the width and height an orthographic lens shows at any depth
+    /// (`ortho_half_extents`), instead of the cone the tangents describe: the
+    /// builder camera's lens (`build/view.rs`). `None` for a perspective
+    /// one.
+    pub ortho: Option<(f32, f32)>,
+}
+
+/// Half the width and the height a view shows at `depth` metres along its
+/// axis, where `ortho` is `ortho_half_extents` of its projection: a
+/// perspective frustum widens with the depth, an orthographic lens shows its
+/// box at every depth. What `Backend::cascade_matrices` fits each cascade's
+/// shadow map to: fitted to the cone at a near cascade's depth, an
+/// orthographic view's map covered only the middle of what it shows, and the
+/// casters beside it were clipped out.
+pub fn slice_half_extents(ortho: Option<(f32, f32)>, depth: f32, fov_y: f32, aspect: f32) -> (f32, f32) {
+    match ortho {
+        Some((half_w, half_h)) => (half_w, half_h),
+        None => {
+            let h = depth * (fov_y * 0.5).tan();
+            (h * aspect, h)
+        }
+    }
+}
+
+/// Half the width and the height an orthographic lens shows at any depth,
+/// from its projection: `None` for a perspective one, whose frustum widens
+/// with the depth (`slice_corners`). The `w` axis of a projection is 1 only
+/// for an orthographic one.
+pub fn ortho_half_extents(proj: &Mat4) -> Option<(f32, f32)> {
+    if proj.w_axis.w.abs() < 0.5 {
+        return None;
+    }
+    Some((1.0 / proj.x_axis.x.abs().max(1e-6), 1.0 / proj.y_axis.y.abs().max(1e-6)))
 }
 
 /// Distances from the camera between which `shadow_factor` (common.wgsl)
@@ -273,17 +318,22 @@ pub fn cascade_caster_planes(
     reach: f32,
 ) -> [[[f32; 4]; SHADOW_PLANES]; 3] {
     let (tan_x, tan_y) = (view.tan_x * 1.02, view.tan_y * 1.02);
-    // a distance from the camera is the shortest depth along the view's
-    // corner rays
-    let corner_cos = 1.0 / (1.0 + tan_x * tan_x + tan_y * tan_y).sqrt();
     std::array::from_fn(|k| {
-        let corners = slice_corners(
-            view.inv_view,
-            tan_x,
-            tan_y,
-            (near[k] * corner_cos * 0.98 - 0.05).max(view.near * 0.5),
-            far[k] * 1.05 + 1.0,
-        );
+        let far = far[k] * 1.05 + 1.0;
+        let corners = match view.ortho {
+            // the box itself, from the near plane: a pixel's distance to the
+            // eye is at least its depth, so a cascade read from `near[k]`
+            // still holds the box at every depth nearer than `far[k]`. A cone
+            // fitted on the axis left out what stands beside it.
+            Some((half_w, half_h)) => box_slice_corners(view.inv_view, half_w * 1.02, half_h * 1.02, view.near.max(0.05), far),
+            None => slice_corners(
+                view.inv_view,
+                tan_x,
+                tan_y,
+                (near[k] * corner_cos * 0.98 - 0.05).max(view.near * 0.5),
+                far,
+            ),
+        };
         caster_planes(&corners, light, lookup_margin(k, texel[k], reach))
     })
 }
@@ -505,6 +555,7 @@ mod tests {
             tan_x: 1.0,
             tan_y: 0.6,
             near: 0.1,
+            ortho: None,
         };
         let splits = [7.68, 28.8, 96.0];
         let texel = [0.007, 0.025, 0.08];
@@ -537,6 +588,64 @@ mod tests {
             assert_eq!(casts_into(&planes[1], caster, 0.2), !pixel_splits);
             assert_eq!(casts_into(&planes[2], caster, 0.2), !pixel_splits);
         }
+    }
+
+    /// An orthographic lens (the builder camera's) shows the same box at
+    /// every depth: its cascades hold the whole box, where a cone fitted on
+    /// the axis left out what stands beside it.
+    #[test]
+    fn ortho_cascade_planes_hold_the_whole_box() {
+        let (half_w, half_h) = (10.0f32, 6.0f32);
+        let proj = glam::camera::rh::proj::directx::orthographic(-half_w, half_w, -half_h, half_h, 0.1, 1024.0);
+        assert_eq!(ortho_half_extents(&proj), Some((half_w, half_h)));
+        let perspective = glam::camera::rh::proj::directx::perspective_infinite_reverse(0.8, 16.0 / 9.0, 0.1);
+        assert_eq!(ortho_half_extents(&perspective), None);
+        let eye = Vec3::new(12.0, -7.0, 9.0);
+        let view = ReceiverView {
+            inv_view: glam::camera::rh::view::look_at_mat4(eye, eye + Vec3::new(0.6, 0.1, -0.8), Vec3::Z).inverse(),
+            tan_x: 0.0,
+            tan_y: 0.0,
+            near: 0.1,
+            ortho: Some((half_w, half_h)),
+        };
+        let splits = [7.68, 28.8, 96.0];
+        let texel = [0.007, 0.025, 0.08];
+        let light = Vec3::new(0.3, -0.2, -0.8).normalize();
+        let (near, far) = cascade_reach(splits, true);
+        let planes = cascade_caster_planes(&view, light, near, far, texel);
+        for k in 0..3 {
+            for i in 0..441 {
+                // a pixel of the box, at a depth its cascade is read at
+                let (u, v) = ((i % 21) as f32 / 10.0 - 1.0, (i / 21) as f32 / 10.0 - 1.0);
+                let d = view.near + (far[k] - view.near) * ((i % 5) as f32 / 4.0);
+                let p = view.inv_view.transform_point3(Vec3::new(u * half_w, v * half_h, -d));
+                assert!(casts_into(&planes[k], p, 0.0), "cascade {k}: {p}");
+            }
+        }
+        // a pixel beside the axis, at 8 m, is in the volume of the cascade it
+        // reads; the tangents alone (a cone from the focus) do not describe it
+        let beside = view.inv_view.transform_point3(Vec3::new(half_w, 0.0, -8.0));
+        assert!(near[1] < 12.8 && far[1] > 12.8, "cascade 1 is read there");
+        assert!(casts_into(&planes[1], beside, 0.0));
+    }
+
+    /// Each cascade's map is fitted to what the view shows in its slice: a
+    /// perspective lens' cone, and the box of an orthographic one, which
+    /// shows the same width at every depth.
+    #[test]
+    fn a_cascade_fits_what_its_slice_shows() {
+        let (fov_y, aspect) = (0.8f32, 16.0 / 9.0);
+        let (near_width, _) = slice_half_extents(None, 5.12, fov_y, aspect);
+        let (far_width, _) = slice_half_extents(None, 64.0, fov_y, aspect);
+        assert!(near_width < far_width, "a perspective cone does not widen");
+        assert!((near_width - 5.12 * (fov_y * 0.5).tan() * aspect).abs() < 1e-5);
+        // the orthographic lens of the builder camera: the same box at any
+        // depth, wider than the perspective cone's near cascade (whose map
+        // therefore clipped the shadows beside the view's axis)
+        let ortho = Some((10.0, 6.0));
+        assert_eq!(slice_half_extents(ortho, 0.1, fov_y, aspect), (10.0, 6.0));
+        assert_eq!(slice_half_extents(ortho, 64.0, fov_y, aspect), (10.0, 6.0));
+        assert!(near_width < 10.0 && far_width > 10.0);
     }
 
     /// Cascades as the renderer builds them: squares of `radius` around

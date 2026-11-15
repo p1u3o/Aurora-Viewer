@@ -34,6 +34,8 @@ pub const SLOW: f32 = 0.3;
 const MAX_STEP_TIME: f32 = 0.2;
 /// One wheel click: the distance changes by this fraction.
 const ZOOM_STEP: f32 = 0.12;
+/// Pixels of a zoom drag that change the distance as one wheel click does.
+const ZOOM_DRAG_PIXELS: f32 = 80.0;
 /// Far plane of the orthographic lens: a region is 256 m across, so this
 /// keeps four of them in depth without the perspective lens' infinite field.
 const ORTHO_FAR: f32 = 1024.0;
@@ -135,6 +137,10 @@ impl BuildView {
         self.tilt = clamp_tilt(degrees);
     }
 
+    pub fn tilt(&self) -> f32 {
+        self.tilt
+    }
+
     pub fn distance(&self) -> f32 {
         self.distance
     }
@@ -228,6 +234,55 @@ impl BuildView {
         self.focus += level * self.speed * gain * dt;
         self.focus.z += m.up * self.speed * gain * dt;
         true
+    }
+
+    /// A drag of `dx`, `dy` pixels orbits the eye around its focus, as the
+    /// modellers' and the city builders' cameras do: the heading turns with
+    /// the drag across, the tilt follows it up and down, both kept in their
+    /// range. The focus does not move, so the work stays framed.
+    pub fn orbit(&mut self, dx: f32, dy: f32, sensitivity: f32) {
+        if !dx.is_finite() || !dy.is_finite() {
+            return;
+        }
+        // the camera's own rate (`camera::DRAG_RATE`), so a drag turns the
+        // eye as fast as it turns the avatar's camera around the avatar
+        let k = crate::camera::DRAG_RATE * sensitivity.max(0.0);
+        let turn = std::f32::consts::PI;
+        self.yaw = (self.yaw - dx * k + turn).rem_euclid(turn * 2.0) - turn;
+        // down the screen raises the eye over the work, as the free
+        // camera's drag looks down
+        self.set_tilt(self.tilt + dy * k.to_degrees());
+    }
+
+    /// A drag of `dx`, `dy` pixels pans the focus across the view's own
+    /// screen plane, so that the work follows the pointer: the world size of
+    /// a pixel at the focus, from the lens and the window's height, the eye
+    /// going the other way. The heading, the tilt and the distance stay.
+    pub fn pan(&mut self, dx: f32, dy: f32, fov_y: f32, viewport_height: f32) {
+        if !dx.is_finite()
+            || !dy.is_finite()
+            || !fov_y.is_finite()
+            || !viewport_height.is_finite()
+            || viewport_height <= 0.0
+        {
+            return;
+        }
+        let per_pixel = 2.0 * self.distance * (fov_y * 0.5).tan().max(0.0) / viewport_height;
+        let forward = (-self.offset()).normalize_or(Vec3::Z);
+        // the view's own right, as `Camera::pan_offset`: forward x Z
+        let right = forward.cross(Vec3::Z).normalize_or(Vec3::Y);
+        let up = right.cross(forward).normalize_or(Vec3::Z);
+        // the work goes right and down with the cursor, so the eye goes left
+        // and up
+        self.focus += (up * dy - right * dx) * per_pixel;
+    }
+
+    /// A zoom drag of `dy` pixels: up brings the eye closer, by the wheel's
+    /// step every `ZOOM_DRAG_PIXELS`, the distance kept in its range.
+    pub fn drag_zoom(&mut self, dy: f32) {
+        if dy.is_finite() {
+            self.zoom(-dy / ZOOM_DRAG_PIXELS);
+        }
     }
 
     /// The wheel over the view: closer / farther, as a fraction of the
@@ -385,6 +440,95 @@ mod tests {
         assert!((v.ortho_half_height(fov_y) - 14.0 * (fov_y * 0.5).tan()).abs() < 1e-5);
         let corner = p * glam::Vec4::new(v.ortho_half_height(fov_y) * aspect, 0.0, -1.0, 1.0);
         assert!((corner.x / corner.w - 1.0).abs() < 1e-4, "the width does not follow the aspect");
+    }
+
+    #[test]
+    fn a_drag_orbits_the_eye_around_its_focus() {
+        let mut v = view();
+        let (focus, distance) = (v.focus, v.distance);
+        let eye = v.pose().0;
+        v.orbit(100.0, 0.0, 1.0);
+        // the heading turns with the drag, the focus and the distance stay
+        assert!(
+            (v.yaw + 100.0 * crate::camera::DRAG_RATE).abs() < 1e-5,
+            "yaw {} did not turn",
+            v.yaw
+        );
+        assert_eq!(v.focus, focus);
+        assert_eq!(v.distance, distance);
+        let after = v.pose().0;
+        assert!((after - eye).truncate().length() > 1.0, "the eye stayed put");
+        assert!(
+            ((after - v.focus).length() - distance).abs() < 1e-4,
+            "the eye left its circle"
+        );
+        // down the screen raises the eye over the work, a pixel for a pixel
+        let tilt = v.tilt;
+        v.orbit(0.0, 50.0, 1.0);
+        assert!(
+            (v.tilt - (tilt + 50.0 * crate::camera::DRAG_RATE.to_degrees())).abs() < 1e-4,
+            "tilt {} did not follow the drag",
+            v.tilt
+        );
+        // the heading comes back in range, a whole turn being the same shot
+        v.orbit(100_000.0, 0.0, 1.0);
+        assert!(v.yaw.is_finite() && v.yaw.abs() <= std::f32::consts::PI + 1e-4);
+    }
+
+    #[test]
+    fn a_pan_drag_moves_the_work_with_the_pointer() {
+        let mut v = view();
+        let (yaw, tilt, distance) = (v.yaw, v.tilt, v.distance);
+        let focus = v.focus;
+        // 0.8 rad over 900 px at 14 m: about 13 mm a pixel
+        let per_pixel = 2.0 * 14.0 * (0.8f32 * 0.5).tan() / 900.0;
+        v.pan(100.0, 0.0, 0.8, 900.0);
+        let right = (-v.flat()).cross(Vec3::Z).normalize_or(Vec3::Y);
+        let moved = v.focus - focus;
+        assert!(
+            (moved + right * 100.0 * per_pixel).length() < 1e-4,
+            "the eye did not go left with the pointer: {moved:?}"
+        );
+        assert_eq!((v.yaw, v.tilt, v.distance), (yaw, tilt, distance));
+        // down the screen raises the eye, so the work goes down with the
+        // cursor
+        let before = v.focus;
+        v.pan(0.0, 100.0, 0.8, 900.0);
+        assert!(v.focus.z > before.z, "the eye did not rise: {:?}", v.focus - before);
+        // a broken drag or a window with no height moves nothing
+        let (focus, yaw) = (v.focus, v.yaw);
+        v.pan(f32::NAN, 0.0, 0.8, 900.0);
+        v.pan(10.0, 10.0, 0.8, 0.0);
+        assert_eq!((v.focus, v.yaw), (focus, yaw));
+    }
+
+    #[test]
+    fn a_zoom_drag_changes_the_distance_as_the_wheel_does() {
+        let mut v = view();
+        v.drag_zoom(-ZOOM_DRAG_PIXELS);
+        assert!((v.distance - 14.0 * (1.0 - ZOOM_STEP)).abs() < 1e-4, "{}", v.distance);
+        // dragging down moves the eye away
+        let before = v.distance;
+        v.drag_zoom(ZOOM_DRAG_PIXELS * 2.0);
+        assert!(v.distance > before);
+        for _ in 0..50 {
+            v.drag_zoom(-ZOOM_DRAG_PIXELS);
+        }
+        assert_eq!(v.distance, *DISTANCE_RANGE.start());
+        v.drag_zoom(f32::NAN);
+        assert_eq!(v.distance, *DISTANCE_RANGE.start());
+    }
+
+    #[test]
+    fn the_orbit_keeps_the_tilt_in_range_and_ignores_a_broken_drag() {
+        let mut v = view();
+        v.orbit(0.0, 100_000.0, 1.0);
+        assert_eq!(v.tilt, *TILT_RANGE.end());
+        v.orbit(0.0, -100_000.0, 1.0);
+        assert_eq!(v.tilt, *TILT_RANGE.start());
+        let (yaw, tilt) = (v.yaw, v.tilt);
+        v.orbit(f32::NAN, f32::INFINITY, 1.0);
+        assert_eq!((v.yaw, v.tilt), (yaw, tilt));
     }
 
     #[test]

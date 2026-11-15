@@ -4940,7 +4940,9 @@ impl App {
                 self.camera.look(dx, dy, s, &mut self.world.agent);
             }
         } else if self.mouse_mode == MouseMode::Orbit {
-            self.camera.orbit_drag(dx, dy, s, &mut self.world.agent);
+            if !self.build_view_drag(crate::camera::ToolMode::Orbit, dx, dy) {
+                self.camera.orbit_drag(dx, dy, s, &mut self.world.agent);
+            }
         } else if self.mouse_mode != MouseMode::None {
             // LLToolCamera: steering is the zoom tool on our avatar; the
             // modifiers held now choose the drag (AltGr: Ctrl + Alt)
@@ -4973,10 +4975,13 @@ impl App {
             // other drags (LLToolCamera): hidden and locked, so it does not
             // wander over the screen, and given back where the press began
             self.hold_drag_cursor(self.right_gesture.start);
-            match self.camera.free_mut() {
+            if self.camera.free().is_some() {
                 // the free camera looks around instead of orbiting
-                Some(free) => free.drag(dx, dy, s),
-                None => self.camera.orbit_drag(dx, dy, s, &mut self.world.agent),
+                if let Some(free) = self.camera.free_mut() {
+                    free.drag(dx, dy, s);
+                }
+            } else if !self.build_view_drag(crate::camera::ToolMode::Orbit, dx, dy) {
+                self.camera.orbit_drag(dx, dy, s, &mut self.world.agent);
             }
         }
     }

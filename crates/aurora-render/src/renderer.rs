@@ -7663,15 +7663,18 @@ impl Backend {
         let aspect = (self.config.width as f32 * f.photo_tile.x_axis.x) / (self.config.height.max(1) as f32 * f.photo_tile.y_axis.y);
         let inv_view = f.view.inverse();
         let light_dir = -f.sun_dir.normalize_or(Vec3::Z);
+        // An orthographic lens (the builder camera's, build/view.rs) shows the
+        // same box at every depth: its cascades are fitted to that box. Fitted
+        // to the perspective cone, they clipped the shadows beside the view's
+        // axis in the near ones and were far too coarse in the far ones.
+        let ortho = crate::shadow_cull::ortho_half_extents(&f.proj);
         let mut out = [Mat4::IDENTITY; CASCADES];
         let mut near = f.near;
         for (i, &split) in splits.iter().enumerate() {
             // frustum slice corners in view space
-            let th = (f.fov_y * 0.5).tan();
             let mut corners = Vec::with_capacity(8);
             for &d in &[near, split] {
-                let h = d * th;
-                let w = h * aspect;
+                let (w, h) = crate::shadow_cull::slice_half_extents(ortho, d, f.fov_y, aspect);
                 for &(sx, sy) in &[(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
                     corners.push(inv_view.transform_point3(Vec3::new(sx * w, sy * h, -d)));
                 }
@@ -9772,6 +9775,7 @@ impl Backend {
                     tan_x: 1.0 / proj.x_axis.x.abs().max(1e-6),
                     tan_y: 1.0 / proj.y_axis.y.abs().max(1e-6),
                     near: f.near,
+                    ortho: crate::shadow_cull::ortho_half_extents(&proj),
                 },
                 -f.sun_dir.normalize_or(Vec3::Z),
                 near,

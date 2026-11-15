@@ -77,6 +77,31 @@ impl App {
         }
     }
 
+    /// A camera drag over the builder camera, as the camera tool's mode asks:
+    /// it turns the eye around its own focus (`BuildView::orbit`), pans the
+    /// focus across the view's screen plane (`BuildView::pan`) or brings it
+    /// closer (`BuildView::drag_zoom`), instead of the avatar's camera behind
+    /// it. The tilt and the distance go back to the preferences as the
+    /// wheel's distance does, since `build_view_step` reads them every frame;
+    /// the settings are saved when the view is given back. True when the
+    /// builder camera took the drag.
+    pub(super) fn build_view_drag(&mut self, mode: crate::camera::ToolMode, dx: f32, dy: f32) -> bool {
+        let sensitivity = self.settings.mouse_sensitivity;
+        let fov_y = self.camera.fov_y;
+        let height = self.gfx.as_ref().map_or(900.0, |g| g.renderer.size().1 as f32);
+        let Some(view) = self.camera.build_view_mut() else {
+            return false;
+        };
+        match mode {
+            crate::camera::ToolMode::Orbit => view.orbit(dx, dy, sensitivity),
+            crate::camera::ToolMode::Pan => view.pan(dx, dy, fov_y, height),
+            crate::camera::ToolMode::Zoom => view.drag_zoom(dy),
+        }
+        self.settings.build.build_view_tilt = view.tilt();
+        self.settings.build.build_view_distance = view.distance();
+        true
+    }
+
     /// The wheel over the builder camera: closer / farther, the distance kept
     /// in the preference so that the view comes back as it was left.
     pub(super) fn build_view_wheel(&mut self, steps: f32) {
