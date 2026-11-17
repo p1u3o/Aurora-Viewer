@@ -203,6 +203,7 @@ pub(super) fn editor(
             .layouter(&mut layouter)
             .show(ui)
     };
+
     let mut output = if editable {
         if matches!(appearance, Appearance::CodeSource(..)) {
             let (mut output, changed) = super::super::scripts::edit_code(ui, id, text, &super::markdown::code::scope, show);
@@ -239,6 +240,52 @@ pub(super) fn editor(
                     .collect(),
             ),
         );
+    }
+    // ScrollArea receives this on the frame after Find was clicked. The
+    // source's galley knows where the matched character was laid out.
+    if let Some(range) = ui.ctx().data_mut(|data| {
+        let key = id.with("notecard_find_scroll_to");
+        let wanted = data.get_temp::<std::ops::Range<usize>>(key);
+        data.remove::<std::ops::Range<usize>>(key);
+        wanted
+    }) {
+        let rect = output
+            .galley
+            .pos_from_cursor(CCursor::new(range.start))
+            .translate(output.galley_pos.to_vec2())
+            .expand(6.0);
+        ui.scroll_to_rect(rect, Some(egui::Align::Center));
+    }
+    // The editor is not focused while Find / Replace owns the keyboard.
+    // Its current match is therefore tracked separately and is always drawn
+    // more strongly than the other occurrences.
+    if markdown.is_none()
+        && let Some(highlights) = ui
+            .ctx()
+            .data(|data| data.get_temp::<super::document::notecard_find::Highlights>(id.with("notecard_find_highlights")))
+    {
+        let mut shapes = Vec::new();
+        for range in highlights.ranges {
+            let is_current = highlights.current.as_ref() == Some(&range);
+            let alpha = if is_current { 145 } else { 78 };
+            let color = egui::Color32::from_rgba_unmultiplied(p.amber.r(), p.amber.g(), p.amber.b(), alpha);
+            for rect in crate::ui::chat::range_rects(&output.galley, output.galley_pos, range) {
+                if !rect.intersects(output.text_clip_rect) {
+                    continue;
+                }
+                let rect = rect.intersect(output.text_clip_rect);
+                shapes.push(egui::Shape::rect_filled(rect, ui.visuals().widgets.inactive.corner_radius, color));
+                if is_current {
+                    shapes.push(egui::Shape::rect_stroke(
+                        rect,
+                        ui.visuals().widgets.inactive.corner_radius,
+                        egui::Stroke::new(1.5, p.amber),
+                        egui::StrokeKind::Inside,
+                    ));
+                }
+            }
+        }
+        ui.painter().with_clip_rect(output.text_clip_rect).add(egui::Shape::Vec(shapes));
     }
     let mut result = EditorResult {
         changed: output.response.changed(),

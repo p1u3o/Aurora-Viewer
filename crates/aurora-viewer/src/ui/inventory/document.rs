@@ -243,6 +243,15 @@ impl InventoryUi {
             })
         };
         if let Some((editor, loading)) = existing {
+            // Reopening an existing document should activate it too, even if
+            // another application field currently holds keyboard focus.
+            if kind == 7 {
+                if self.ui_id == editor {
+                    self.notecard_focus_pending = true;
+                } else if let Some(window) = self.windows.iter_mut().find(|w| w.state.ui_id == editor) {
+                    window.state.notecard_focus_pending = true;
+                }
+            }
             let id = preview_window_id(editor, item, kind);
             super::super::widgets::open_floater(ctx, &id, &mut true);
             ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, egui::Id::unique(id)));
@@ -273,6 +282,8 @@ impl InventoryUi {
         self.preview_can_edit = false;
         self.preview_source = None;
         self.notecard_view = Default::default();
+        self.notecard_find = Default::default();
+        self.notecard_focus_pending = false;
         self.notecard_markdown = Default::default();
         self.attachment_preview = None;
         self.preview_original.clear();
@@ -295,6 +306,9 @@ impl InventoryUi {
             self.preview_message.clone_from(reason);
             return;
         }
+        // A newly loaded document is ready to take focus on its first
+        // interactive frame, not while an egui floater is sizing itself.
+        let was_loaded = self.preview_text.as_ref().is_some_and(Result::is_ok);
         self.preview_source = None;
         self.preview_can_edit = false;
         let result = result.as_ref().map_err(Clone::clone).and_then(|data| {
@@ -312,6 +326,9 @@ impl InventoryUi {
         });
         if let Ok(text) = &result {
             self.preview_original.clone_from(text);
+        }
+        if kind == 7 && result.is_ok() && !was_loaded {
+            self.notecard_focus_pending = true;
         }
         self.preview_text = Some(result);
     }
@@ -576,5 +593,531 @@ mod tests {
         a.finish_content_save(request, None);
         assert!(!a.preview_dirty && b.preview_dirty);
         assert_eq!(b.preview_text, Some(Ok("Autre brouillon".into())));
+    }
+}
+
+pub(super) mod notecard_find {
+    //! Find and Replace for an inventory or object notecard's source text.
+    //! A document owns this state; the rendered Markdown preview is not edited.
+
+    use std::ops::Range;
+
+    use crate::{
+        theme::Palette,
+        ui::widgets::{Floater, checkbox, flat_button, search_text_edit, text_field},
+    };
+    use aurora_net::inventory::notecard::{FIRST_EMBEDDED_CHAR, Notecard};
+    use egui::{
+        Id, RichText, TextEdit, Vec2,
+        text::{CCursor, CCursorRange},
+    };
+
+    pub(in crate::ui::inventory) struct Search {
+        pub open: bool,
+        query: String,
+        replacement: String,
+        insensitive: bool,
+        whole_words: bool,
+        up: bool,
+        focus: bool,
+        current: Option<Range<usize>>,
+        status: String,
+    }
+
+    impl Default for Search {
+        fn default() -> Self {
+            Self {
+                open: false,
+                query: String::new(),
+                replacement: String::new(),
+                insensitive: true,
+                whole_words: false,
+                up: false,
+                focus: false,
+                current: None,
+                status: String::new(),
+            }
+        }
+    }
+
+    /// Search decorations are attached to the source editor, not the rendered
+    /// Markdown preview. They remain visible when the find floater has focus.
+    #[derive(Clone, Default)]
+    pub(in crate::ui::inventory) struct Highlights {
+        pub ranges: Vec<Range<usize>>,
+        pub current: Option<Range<usize>>,
+    }
+
+    fn selected(ctx: &egui::Context, id: Id) -> Range<usize> {
+        egui::TextEdit::load_state(ctx, id)
+            .and_then(|state| state.cursor.char_range())
+            .map_or(0..0, |range| {
+                let [start, end] = range.sorted_cursors();
+                start.index.0..end.index.0
+            })
+    }
+
+    fn select(ctx: &egui::Context, id: Id, range: Range<usize>) {
+        let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(CCursorRange::two(CCursor::new(range.start), CCursor::new(range.end))));
+        state.store(ctx, id);
+        ctx.request_repaint();
+    }
+
+    fn matches(text: &str, needle: &str, insensitive: bool, whole_words: bool) -> Vec<Range<usize>> {
+        // Embedded attachments are one reserved character each. Never treat
+        // their private-use markers as ordinary editable notecard text.
+        let chars: Vec<_> = text.chars().collect();
+        crate::ui::scripts::search_matches_filtered(text, needle, insensitive, whole_words)
+            .into_iter()
+            .filter(|range| !chars[range.start..range.end].iter().any(|c| *c as u32 >= FIRST_EMBEDDED_CHAR))
+            .collect()
+    }
+
+    fn valid_replacement(text: &str) -> Result<(), String> {
+        if text.chars().any(|c| c as u32 >= FIRST_EMBEDDED_CHAR) {
+            return Err(aurora_i18n::tr!("world-inventory-preview-invalid-notecard").into());
+        }
+        Ok(())
+    }
+
+    /// Return an updated string, checking notecard (not script) limits before
+    /// touching either the editor's draft or its undo history.
+    fn replaced(text: &str, range: Range<usize>, replacement: &str) -> Result<String, String> {
+        valid_replacement(replacement)?;
+        let boundaries: Vec<_> = text.char_indices().map(|(byte, _)| byte).chain([text.len()]).collect();
+        let Some((&start, &end)) = boundaries.get(range.start).zip(boundaries.get(range.end)) else {
+            return Err(aurora_i18n::tr!("world-inventory-preview-invalid-notecard").into());
+        };
+        let mut updated = text.to_owned();
+        updated.replace_range(start..end, replacement);
+        Notecard::validate_text(&updated)?;
+        Ok(updated)
+    }
+
+    /// Use TextEdit's native undo snapshots just like notecard Markdown formatting.
+    /// In particular, Replace All is one undoable operation.
+    fn commit(ctx: &egui::Context, id: Id, text: &mut String, updated: String, caret: usize) -> bool {
+        if updated == *text {
+            return false;
+        }
+        let mut state = TextEdit::load_state(ctx, id).unwrap_or_default();
+        let before = state.cursor.char_range().unwrap_or_default();
+        let mut undo = state.undoer();
+        undo.add_undo(&(before, text.clone()));
+        *text = updated;
+        let after = CCursorRange::one(CCursor::new(caret));
+        state.cursor.set_char_range(Some(after));
+        undo.add_undo(&(after, text.clone()));
+        state.set_undoer(undo);
+        state.store(ctx, id);
+        ctx.request_repaint();
+        true
+    }
+
+    impl Search {
+        /// Choose the first match before Find is clicked. Keep the visible active
+        /// result, the native text selection, and scrolling in sync.
+        fn activate_first(&mut self, ctx: &egui::Context, id: Id, text: &str) {
+            let first = matches(text, &self.query, self.insensitive, self.whole_words).into_iter().next();
+            self.current = first.clone();
+            self.status.clear();
+            if let Some(range) = first {
+                select(ctx, id, range.clone());
+                ctx.data_mut(|data| data.insert_temp(id.with("notecard_find_scroll_to"), range));
+            }
+            ctx.request_repaint();
+        }
+
+        pub fn begin(&mut self, ctx: &egui::Context, id: Id, text: &str) {
+            let range = selected(ctx, id);
+            if range.end > range.start {
+                let selection: String = text.chars().skip(range.start).take(range.end - range.start).collect();
+                if !selection.is_empty() && !selection.chars().any(|c| c as u32 >= FIRST_EMBEDDED_CHAR) {
+                    self.query = selection;
+                }
+            }
+            if !self.open {
+                self.current = None;
+            }
+            self.open = true;
+            self.focus = true;
+            self.activate_first(ctx, id, text);
+            crate::ui::widgets::expand_floater(ctx, &format!("notecard_search_{id:?}"));
+        }
+
+        /// Ctrl+F toggles the active notecard Find floater without modifying text.
+        pub fn close(&mut self) {
+            self.open = false;
+            self.focus = false;
+            self.current = None;
+        }
+
+        /// Publish matches before the notecard editor is painted. It uses these
+        /// to render visible highlighting even while the find field has focus.
+        pub fn mark(&self, ctx: &egui::Context, id: Id, text: &str) {
+            let ranges = if self.open {
+                matches(text, &self.query, self.insensitive, self.whole_words)
+            } else {
+                Vec::new()
+            };
+            let selection = selected(ctx, id);
+            // The separate Find floater owns keyboard focus. The editor may
+            // discard an unfocused native selection, so retain our active match.
+            let current = self
+                .current
+                .as_ref()
+                .filter(|range| ranges.contains(range))
+                .cloned()
+                .or_else(|| ranges.iter().find(|range| **range == selection).cloned());
+            ctx.data_mut(|data| data.insert_temp(id.with("notecard_find_highlights"), Highlights { ranges, current }));
+        }
+
+        /// A separate floater with the same widgets and row layout as the script
+        /// editor's Find / Replace. Its ID is unique to this notecard window.
+        pub fn show(
+            &mut self,
+            ctx: &egui::Context,
+            p: &Palette,
+            id: Id,
+            text: &mut String,
+            editable: bool,
+            parent: Option<egui::Rect>,
+            parent_id: Id,
+        ) -> bool {
+            if !self.open {
+                return false;
+            }
+            let name = format!("notecard_search_{id:?}");
+            let size = Vec2::new(360.0, 216.0);
+            let room = crate::ui::layout::work_area(ctx);
+            let parent = parent.unwrap_or(room);
+            let x = if parent.right() + size.x <= room.right() {
+                parent.right()
+            } else if parent.left() - size.x >= room.left() {
+                parent.left() - size.x
+            } else {
+                parent.right() - size.x
+            };
+            let position = egui::pos2(
+                x.clamp(room.left(), (room.right() - size.x).max(room.left())),
+                parent.top().clamp(room.top(), (room.bottom() - size.y).max(room.top())),
+            );
+            // Match scripts::dialogs::Search: the window can be dragged but
+            // returns to its anchored position when the drag is released.
+            crate::ui::widgets::move_floater(ctx, &name, position);
+            // Dependent Find follows its active notecard parent without taking
+            // priority over unrelated windows when the notecard is not active.
+            let owner = egui::LayerId::new(egui::Order::Middle, parent_id);
+            let child = egui::LayerId::new(egui::Order::Middle, Id::unique(&name));
+            ctx.set_sublayer(owner, child);
+            let focused_layer = ctx
+                .memory(|memory| memory.focused())
+                .and_then(|id| ctx.read_response(id).map(|response| response.layer_id));
+            let pressed = ctx.input(|i| i.pointer.any_pressed().then(|| i.pointer.interact_pos()).flatten());
+            let pressed_here = pressed.is_some_and(|at| matches!(ctx.layer_id_at(at), Some(layer) if layer == owner || layer == child));
+            let front = ctx.memory(|memory| {
+                memory
+                    .layer_ids()
+                    .filter(|layer| layer.order != egui::Order::Background && memory.areas().is_visible(layer))
+                    .last()
+                    .is_some_and(|layer| layer == owner || layer == child)
+            });
+            if (self.focus && pressed.is_none())
+                || pressed_here
+                || (front && (focused_layer == Some(owner) || focused_layer == Some(child)))
+                || (front && ctx.is_being_dragged(child.id.with("move")))
+            {
+                ctx.move_to_top(owner);
+            }
+            let mut open = true;
+            let mut toggle_closed = false;
+            let mut changed = false;
+            Floater::new(&name, aurora_i18n::tr!("script-search-title"), position, size).show(ctx, p, &mut open, |ui| {
+                // Ctrl+F from inside Find / Replace closes it as well.
+                toggle_closed = crate::ui::find_shortcut::take(ui, &[id.with("notecard_find_query"), id.with("notecard_replace_query")]);
+                if !toggle_closed {
+                    changed = self.controls(ui, p, id, text, editable);
+                }
+            });
+            self.open = open;
+            if !open || toggle_closed {
+                self.close();
+                ctx.memory_mut(|memory| {
+                    memory.request_focus(if editable { id } else { id.with("notecard_window_focus") });
+                });
+            }
+            changed
+        }
+
+        fn find(&mut self, ctx: &egui::Context, id: Id, text: &str) {
+            let ranges = matches(text, &self.query, self.insensitive, self.whole_words);
+            let from = self.current.clone().unwrap_or_else(|| selected(ctx, id));
+            if let Some(next) = crate::ui::scripts::next_search_match(&ranges, from, self.up) {
+                select(ctx, id, next.clone());
+                // Actual scrolling happens when the source editor renders next frame.
+                ctx.data_mut(|data| data.insert_temp(id.with("notecard_find_scroll_to"), next.clone()));
+                self.current = Some(next);
+                self.status.clear();
+            } else {
+                self.status = aurora_i18n::tr!("script-search-not-found").into();
+            }
+        }
+
+        fn replace(&mut self, ctx: &egui::Context, id: Id, text: &mut String) -> bool {
+            let ranges = matches(text, &self.query, self.insensitive, self.whole_words);
+            let native = selected(ctx, id);
+            // When Find owns keyboard focus, the native editor selection can be
+            // empty or stale. Use the visible active match for Replace.
+            let range = if ranges.contains(&native) {
+                native
+            } else {
+                self.current.clone().unwrap_or(native)
+            };
+            let mut changed = false;
+            if ranges.contains(&range) {
+                match replaced(text, range.clone(), &self.replacement) {
+                    Ok(updated) => {
+                        changed = commit(ctx, id, text, updated, range.start + self.replacement.chars().count());
+                    }
+                    Err(message) => {
+                        self.status = message;
+                        return false;
+                    }
+                }
+            }
+            self.current = None;
+            self.find(ctx, id, text);
+            changed
+        }
+
+        fn replace_all(&mut self, ctx: &egui::Context, id: Id, text: &mut String) -> bool {
+            let ranges = matches(text, &self.query, self.insensitive, self.whole_words);
+            if ranges.is_empty() {
+                self.status = aurora_i18n::tr!("script-search-not-found").into();
+                return false;
+            }
+            if let Err(message) = valid_replacement(&self.replacement) {
+                self.status = message;
+                return false;
+            }
+            let boundaries: Vec<_> = text.char_indices().map(|(byte, _)| byte).chain([text.len()]).collect();
+            let mut updated = String::new();
+            let mut previous = 0;
+            for range in &ranges {
+                updated.push_str(&text[previous..boundaries[range.start]]);
+                updated.push_str(&self.replacement);
+                previous = boundaries[range.end];
+            }
+            updated.push_str(&text[previous..]);
+            if let Err(message) = Notecard::validate_text(&updated) {
+                self.status = message;
+                return false;
+            }
+            let count = ranges.len();
+            let changed = commit(ctx, id, text, updated, 0);
+            self.current = None;
+            self.status = aurora_i18n::tr!("script-search-replaced", count = count as i64);
+            changed
+        }
+
+        /// Keep the same four-row Find / Replace layout as script editors.
+        fn controls(&mut self, ui: &mut egui::Ui, p: &Palette, id: Id, text: &mut String, editable: bool) -> bool {
+            let mut changed = false;
+            let query_id = id.with("notecard_find_query");
+            let replace_id = id.with("notecard_replace_query");
+            ui.horizontal(|ui| {
+                ui.label(aurora_i18n::tr!("script-search-query"));
+                let field = search_text_edit(ui, p, &mut self.query, |edit| {
+                    edit.id(query_id)
+                        .hint_text(aurora_i18n::tr!("script-search-query"))
+                        .desired_width(220.0)
+                });
+                if !ui.is_sizing_pass() && std::mem::take(&mut self.focus) {
+                    select(ui.ctx(), field.id, 0..self.query.chars().count());
+                    field.request_focus();
+                }
+                if field.changed() {
+                    self.activate_first(ui.ctx(), id, text);
+                }
+                if (field.has_focus() || field.lost_focus())
+                    && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
+                {
+                    self.find(ui.ctx(), id, text);
+                    field.request_focus();
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label(aurora_i18n::tr!("script-search-replacement"));
+                text_field(ui, editable, &mut self.replacement, |buffer, _| {
+                    TextEdit::singleline(buffer).id(replace_id).desired_width(220.0)
+                });
+            });
+            ui.horizontal(|ui| {
+                let before = self.insensitive;
+                checkbox(ui, p, &mut self.insensitive, aurora_i18n::tr!("script-search-insensitive"));
+                if self.insensitive != before {
+                    self.activate_first(ui.ctx(), id, text);
+                }
+                checkbox(ui, p, &mut self.up, aurora_i18n::tr!("script-search-up"));
+            });
+            ui.horizontal(|ui| {
+                let before = self.whole_words;
+                checkbox(ui, p, &mut self.whole_words, aurora_i18n::tr!("script-search-whole-words"));
+                if self.whole_words != before {
+                    self.activate_first(ui.ctx(), id, text);
+                }
+            });
+            ui.horizontal(|ui| {
+                if flat_button(ui, p, aurora_i18n::tr!("script-search-find")).clicked() {
+                    self.find(ui.ctx(), id, text);
+                }
+                ui.add_enabled_ui(editable && !self.query.is_empty(), |ui| {
+                    if flat_button(ui, p, aurora_i18n::tr!("script-search-replace")).clicked() {
+                        changed |= self.replace(ui.ctx(), id, text);
+                    }
+                    if flat_button(ui, p, aurora_i18n::tr!("script-search-replace-all")).clicked() {
+                        changed |= self.replace_all(ui.ctx(), id, text);
+                    }
+                });
+            });
+            ui.label(RichText::new(&self.status).color(p.muted));
+            changed
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn searches_unicode_in_both_directions_without_matching_attachments() {
+            let marker = char::from_u32(FIRST_EMBEDDED_CHAR).unwrap();
+            let text = format!("Été {marker} été ÉTÉ");
+            let ranges = matches(&text, "été", true, false);
+            assert_eq!(ranges, vec![0..3, 6..9, 10..13]);
+            assert!(matches(&text, &marker.to_string(), false, false).is_empty());
+            assert_eq!(crate::ui::scripts::next_search_match(&ranges, 10..13, false), Some(0..3));
+            assert_eq!(crate::ui::scripts::next_search_match(&ranges, 0..3, true), Some(10..13));
+        }
+
+        #[test]
+        fn whole_words_option_filters_notecard_find_and_attachment_markers() {
+            let marker = char::from_u32(FIRST_EMBEDDED_CHAR).unwrap();
+            let text = format!("This hi high hi_there hi-there {marker} (hi)");
+            let found = matches(&text, "hi", true, true);
+            assert_eq!(found.len(), 4);
+            assert!(matches(&text, "hi", true, false).len() > found.len());
+            let mut search = Search {
+                query: "hi".into(),
+                whole_words: true,
+                ..Default::default()
+            };
+            let ctx = egui::Context::default();
+            let id = Id::unique("notecard_whole_words");
+            search.find(&ctx, id, &text);
+            assert_eq!(search.current, found.first().cloned());
+            search.open = true;
+            search.close();
+            assert!(!search.open);
+            assert!(search.current.is_none());
+        }
+
+        #[test]
+        fn new_query_activates_the_first_result_and_replace_works_immediately() {
+            let ctx = egui::Context::default();
+            let id = Id::unique("notecard_immediate_replace");
+            let mut text = "hi high hi_there".to_owned();
+            let mut search = Search {
+                open: true,
+                query: "hi".into(),
+                replacement: "HELLO".into(),
+                whole_words: true,
+                ..Default::default()
+            };
+            search.activate_first(&ctx, id, &text);
+            assert_eq!(search.current, Some(0..2));
+            assert_eq!(selected(&ctx, id), 0..2);
+            search.mark(&ctx, id, &text);
+            let marked = ctx
+                .data(|data| data.get_temp::<Highlights>(id.with("notecard_find_highlights")))
+                .unwrap();
+            assert_eq!(marked.current, Some(0..2));
+            assert!(search.replace(&ctx, id, &mut text));
+            assert_eq!(text, "HELLO high hi_there");
+        }
+
+        #[test]
+        fn find_navigation_tracks_its_active_match_and_requests_scroll() {
+            let ctx = egui::Context::default();
+            let id = Id::unique("notecard_find_navigation");
+            let mut search = Search {
+                query: "hello".into(),
+                ..Default::default()
+            };
+            let text = "Hello there, hello again HELLO";
+            search.find(&ctx, id, text);
+            assert_eq!(search.current, Some(0..5));
+            search.find(&ctx, id, text);
+            assert_eq!(search.current, Some(13..18));
+            search.find(&ctx, id, text);
+            assert_eq!(search.current, Some(25..30));
+            search.find(&ctx, id, text);
+            assert_eq!(search.current, Some(0..5));
+            let pending = ctx.data(|data| data.get_temp::<Range<usize>>(id.with("notecard_find_scroll_to")));
+            assert_eq!(pending, Some(0..5));
+            search.up = true;
+            search.find(&ctx, id, text);
+            assert_eq!(search.current, Some(25..30));
+        }
+
+        #[test]
+        fn source_highlights_all_matches_and_marks_the_selected_one() {
+            let ctx = egui::Context::default();
+            let id = Id::unique("notecard_highlight_test");
+            let text = "Hello there, HELLO again";
+            let search = Search {
+                open: true,
+                query: "hello".into(),
+                ..Default::default()
+            };
+            select(&ctx, id, 13..18);
+            search.mark(&ctx, id, text);
+            let highlights = ctx
+                .data(|data| data.get_temp::<Highlights>(id.with("notecard_find_highlights")))
+                .unwrap();
+            assert_eq!(highlights.ranges, vec![0..5, 13..18]);
+            assert_eq!(highlights.current, Some(13..18));
+        }
+
+        #[test]
+        fn replacement_preserves_markers_and_enforces_notecard_limits() {
+            let marker = char::from_u32(FIRST_EMBEDDED_CHAR).unwrap();
+            let text = format!("Hi {marker} café!");
+            assert_eq!(replaced(&text, 5..9, "tea").unwrap(), format!("Hi {marker} tea!"));
+            assert!(replaced(&text, 5..9, &marker.to_string()).is_err());
+            assert!(replaced(&text, 5..9, &"x".repeat(aurora_net::inventory::notecard::MAX_TEXT_BYTES)).is_err());
+            assert!(replaced(&text, 5..9, "\0").is_err());
+        }
+
+        #[test]
+        fn replace_all_is_one_undoable_document_edit() {
+            let ctx = egui::Context::default();
+            let id = Id::unique("notecard_find_undo");
+            let mut text = "café and café".to_owned();
+            let mut search = Search {
+                query: "café".into(),
+                replacement: "tea".into(),
+                ..Default::default()
+            };
+            assert!(search.replace_all(&ctx, id, &mut text));
+            assert_eq!(text, "tea and tea");
+            let state = TextEdit::load_state(&ctx, id).unwrap();
+            let mut undo = state.undoer();
+            let previous = undo.undo(&(state.cursor.char_range().unwrap_or_default(), text.clone()));
+            assert!(previous.is_some_and(|(_, before)| before == "café and café"));
+        }
     }
 }
