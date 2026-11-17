@@ -670,7 +670,40 @@ pub(super) fn preview(
         size,
     )
     .cascade(crate::ui::widgets::CascadeGroup::inventory(it.asset_type))
+    .rename_title(
+        it.name.clone(),
+        it.asset_type == 7 && editable && rules::renameable(inv, id) && st.pending.is_none() && !st.save_pending,
+    )
     .show(ctx, p, &mut open, |ui| {
+        if it.asset_type == 7 {
+            let editor_id = egui::Id::unique(("inventory_document_text", st.ui_id, id));
+            let holder = ui.interact(
+                ui.available_rect_before_wrap(),
+                editor_id.with("notecard_window_focus"),
+                egui::Sense::focusable_noninteractive(),
+            );
+            // A read-only document owns the shortcut, not an editing caret.
+            // A click on its window also reactivates it after using another
+            // viewer panel, without taking the key from an overlaid floater.
+            // Reactivate the notecard text only for clicks inside its body.
+            // The title's inline rename field shares the window layer and
+            // must retain focus when its caret is moved by clicking.
+            let clicked_here = ui
+                .input(|input| input.pointer.any_pressed().then(|| input.pointer.interact_pos()).flatten())
+                .is_some_and(|pos| holder.rect.contains(pos) && ctx.layer_id_at(pos) == Some(ui.layer_id()));
+            if st.preview_text.as_ref().is_some_and(Result::is_ok)
+                && !ui.is_sizing_pass()
+                && ctx.memory(|memory| memory.top_modal_layer().is_none())
+                && (st.notecard_focus_pending || clicked_here)
+            {
+                st.notecard_focus_pending = false;
+                if editable && !st.save_pending && view != super::markdown::View::Markdown {
+                    ctx.memory_mut(|memory| memory.request_focus(editor_id));
+                } else {
+                    holder.request_focus();
+                }
+            }
+        }
         if it.asset_type == 0 {
             st.wanted_images.insert(it.asset_id);
             if let Some(t) = images.get(&it.asset_id) {
@@ -715,12 +748,40 @@ pub(super) fn preview(
                 prefs.notecard_view = view;
                 let editor = egui::Id::unique(("inventory_document_text", st.ui_id, id));
                 ctx.memory_mut(|m| {
-                    m.request_focus(if view == super::markdown::View::Markdown {
-                        editor.with("markdown")
+                    m.request_focus(if !editable || view == super::markdown::View::Markdown {
+                        editor.with("notecard_window_focus")
                     } else {
                         editor
                     })
                 });
+            }
+            // Claim Ctrl+F for this notecard instead of global viewer Search.
+            // Keep each document's Find / Replace window independent.
+            if it.asset_type == 7 {
+                let editor_id = egui::Id::unique(("inventory_document_text", st.ui_id, id));
+                let fields = [
+                    editor_id,
+                    editor_id.with("notecard_window_focus"),
+                    editor_id.with("markdown"),
+                    egui::Id::unique(("notecard_description", st.ui_id, id)),
+                ];
+                if crate::ui::find_shortcut::take(ui, &fields)
+                    && let Some(Ok(text)) = st.preview_text.as_ref()
+                {
+                    // The Markdown preview cannot show a source-text match.
+                    if view == super::markdown::View::Markdown {
+                        view = super::markdown::View::Classic;
+                        st.notecard_view = Some(view);
+                    }
+                    if st.notecard_find.open {
+                        st.notecard_find.close();
+                    } else {
+                        st.notecard_find.begin(ctx, editor_id, text);
+                    }
+                }
+                if let Some(Ok(text)) = st.preview_text.as_ref() {
+                    st.notecard_find.mark(ctx, editor_id, text);
+                }
             }
             if it.asset_type == 56 && !it.asset_id.is_nil() && flat_button(ui, p, aurora_i18n::tr!("common-apply-to-myself-only")).clicked()
             {
@@ -899,6 +960,33 @@ pub(super) fn preview(
             }
         }
     });
+    if it.asset_type == 7
+        && st.notecard_find.open
+        && let Some(Ok(text)) = st.preview_text.as_mut()
+    {
+        let editor_id = egui::Id::unique(("inventory_document_text", st.ui_id, id));
+        let window = super::document::preview_window_id(st.ui_id, id, it.asset_type);
+        let parent = ctx.memory(|memory| memory.area_rect(egui::Id::unique(&window)));
+        let can_replace = editable && !st.save_pending && !matches!(st.dialog, Some(EditDialog::Discard(_)));
+        if st
+            .notecard_find
+            .show(ctx, p, editor_id, text, can_replace, parent, egui::Id::unique(&window))
+        {
+            st.document_changed();
+        }
+    }
+    if it.asset_type == 7 {
+        let window = super::document::preview_window_id(st.ui_id, id, it.asset_type);
+        if let Some(name) = widgets::take_title_rename(ctx, &window)
+            && editable
+            && rules::renameable(inv, id)
+            && st.pending.is_none()
+            && !st.save_pending
+            && let Ok(change) = rules::patch(inv, id, llsd_map! { "name" => name })
+        {
+            actions.push(InvAction::Edit(change));
+        }
+    }
     super::embedded::preview(ctx, p, st, inv, images);
     if !open {
         if st.save_pending {
@@ -1405,6 +1493,75 @@ mod tests {
             !super::document_save_focused(&ctx),
             "the world shortcut works again outside the document"
         );
+    }
+
+    #[test]
+    fn notecard_find_opens_without_a_read_only_editing_caret() {
+        use super::super::NotecardView;
+        for (can_edit, view) in [
+            (true, NotecardView::Classic),
+            (false, NotecardView::Classic),
+            (true, NotecardView::Markdown),
+            (false, NotecardView::Markdown),
+            (true, NotecardView::Edit),
+            (false, NotecardView::Edit),
+        ] {
+            let ctx = egui::Context::default();
+            let (inv, mut st) = note_fixture();
+            st.preview_can_edit = can_edit;
+            st.notecard_view = Some(view);
+            let editor = egui::Id::unique(("inventory_document_text", st.ui_id, st.preview.expect("note")));
+            for _ in 0..5 {
+                document_frame(&ctx, &inv, &mut st, Vec::new());
+            }
+            let expected = if can_edit && view != NotecardView::Markdown {
+                editor
+            } else {
+                editor.with("notecard_window_focus")
+            };
+            assert_eq!(ctx.memory(|memory| memory.focused()), Some(expected), "{can_edit:?} {view:?}");
+            assert!(crate::ui::find_shortcut::window_takes_it(&ctx));
+            document_frame(
+                &ctx,
+                &inv,
+                &mut st,
+                vec![egui::Event::Key {
+                    key: egui::Key::F,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                }],
+            );
+            assert!(st.notecard_find.open, "{can_edit:?} {view:?}");
+            assert!(!st.preview_dirty);
+        }
+    }
+    #[test]
+    fn ctrl_f_opens_notecard_find_and_switches_markdown_to_source_text() {
+        let ctx = egui::Context::default();
+        let (inv, mut st) = note_fixture();
+        st.notecard_view = Some(super::super::NotecardView::Markdown);
+        for _ in 0..5 {
+            document_frame(&ctx, &inv, &mut st, Vec::new());
+        }
+        let editor = egui::Id::unique(("inventory_document_text", st.ui_id, st.preview.unwrap()));
+        ctx.memory_mut(|m| m.request_focus(editor.with("markdown")));
+        assert!(crate::ui::find_shortcut::window_takes_it(&ctx));
+        document_frame(
+            &ctx,
+            &inv,
+            &mut st,
+            vec![egui::Event::Key {
+                key: egui::Key::F,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            }],
+        );
+        assert!(st.notecard_find.open);
+        assert_eq!(st.notecard_view, Some(super::super::NotecardView::Classic));
     }
 
     #[test]
