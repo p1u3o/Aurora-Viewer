@@ -14321,6 +14321,60 @@ parts, against the scene without weather. `--scenes` picks some,
   - `xmode=old|new` at the end of the line with `AURORA_SYNC_SLICE=alt`:
     the path of the sync during that second.
 
+### Comparing two builds (A/B runs)
+
+A performance claim (an element that got cheaper, or a path that costs
+nothing) is measured on both builds in the same session, never one run each
+side: the machine drifts by a few percent between runs, and one pair cannot
+tell that drift from the change.
+
+- **Build both sides, side by side.** The change in its worktree, the commit
+  before it (or `origin/main`) in a detached one
+  (`git worktree add ../work/<task>-before <commit> --detach`), each with its
+  own `target/`; build both (`cargo build -p aurora-viewer`) before the first
+  run, and again after any edit, so that no side runs a stale binary.
+- **One scene, one variable.** The same `AURORA_DEMO*` scenario, window size,
+  `AURORA_FPS_LIMIT`, `AURORA_PRESENT_MODE=immediate` and frame count on both
+  sides, with a log name of its own for each run (`AURORA_LOG_NAME`): six
+  launches each side (twelve runs), each ending by itself
+  (`AURORA_CAPTURE_EXIT=1`, `AURORA_CAPTURE_FRAMES=4000`) after the same number
+  of frames. A shell loop that exports the same block twice, swaps the two
+  binaries and follows the round's order is enough; it lives in the
+  worktree's `.scratch/`, never in the tracked tree.
+- **Counterbalanced order.** Alternate the sides and reverse the order every
+  other round (`A B`, `B A`, `A B`…), so that the drift of the session hits
+  both equally. Never all of one side, then all of the other.
+- **Quiet machine.** Nothing else may use the GPU: another viewer, a video or
+  an animated page doubles `gpu` and every `g_*` (measured: the same build at
+  `gpu` 2.1 and 8.4 ms, `g_shadows_depth` 0.27 and 0.59 ms, `frame` 2.1 and
+  8.4 ms). Look at `nvidia-smi --query-gpu=utilization.gpu,clocks.sm
+  --format=csv,noheader` before the first run (a few percent at rest, the
+  clock near its maximum). If a side shows two regimes, throw the session
+  away and run it again; do not close another agent's or the human's window,
+  ask.
+- **The last five summaries.** `AURORA_PROFILE=1` writes one `perf summary`
+  per second, and the first ones still load textures and settle the frame
+  rate: take the last five lines of each run and their median for the element
+  compared (`g_shadows_depth`, `g_depth`, `g_transparent` + `g_post`, `gpu`,
+  an `r_*` or an `s_*` step). One run is then one number, in ms, and the six
+  runs of a side are comparable.
+- **Pairs for the effect, ranges for the noise.** Subtract the two runs of
+  each round and read the median of the six differences, with their smallest
+  and largest; six of the same sign is the least a change is entitled to.
+  Then pool the five samples of the six runs of a side (thirty values) and
+  give their smallest and largest: two ranges that do not overlap, with six
+  pairs of the same sign, make the claim. Overlapping ranges, or pairs of both
+  signs, mean "flat within the noise of these runs", which is the honest
+  result for an effect of the order of the drift.
+- **Hitches are not results.** A `max` or a `ft=99` in a run pollutes `frame`
+  and sometimes `gpu`: compare the `g_*` sum of the pass concerned, and drop a
+  run, or the whole session, where the frame time moves by tens of percent
+  from one second to the next.
+- **Record it.** `TASKS.md` and the PR give the runs each side, the reversed
+  interleaving, the element, the six per-run medians (or their mean), the
+  paired median and the two ranges. A claim from two runs each side is
+  recorded as such, never as a measurement of this kind.
+
 ### Network
 
 With `AURORA_PROFILE=1`, one `net summary` line per second during a grid
@@ -14729,6 +14783,7 @@ rendered Gerstner spectrum at all qualities and several depths.
 |---|---|
 | `AURORA_DEMO_WATER=medium` | Offline coast, moving hull, pillars, wading and submerged avatars |
 | `AURORA_DEMO_WATER=off:exclusion` | Invisible water exclusion above/below the surface; use `medium` for enhanced water |
+| `AURORA_DEMO_WATER=medium:terrain-hole` | Terrain hole behind a marker-textured slab; `-control` keeps the ground |
 | `AURORA_DEMO_WATER_ACTIONS=dive` | Local native water animation and jump/entry preview |
 | `AURORA_DEMO_WATER_ANIMS=<folder>` | Read-only folder containing the twelve native water clips |
 | `AURORA_DEMO_WATER_SHADERS=1` | Load water shader sources for offline material iteration |
@@ -14737,10 +14792,49 @@ Water exclusion: compare `off:exclusion-control` with `off:exclusion`, then
 `medium:exclusion-control` with `medium:exclusion`. The left red floor must
 remain visible, with water removed only through the invisible face above it.
 The right green floor has an exclusion below water: the nearer water remains.
-No grey texture, scene-depth occlusion, shadow or reflection should appear.
+No grey texture, scene-depth occlusion, shadow or reflection should appear, and
+the seabed behind either invisible face stays whole: a water-exclusion marker
+writes only the water's channel of the mask and never cuts the ground (only a
+terrain-hole marker does, below).
 Repeat with `AURORA_CPU_CULL=1` and with MSAA; Ctrl+Alt+T reveals the hidden
 faces. Actual edited faces and persistence across reconnect need human grid
 validation, following the same checkbox/confirmation flow as the Legacy Viewer.
+
+Terrain hole: compare `medium:terrain-hole-control` with `medium:terrain-hole`.
+The hill behind the invisible slab must drop out down to the sky (or whatever
+stands behind it), with no depth, shadow or pick target left where the ground
+was; the `-control` slab changes nothing. Repeat with MSAA and with GTAO mesh
+normals.
+
+The two exclusion markers are separate passes and separate mask channels:
+the mask is `Rg8Unorm`, red for "the water is excluded" and green for "the
+ground is holed". A water-exclusion face writes red only (its own pass code,
+bin and draw list), a terrain-hole marker writes both, so it hides the water
+over the hole exactly as before. `terrain_discards` counts hole markers only:
+a water-exclusion face in view leaves the terrain on its plain depth and
+shadow pipelines. Actual marker-textured builds need human grid validation: other
+viewers still see the ground, and physics still collides with it.
+
+Performance of the marker (2026-11-17, after the rebase on main, RTX 5070,
+1920 × 1080, `AURORA_PROFILE=1`, `medium` runs interleaved): 2.425 ms a frame
+on main, 2.450 with the branch, within the runs' own 2.38–2.47 ms spread. The
+one element that moved was `g_shadows_depth`, 0.259 → 0.309 ms, where the
+terrain casters took the hole's discard in the four cascades; `g_depth` alone
+went 0.100 → 0.103 ms and effects, water, SSAO, contact shadows and post
+stayed within 0.3 %. That cost is back (same day, with the pipelines gated:
+the terrain keeps the plain depth prepass and shadow pipelines while no
+exclusion face is in view, and the hole ones only with one in view, counted by
+the CPU lists or by the mask bin's GPU readback). Two `medium`
+runs each side: 2.428 against 2.450 ms; `g_shadows_depth` 0.263 → 0.266 and
+`g_depth` 0.100 → 0.099 ms, where the same main binary measured against itself
+moves those two by +0.006 and +0.004 ms. The hole still cuts the ground
+(`hole6` against `control6` captures, zero wgpu errors), and the hole scene
+renders as fast as its control (2.06 against 2.16 ms). The gated path is
+checked in `AURORA_AA=3` (MSAA 4x, `g_depth_msaa` 0.037–0.041 ms), with GTAO's
+mesh normals (`AURORA_AO=gtao AURORA_GTAO_NORMALS=1`) and with both: hole
+against control each time, 0 changed pixels outside the hole's rectangle (the
+only differences are the hole and the sea and chat animation two identical
+control runs also show).
 
 The enhanced-water master is disabled by default (2026-10-19), including missing/partial saved preferences and Aurora section reset. Individual effects stay selected for an explicit opt-in; saved on/off choices survive reload and graphics-preset changes. The explicit "All Aurora" bulk choice still enables water effects. Only the global activation carries the shared experimental warning triangle and its localized tooltip in Preferences › Aurora › Water. Compare disabled and enabled FR/EN captures: individual controls have no warning marks, disabled effect controls stay readable and the global warning must not overlap text or its switch.
 
