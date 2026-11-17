@@ -21,8 +21,8 @@
 //! and it alone uses the queue.
 
 use crate::gpu_cull::{
-    BIN_PROBE, BIN_PROBE_SHADOW, BIN_REFL_MIRROR, BIN_REFL_WATER, BIN_SHADOW, BIN_SHADOW_ALPHA, BIN_SPOT, BIN_WATER_EXCLUSION, COUNT_PRE1,
-    COUNT_PRE2, CullFrame, GpuCull, MAIN_BINS, REGION_PRE1, REGION_PRE2, SPOT_SHADOWS, frame_flags,
+    BIN_PROBE, BIN_PROBE_SHADOW, BIN_REFL_MIRROR, BIN_REFL_WATER, BIN_SHADOW, BIN_SHADOW_ALPHA, BIN_SPOT, BIN_TERRAIN_HOLE,
+    BIN_WATER_EXCLUSION, COUNT_PRE1, COUNT_PRE2, CullFrame, GpuCull, MAIN_BINS, REGION_PRE1, REGION_PRE2, SPOT_SHADOWS, frame_flags,
 };
 use crate::helpers::Helpers;
 use crate::light_tiles::{self, LightCulling, LightSets};
@@ -1020,6 +1020,12 @@ struct Pipelines {
     pre_terrain: wgpu::RenderPipeline,
     pre_terrain_normal: wgpu::RenderPipeline,
     pre_terrain_msaa: Option<wgpu::RenderPipeline>,
+    /// Terrain with a viewer-local hole (TERRAIN_HOLE_TEXTURE): the shared
+    /// depth-only position plus portal clipping and the exclusion-mask
+    /// discard, so holed ground writes no depth for the scene to test.
+    pre_terrain_hole: wgpu::RenderPipeline,
+    pre_terrain_hole_normal: wgpu::RenderPipeline,
+    pre_terrain_hole_msaa: Option<wgpu::RenderPipeline>,
     opaque: wgpu::RenderPipeline,
     opaque_2s: wgpu::RenderPipeline,
     mask: wgpu::RenderPipeline,
@@ -1028,6 +1034,7 @@ struct Pipelines {
     water_unclipped: Option<wgpu::RenderPipeline>,
     water_mask: wgpu::RenderPipeline,
     water_exclusion: wgpu::RenderPipeline,
+    terrain_hole_mask: wgpu::RenderPipeline,
     blend: SidedPipelines,
     /// Blended faces lit before their invisible fragments are dropped, for
     /// frames that ask for it ([`BlendDiscard::Alternate`] only).
@@ -1826,6 +1833,10 @@ struct FrameGroups {
     mask: wgpu::BindGroup,
     /// Prepass and scene pass A: no scene copy / depth reads.
     a: wgpu::BindGroup,
+    /// Sun, projector and probe shadows: like `a`, but a dummy depth map
+    /// where the atlas being written would be sampled (the terrain hole
+    /// discard needs the frame and the exclusion mask there).
+    shadow: wgpu::BindGroup,
     /// Scene pass B: everything.
     b: wgpu::BindGroup,
     /// Own uniforms: [0] water reflection, [1] mirror, [2] probe,
@@ -2457,7 +2468,7 @@ struct PipeDesc<'a> {
 /// by index against those arguments, so both are made from this one array. A
 /// cut-out photo leaves the ground and the water out of the view (cutout.rs);
 /// the reflections and the probes keep them, for the light they give.
-fn main_view_lists<'a>(lists: &'a DrawLists, cutout: bool) -> [(&'a [DrawCmd], u32); 13] {
+fn main_view_lists<'a>(lists: &'a DrawLists, cutout: bool) -> [(&'a [DrawCmd], u32); 14] {
     use crate::occlusion::{KIND_NONE, KIND_PREPASS, KIND_TESTED};
     let background = |list: &'a [DrawCmd]| -> &'a [DrawCmd] { if cutout { &[] } else { list } };
     [
@@ -2470,6 +2481,7 @@ fn main_view_lists<'a>(lists: &'a DrawLists, cutout: bool) -> [(&'a [DrawCmd], u
         (&lists.mask_two_sided, KIND_PREPASS),
         (background(&lists.water), KIND_NONE),
         (&lists.water_exclusion, KIND_NONE),
+        (&lists.terrain_hole, KIND_NONE),
         (&lists.blend, KIND_TESTED),
         (&lists.glow, KIND_TESTED),
         (&lists.glow_alpha, KIND_TESTED),
@@ -3637,6 +3649,22 @@ fn ortho_reverse_z(half: f32, near: f32, far: f32) -> Mat4 {
     )
 }
 
+/// Whether an exclusion face (water exclusion, or the terrain-hole marker) is
+/// in view this frame, so the terrain has to cut out what the mask hides.
+/// The pipelines that read the mask cost more than the plain depth and shadow
+/// ones: a coast scene without such a face measured 0.259 ms of shadow and
+/// depth with them against 0.309 ms with the terrain always on them
+/// (2026-11-17, RTX 5070, 1920 × 1080, `AURORA_PROFILE=1`).
+fn terrain_discards(lists: &DrawLists, gpu_bin: u32) -> bool {
+    // The CPU fallback keeps the markers in `terrain_hole`; with the GPU
+    // lists they are that mask bin's draws, read back a frame or two late like
+    // the rest of the cull's counts (the mask itself is also read a frame
+    // late by the prepass and the shadows). A water-exclusion marker writes
+    // only the water's channel and never cuts the ground, so it does not
+    // count here.
+    !lists.terrain_hole.is_empty() || gpu_bin > 0
+}
+
 /// Index ranges of the draw lists inside the indirect buffer.
 #[derive(Default, Clone, Copy)]
 struct Ranges {
@@ -3649,6 +3677,7 @@ struct Ranges {
     mask_2s: (u64, u32),
     water: (u64, u32),
     water_exclusion: (u64, u32),
+    terrain_hole: (u64, u32),
     blend: (u64, u32),
     /// `DrawLists::blend_under_water`.
     blend_under: (u64, u32),
@@ -4883,9 +4912,11 @@ impl Backend {
             bind_group_layouts: &[Some(frame_layout), Some(records_layout), Some(tex_layout)],
             immediate_size: 0,
         });
+        // Group 0 for the terrain hole discard (frame, exclusion mask),
+        // like the scene layout: the other shadow shaders ignore it.
         let shadow_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("shadow"),
-            bind_group_layouts: &[None, Some(records_layout), Some(tex_layout), Some(shadow_layout)],
+            bind_group_layouts: &[Some(frame_layout), Some(records_layout), Some(tex_layout), Some(shadow_layout)],
             immediate_size: 0,
         });
         let a2c = [("ALPHA_TO_COVERAGE", if samples > 1 { 1.0 } else { 0.0 })];
@@ -5026,17 +5057,29 @@ impl Backend {
         // LLDrawPoolWaterExclusion::render: water wins until a nearer,
         // front-facing exclusion surface replaces it. Independent of scene depth.
         let water_mask = pipe(PipeDesc {
-            format: Some(wgpu::TextureFormat::R8Unorm),
+            format: Some(wgpu::TextureFormat::Rg8Unorm),
             samples: 1,
             cull: None,
             depth_compare: wgpu::CompareFunction::Greater,
             ..base("water mask", "vs_water_unclipped", "fs_water_mask")
         });
+        // LLDrawPoolWaterExclusion hides the water only: red.
         let water_exclusion = pipe(PipeDesc {
-            format: Some(wgpu::TextureFormat::R8Unorm),
+            format: Some(wgpu::TextureFormat::Rg8Unorm),
+            write_mask: wgpu::ColorWrites::RED,
             samples: 1,
             depth_compare: wgpu::CompareFunction::Greater,
             ..base("water exclusion", "vs_main", "fs_water_exclusion")
+        });
+        // The terrain-hole marker, the same marker geometry: it cuts the
+        // ground (green) and the water over it (red), so the hole looks
+        // unchanged.
+        let terrain_hole_mask = pipe(PipeDesc {
+            format: Some(wgpu::TextureFormat::Rg8Unorm),
+            write_mask: wgpu::ColorWrites::RED | wgpu::ColorWrites::GREEN,
+            samples: 1,
+            depth_compare: wgpu::CompareFunction::Greater,
+            ..base("terrain hole mask", "vs_main", "fs_water_exclusion")
         });
         // LLDrawPoolAlpha "glow suppression": blended faces scale the glow
         // behind them by (1 - alpha)
@@ -5655,11 +5698,22 @@ impl Backend {
         let pre_mask = pre("prepass mask", "vs_main", Some("fs_depth_mask"), Some(wgpu::Face::Back));
         let pre_mask_2s = pre("prepass mask 2s", "vs_main", Some("fs_depth_mask"), None);
         let pre_terrain = pre("terrain depth", "vs_terrain_pbr", Some("fs_terrain_depth"), Some(wgpu::Face::Back));
+        // Same vertex position as the shared depth prepass (vs_depth), plus
+        // the exclusion-mask discard. Only the terrain lists draw with it;
+        // anything seen through the hole keeps its own depth.
+        let pre_terrain_hole = pre("terrain hole depth", "vs_depth", Some("fs_depth_hole"), Some(wgpu::Face::Back));
         let pre_terrain_msaa = (samples > 1).then(|| {
             pipe(PipeDesc {
                 format: None,
                 depth_compare: wgpu::CompareFunction::Greater,
                 ..base("terrain msaa depth", "vs_terrain_pbr", "fs_terrain_depth")
+            })
+        });
+        let pre_terrain_hole_msaa = (samples > 1).then(|| {
+            pipe(PipeDesc {
+                format: None,
+                depth_compare: wgpu::CompareFunction::Greater,
+                ..base("terrain hole msaa depth", "vs_depth", "fs_depth_hole")
             })
         });
         // both sides: a double-sided blended face casts either way, the
@@ -5717,6 +5771,14 @@ impl Backend {
             "terrain depth normals",
             "vs_terrain_pbr",
             "fs_terrain_depth_normal",
+            Some(wgpu::Face::Back),
+        );
+        // DepthMaskOut already carries the world position that DepthNormalOut
+        // lacks, for the same discard with mesh normals (GTAO/FSR).
+        let pre_terrain_hole_normal = pre_n(
+            "terrain hole depth normals",
+            "vs_depth_mask_normal",
+            "fs_depth_hole_normal",
             Some(wgpu::Face::Back),
         );
         let pre_normal_portal = [
@@ -5966,6 +6028,9 @@ impl Backend {
             pre_terrain: pre_terrain.resolve(&mut done),
             pre_terrain_normal: pre_terrain_normal.resolve(&mut done),
             pre_terrain_msaa: pre_terrain_msaa.resolve(&mut done),
+            pre_terrain_hole: pre_terrain_hole.resolve(&mut done),
+            pre_terrain_hole_normal: pre_terrain_hole_normal.resolve(&mut done),
+            pre_terrain_hole_msaa: pre_terrain_hole_msaa.resolve(&mut done),
             opaque: opaque.resolve(&mut done),
             opaque_2s: opaque_2s.resolve(&mut done),
             mask: mask.resolve(&mut done),
@@ -5974,6 +6039,7 @@ impl Backend {
             water_unclipped: water_unclipped.resolve(&mut done),
             water_mask: water_mask.resolve(&mut done),
             water_exclusion: water_exclusion.resolve(&mut done),
+            terrain_hole_mask: terrain_hole_mask.resolve(&mut done),
             blend: blend.resolve(&mut done),
             blend_late: blend_late.resolve(&mut done),
             blend_depth: blend_depth.resolve(&mut done),
@@ -6180,7 +6246,9 @@ impl Backend {
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         );
         let water_interface = make_view(device, "nearest water interface", w, h, DEPTH_FORMAT, 1, sampled).1;
-        let water_mask = make_view(device, "water exclusion mask", w, h, wgpu::TextureFormat::R8Unorm, 1, sampled).1;
+        // Red: the water is excluded; green: the ground is holed (each
+        // exclusion marker writes its own channel).
+        let water_mask = make_view(device, "water exclusion mask", w, h, wgpu::TextureFormat::Rg8Unorm, 1, sampled).1;
         let (gbuf_msaa, gbuf) = if s.gbuffer() {
             (
                 (samples > 1).then(|| make_view(device, "gbuffer msaa", w, h, GBUF_FORMAT, samples, att).1),
@@ -6313,7 +6381,8 @@ impl Backend {
                   contact: &wgpu::TextureView,
                   il: &wgpu::TextureView,
                   sample_water: bool,
-                  sample_mask: bool| {
+                  sample_mask: bool,
+                  sample_shadow: bool| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some(label),
                 layout,
@@ -6348,14 +6417,15 @@ impl Backend {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        // the captures of a probe read its own shadow map
-                        resource: wgpu::BindingResource::TextureView(
-                            if std::ptr::eq(buffer, &refl_buffers[2]) || std::ptr::eq(buffer, &refl_buffers[8]) {
-                                probe_shadow_view
-                            } else {
-                                shadow_view
-                            },
-                        ),
+                        // the captures of a probe read its own shadow map;
+                        // the shadow passes writing the atlas take a dummy
+                        resource: wgpu::BindingResource::TextureView(if !sample_shadow {
+                            &dummies.depth
+                        } else if std::ptr::eq(buffer, &refl_buffers[2]) || std::ptr::eq(buffer, &refl_buffers[8]) {
+                            probe_shadow_view
+                        } else {
+                            shadow_view
+                        }),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
@@ -6480,6 +6550,7 @@ impl Backend {
                 &dummies.black,
                 false,
                 false,
+                true,
             ),
             a: mk(
                 "frame a",
@@ -6493,6 +6564,21 @@ impl Backend {
                 il,
                 false,
                 true,
+                true,
+            ),
+            shadow: mk(
+                "frame shadow",
+                frame_buffer,
+                ao,
+                water,
+                mirror,
+                &dummies.black,
+                &dummies.depth,
+                contact,
+                il,
+                false,
+                true,
+                false,
             ),
             b: mk(
                 "frame b",
@@ -6504,6 +6590,7 @@ impl Backend {
                 &t.depth_ss,
                 contact,
                 il,
+                true,
                 true,
                 true,
             ),
@@ -6520,6 +6607,7 @@ impl Backend {
                     &dummies.black,
                     false,
                     false,
+                    true,
                 ),
                 mk(
                     "frame mirror",
@@ -6533,6 +6621,7 @@ impl Backend {
                     &dummies.black,
                     false,
                     false,
+                    true,
                 ),
                 mk(
                     "frame probe capture",
@@ -6546,6 +6635,7 @@ impl Backend {
                     &dummies.black,
                     false,
                     false,
+                    true,
                 ),
                 mk(
                     "frame impostor 0",
@@ -6559,6 +6649,7 @@ impl Backend {
                     &dummies.black,
                     false,
                     false,
+                    true,
                 ),
                 mk(
                     "frame impostor 1",
@@ -6572,6 +6663,7 @@ impl Backend {
                     &dummies.black,
                     false,
                     false,
+                    true,
                 ),
                 mk(
                     "frame HUD",
@@ -6585,6 +6677,7 @@ impl Backend {
                     &dummies.black,
                     false,
                     false,
+                    true,
                 ),
                 mk(
                     "frame drawn pick",
@@ -6598,6 +6691,7 @@ impl Backend {
                     &dummies.black,
                     false,
                     false,
+                    true,
                 ),
                 mk(
                     "frame water exterior",
@@ -6611,6 +6705,7 @@ impl Backend {
                     &dummies.black,
                     false,
                     false,
+                    true,
                 ),
                 mk(
                     "frame probe irradiance capture",
@@ -6624,6 +6719,7 @@ impl Backend {
                     &dummies.black,
                     false,
                     false,
+                    true,
                 ),
             ],
         }
@@ -8838,6 +8934,11 @@ impl Backend {
                 self.snow_trail.prints = Some((buffer, f.snow_prints_gen, n as u32));
             }
         }
+        // Terrain only discards by the exclusion mask while a marker face is
+        // in view: without one it keeps the plain depth and shadow pipelines
+        // of before, whose cost the mask-discarding ones measured 0.05 ms
+        // above (terrain_discards).
+        let exclusion = terrain_discards(lists, self.cull.last.bins[crate::gpu_cull::BIN_TERRAIN_HOLE]);
         let mut main = self.frame_uniforms(fu, fu.view, Some(fu.camera_pos), &cascades, &splits);
         main.cam_up[3] = camera_water_level;
         if f.photo_tile != Mat4::IDENTITY {
@@ -9490,7 +9591,11 @@ impl Backend {
                     {
                         continue;
                     }
-                    if terrain && (c.alpha || !shadow_depth_only) {
+                    // Terrain takes the hole's shadow pipeline only while a
+                    // marker is in view: it discards by the exclusion mask,
+                    // which is what a hole needs, and costs more than the
+                    // depth-only pipeline the opaque ground takes otherwise.
+                    if terrain && exclusion {
                         shadow_terrain_lists[ci].push(c.cmd);
                     } else if c.alpha || !shadow_depth_only {
                         shadow_alpha_lists[ci].push(c.cmd);
@@ -9548,6 +9653,7 @@ impl Backend {
                 mask_2s,
                 water,
                 water_exclusion,
+                terrain_hole,
                 blend,
                 glow,
                 glow_alpha,
@@ -9563,6 +9669,7 @@ impl Backend {
                 mask_2s,
                 water,
                 water_exclusion,
+                terrain_hole,
                 blend,
                 glow,
                 glow_alpha,
@@ -9774,7 +9881,7 @@ impl Backend {
         if gpu.is_some() {
             // the GPU bins, read back a frame or two late
             let c = self.cull.last;
-            stats.draws += c.main_draws() + c.bins[BIN_WATER_EXCLUSION];
+            stats.draws += c.main_draws() + c.bins[BIN_WATER_EXCLUSION] + c.bins[BIN_TERRAIN_HOLE];
             stats.shadow_draws += c.shadow_draws();
             for (k, draws) in stats.shadow.draws.iter_mut().enumerate() {
                 *draws += c.cascade_draws(k);
@@ -10016,6 +10123,7 @@ impl Backend {
                 });
                 let cpu_ranges = rg.shadow.iter().chain(&rg.shadow_alpha).chain(&rg.shadow_terrain);
                 if gpu_on || cpu_ranges.chain(&rg.spot).chain(&rg.spot_terrain).any(|r| r.1 > 0) {
+                    pass.set_bind_group(0, &self.groups.shadow, &[]);
                     pass.set_bind_group(1, &self.records_bind_group, &[]);
                     pass.set_bind_group(2, &scene.textures, &[]);
                     pass.set_vertex_buffer(0, scene.vertices.slice(..));
@@ -10055,6 +10163,9 @@ impl Backend {
                         Merge(k) => {
                             if let Some(merges) = &merges {
                                 self.shadow_merge.merge(&mut pass, k, &merges[k], size);
+                                // merge() binds its own group 0: put the frame
+                                // back for the alpha-tested casters below
+                                pass.set_bind_group(0, &self.groups.shadow, &[]);
                             }
                         }
                         Spots => {
@@ -10182,8 +10293,21 @@ impl Backend {
             } else {
                 &self.pipelines.pre_terrain
             };
-            draw(&mut pass, pre_pipes[0], rg.terrain);
-            draw(&mut pass, pre_pipes[0], rg.terrain_pbr);
+            // Only a marker in view needs the mask discard: otherwise the
+            // terrain keeps the plain prepass of before, whose early depth
+            // test survives. Masked PBR terrain keeps its alpha test in both
+            // (its own discard costs it the early depth test already).
+            let terrain_draw = if exclusion {
+                if normals.is_some() {
+                    &self.pipelines.pre_terrain_hole_normal
+                } else {
+                    &self.pipelines.pre_terrain_hole
+                }
+            } else {
+                pre_pipes[0]
+            };
+            draw(&mut pass, terrain_draw, rg.terrain);
+            draw(&mut pass, terrain_draw, rg.terrain_pbr);
             draw(&mut pass, terrain_pipe, rg.terrain_mask);
             let pre = if occl { &self.occlusion.pre1 } else { &self.indirect };
             draw_from(&mut pass, pre_pipes[0], pre, rg.opaque);
@@ -10514,6 +10638,7 @@ impl Backend {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
+                pass.set_bind_group(0, &self.groups.shadow, &[]);
                 pass.set_bind_group(1, &self.records_bind_group, &[]);
                 pass.set_bind_group(2, &scene.textures, &[]);
                 pass.set_vertex_buffer(0, scene.vertices.slice(..));
@@ -10683,11 +10808,18 @@ impl Backend {
             bind_mesh(&mut pass, &self.groups.mask);
             draw(&mut pass, &self.pipelines.water_mask, rg.water);
             draw(&mut pass, &self.pipelines.water_exclusion, rg.water_exclusion);
+            draw(&mut pass, &self.pipelines.terrain_hole_mask, rg.terrain_hole);
             draw_bin(
                 &mut pass,
                 Some(&self.pipelines.water_exclusion),
                 BIN_WATER_EXCLUSION,
                 BIN_WATER_EXCLUSION,
+            );
+            draw_bin(
+                &mut pass,
+                Some(&self.pipelines.terrain_hole_mask),
+                BIN_TERRAIN_HOLE,
+                BIN_TERRAIN_HOLE,
             );
         }
         mark(&mut encoder, MARK_WATER_INTERFACE_END);
@@ -10731,8 +10863,14 @@ impl Backend {
                 if let Some(terrain) = &self.pipelines.pre_terrain_msaa {
                     draw(&mut pass, terrain, rg.terrain_mask);
                 }
-                draw(&mut pass, &pipes[0], rg.terrain);
-                draw(&mut pass, &pipes[0], rg.terrain_pbr);
+                // the terrain reads the exclusion mask only while a marker
+                // is in view; otherwise the plain prepass of before
+                let terrain = match (&self.pipelines.pre_terrain_hole_msaa, exclusion) {
+                    (Some(hole), true) => hole,
+                    _ => &pipes[0],
+                };
+                draw(&mut pass, terrain, rg.terrain);
+                draw(&mut pass, terrain, rg.terrain_pbr);
                 for (b, (pipe, r)) in [(&pipes[0], rg.opaque), (&pipes[1], rg.opaque_2s)].into_iter().enumerate() {
                     draw(&mut pass, pipe, r);
                     draw_bin(&mut pass, Some(pipe), b, b);
@@ -13210,7 +13348,38 @@ mod tests {
         }
         assert_eq!(cut[3], (4, KIND_PREPASS));
         assert_eq!(cut[8], (6, KIND_NONE));
-        assert_eq!(cut[9], (7, KIND_TESTED));
+        assert_eq!(cut[9], (0, KIND_NONE), "the empty hole list");
+        assert_eq!(cut[10], (7, KIND_TESTED));
+    }
+
+    /// The pipeline that reads the exclusion mask costs more than the plain
+    /// depth and shadow ones (+0.05 ms on a coast scene without a marker,
+    /// 2026-11-17): the terrain only takes it while a terrain-hole marker is
+    /// in the view, where the mask has something to cut out. A water-exclusion
+    /// marker writes only the water's channel, so it leaves the terrain on the
+    /// plain pipelines.
+    #[test]
+    fn terrain_discards_only_while_a_hole_marker_is_in_view() {
+        let cmd = DrawCmd {
+            index_count: 0,
+            first_index: 0,
+            base_vertex: 0,
+            record: 0,
+            bounds: [0.0; 4],
+        };
+        let mut lists = DrawLists::default();
+        assert!(!terrain_discards(&lists, 0));
+        // "Occlude water": the water is hidden, the ground is not cut
+        lists.water_exclusion.push(cmd);
+        assert!(!terrain_discards(&lists, 0));
+        lists.clear();
+        // the CPU fallback lists the markers themselves
+        lists.terrain_hole.push(cmd);
+        assert!(terrain_discards(&lists, 0));
+        lists.clear();
+        assert!(!terrain_discards(&lists, 0));
+        // with the GPU lists they are the hole bin's draws
+        assert!(terrain_discards(&lists, 6));
     }
 
     #[test]

@@ -71,7 +71,10 @@ pub fn update(
         }
     }
     if crate::ao::water_demo::mode().is_none() && camera.free().is_none() {
-        let (eye, target) = if mode.contains("exclusion") {
+        let (eye, target) = if mode.contains("terrain-hole") {
+            // Hill above the water with a marker slab between it and the eye.
+            (Vec3::new(100.0, 100.0, 28.0), Vec3::new(100.0, 120.0, 24.0))
+        } else if mode.contains("exclusion") {
             (Vec3::new(48.0, 111.0, 28.0), Vec3::new(48.0, 127.0, 19.0))
         } else if mode.contains("alpha-layers") || mode.contains("alpha-cross") {
             (Vec3::new(46.0, 117.0, 24.0), Vec3::new(56.0, 130.0, 19.5))
@@ -211,6 +214,34 @@ pub fn update(
                 "",
             ));
         }
+        if let Some(handle) = world.main_region {
+            world.apply(NetEvent::ObjectUpdates { handle, objects });
+        }
+        return changed;
+    }
+    if mode.contains("terrain-hole") {
+        // Marker-textured slab in front of the hill: the terrain behind it
+        // drops out through the shared exclusion mask. The -control mode
+        // shows the same slab with the transparent texture: ground intact.
+        let texture = if mode.contains("terrain-hole-control") {
+            aurora_prim::te::TRANSPARENT_TEXTURE
+        } else {
+            aurora_prim::te::TERRAIN_HOLE_TEXTURE
+        };
+        let mut te = super::te([1.0; 4], 0, true, 0.0);
+        for face in &mut Arc::make_mut(&mut te).faces {
+            face.texture = texture;
+        }
+        objects.push(super::prim(
+            99540,
+            Vec3::new(100.0, 110.0, 25.0),
+            Quat::IDENTITY,
+            Vec3::new(10.0, 0.3, 6.0),
+            box_shape,
+            te,
+            Default::default(),
+            "",
+        ));
         if let Some(handle) = world.main_region {
             world.apply(NetEvent::ObjectUpdates { handle, objects });
         }

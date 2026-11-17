@@ -10,6 +10,8 @@
 //   10..12  shadow cascades, casters drawn with the alpha test
 //   13..28  projector shadow maps (up to the configured budget)
 //   29      water exclusion surfaces (no scene colour, shadow or reflection)
+//   30      shadow casters of the probe being captured (alpha tested)
+//   31      terrain-hole markers, like 29 but into the hole's mask channel
 // Bins keep the record order (no atomics on the slots): coplanar faces drawn
 // in the same pass keep the same winner from one frame to the next.
 //   cs_classify: bin mask of each face, face count of each bin per workgroup;
@@ -23,9 +25,10 @@
 // The tests mirror Scene::build_lists (CPU path) and `gpu_cull::face_bins`.
 // The Hi-Z sphere test (hiz_test.wgsl) is prepended to this module.
 
-const BINS: u32 = 31u;
+const BINS: u32 = 32u;
 const BIN_WATER_EXCLUSION: u32 = 29u;
 const BIN_PROBE_SHADOW: u32 = 30u;
+const BIN_TERRAIN_HOLE: u32 = 31u;
 const MAIN_BINS: u32 = 4u;
 const BIN_SHADOW: u32 = 4u;
 const BIN_REFL_WATER: u32 = 7u;
@@ -35,19 +38,19 @@ const BIN_SHADOW_ALPHA: u32 = 10u;
 const BIN_SPOT: u32 = 13u;
 // argument regions after the bins: occlusion phase 1 and phase 2 prepass
 // lists of each main bin (own counts)
-const REGION_PRE1: u32 = 31u;
-const REGION_PRE2: u32 = 35u;
+const REGION_PRE1: u32 = 32u;
+const REGION_PRE2: u32 = 36u;
 
 // counts: bin sizes, then statistics
-const COUNT_VISIBLE: u32 = 31u;
-const COUNT_TRIANGLES: u32 = 32u;
-const COUNT_HIDDEN: u32 = 33u;
-const COUNT_PRE1: u32 = 34u;
-const COUNT_PRE2: u32 = 38u;
-const COUNT_CLAMPED: u32 = 51u;
+const COUNT_VISIBLE: u32 = 32u;
+const COUNT_TRIANGLES: u32 = 33u;
+const COUNT_HIDDEN: u32 = 34u;
+const COUNT_PRE1: u32 = 35u;
+const COUNT_PRE2: u32 = 39u;
+const COUNT_CLAMPED: u32 = 52u;
 // profile (F_SHADOW_STATS), per cascade: triangles of its casters, then its
 // rigged casters (avatars and rigged meshes), then their triangles
-const COUNT_SHADOW: u32 = 42u;
+const COUNT_SHADOW: u32 = 43u;
 const SHADOW_STATS: u32 = 9u;
 
 // planes of a cascade's caster volume (CullFrame.shadow_planes)
@@ -64,6 +67,7 @@ const PASS_OPAQUE_2S: u32 = 2u;
 const PASS_MASK_2S: u32 = 4u;
 const PASS_BLEND: u32 = 5u;
 const PASS_WATER_EXCLUSION: u32 = 6u;
+const PASS_TERRAIN_HOLE: u32 = 7u;
 const FACE_FIRST: u32 = 8u;
 
 // CullObject.flags
@@ -205,7 +209,7 @@ struct OcclParams {
 @group(0) @binding(4) var<storage, read_write> masks: array<u32>;
 // per workgroup and bin: face count, then (after cs_scan) offset
 @group(0) @binding(5) var<storage, read_write> group_data: array<u32>;
-@group(0) @binding(6) var<storage, read_write> counts: array<atomic<u32>, 53>;
+@group(0) @binding(6) var<storage, read_write> counts: array<atomic<u32>, 54>;
 // DrawIndexedIndirect: index_count, instance_count, first_index, base_vertex, first_instance
 @group(0) @binding(7) var<storage, read_write> args: array<u32>;
 @group(0) @binding(8) var<uniform> occl: OcclParams;
@@ -417,9 +421,10 @@ fn face_mask(i: u32) -> u32 {
     if (fp == PASS_HIDDEN) {
         return 0u;
     }
-    if (fp == PASS_WATER_EXCLUSION) {
+    if (fp == PASS_WATER_EXCLUSION || fp == PASS_TERRAIN_HOLE) {
         let allowed = in_view && (o.flags & (OBJ_AVATAR | OBJ_RIGGED)) == 0u && o.avatar >= n;
-        return select(0u, 1u << BIN_WATER_EXCLUSION, allowed);
+        let bin = select(BIN_WATER_EXCLUSION, BIN_TERRAIN_HOLE, fp == PASS_TERRAIN_HOLE);
+        return select(0u, 1u << bin, allowed);
     }
     var m = 0u;
     let tris = select(0u, f.index_count / 3u, index_range_fits(f));

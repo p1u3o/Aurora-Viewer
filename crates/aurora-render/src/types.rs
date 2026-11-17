@@ -632,8 +632,10 @@ pub enum RiggedBlendDepth {
 pub struct DrawLists {
     /// Select clipped depth/shadow variants only while an avatar is entering.
     pub portal_clipping: bool,
-    /// Invisible water exclusion surfaces, in the CPU culling fallback.
+    /// Invisible water-exclusion surfaces, in the CPU culling fallback.
     pub water_exclusion: Vec<DrawCmd>,
+    /// Invisible terrain-hole markers, in the CPU culling fallback.
+    pub terrain_hole: Vec<DrawCmd>,
     /// Own HUD attachments, drawn after post-processing with their own depth.
     pub hud_view: Option<HudView>,
     pub hud_opaque: Vec<DrawCmd>,
@@ -858,6 +860,7 @@ impl DrawLists {
         self.mask_two_sided.clone_from(&src.mask_two_sided);
         self.water.clone_from(&src.water);
         self.water_exclusion.clone_from(&src.water_exclusion);
+        self.terrain_hole.clone_from(&src.terrain_hole);
         self.blend.clone_from(&src.blend);
         self.blend_under_water.clone_from(&src.blend_under_water);
         self.blend_glow.clone_from(&src.blend_glow);
@@ -919,6 +922,7 @@ impl DrawLists {
         self.mask_two_sided.clear();
         self.water.clear();
         self.water_exclusion.clear();
+        self.terrain_hole.clear();
         self.blend.clear();
         self.blend_under_water.clear();
         self.blend_depth = 0;

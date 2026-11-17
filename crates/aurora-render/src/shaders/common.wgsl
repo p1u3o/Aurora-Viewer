@@ -1234,13 +1234,35 @@ fn camera_underwater() -> bool {
 
 // LLDrawPoolWaterExclusion: the nearest front-facing exclusion surface
 // hides water only when it is in front of the nearest water interface.
-fn water_excluded(world_pos:vec3<f32>) -> bool {
+
+// The exclusion mask under `world_pos`: red 0 where a water-exclusion surface
+// hides the water, green 0 where a terrain-hole marker cuts the ground out
+// (1, 1 where nothing is excluded). Each marker writes its own channel.
+fn exclusion_texel(world_pos:vec3<f32>) -> vec2<f32> {
     let clip=frame.view_proj*vec4<f32>(world_pos,1.0);
-    if(clip.w<=0.0){return false;}
+    if(clip.w<=0.0){return vec2<f32>(1.0);}
     let uv=clip.xy/clip.w*vec2<f32>(0.5,-0.5)+vec2<f32>(0.5);
     let size=vec2<i32>(textureDimensions(water_exclusion_mask));
     let pixel=clamp(vec2<i32>(uv*vec2<f32>(size)),vec2<i32>(0),size-vec2<i32>(1));
-    return textureLoad(water_exclusion_mask,pixel,0).r<0.5;
+    return textureLoad(water_exclusion_mask,pixel,0).rg;
+}
+
+fn water_excluded(world_pos:vec3<f32>) -> bool {
+    return exclusion_texel(world_pos).r<0.5;
+}
+
+// Terrain hole (TERRAIN_HOLE_TEXTURE, Aurora-only): a face with the marker
+// texture writes the hole's channel of the exclusion mask, and every terrain
+// entry point discards where it holds. The water's own channel is written
+// beside it (the ground is not there for the water to lie over), and a
+// water-exclusion surface, which only writes red, cuts no ground. Reflections
+// keep their own view's terrain: the mask only matches the main view that
+// drew it. The depth prepass and the shadows run before the mask pass and
+// read its previous frame, so a moving hole (or a moving camera) trails by
+// one frame at most.
+fn terrain_holed(world_pos:vec3<f32>) -> bool {
+    if(in_reflection_pass()){return false;}
+    return exclusion_texel(world_pos).g<0.5;
 }
 
 fn water_scene_light(world_pos:vec3<f32>) -> vec3<f32> {

@@ -576,6 +576,23 @@ fn footer(ui: &mut egui::Ui, p: &Palette, tool: &mut BuildTool, world: &mut Worl
             tool.edit_faces(world, |f, _, _| f.texture = DEFAULT_TEXTURE);
         }
     }
+    let terrain = sel
+        .iter()
+        .all(|x| is_hide_terrain(&x.te, tool.face_legacy(env, world, x.idx, x.face, &x.te).as_ref()));
+    if let Some(value) = check(
+        &mut right,
+        p,
+        terrain,
+        false,
+        aurora_i18n::tr!("build-ui-texture-occlude-terrain"),
+        !has_pbr && tool.ui.tex_tab != 2,
+    ) {
+        if value {
+            tool.ui.confirm = Some(Confirm::HideTerrain);
+        } else {
+            tool.edit_faces(world, |f, _, _| f.texture = DEFAULT_TEXTURE);
+        }
+    }
     let (value, mixed) = same(sel.iter().map(|x| x.te.media_flags & TEM_TEX_GEN_MASK));
     if let Some(value) = combo(
         &mut right,

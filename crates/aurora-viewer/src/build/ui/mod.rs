@@ -157,6 +157,8 @@ pub enum Confirm {
     DeleteMedia,
     /// WaterExclusionSurfacesWarning.
     HideWater,
+    /// Aurora-only terrain hole confirmation.
+    HideTerrain,
     /// ReflectionProbeApplied.
     Probe,
 }

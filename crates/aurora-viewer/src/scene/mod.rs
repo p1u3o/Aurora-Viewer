@@ -393,6 +393,13 @@ impl FaceDraw {
         self.tex_id == aurora_prim::te::WATER_EXCLUSION_TEXTURE && self.pbr_alpha.is_none() && self.te_alpha >= 0.999
     }
 
+    /// Aurora-only marker (TERRAIN_HOLE_TEXTURE) that punches a hole in the
+    /// terrain behind the face. Same guards as water exclusion: opaque,
+    /// no PBR alpha, full texture-entry alpha.
+    fn terrain_hole(&self) -> bool {
+        self.tex_id == aurora_prim::te::TERRAIN_HOLE_TEXTURE && self.pbr_alpha.is_none() && self.te_alpha >= 0.999
+    }
+
     /// Its zero alpha hides the whole face, as LL never draws it: a
     /// Blinn-Phong face, or a blended glTF material. An opaque glTF
     /// material ignores its base color alpha and a masked one leaves it to
@@ -732,7 +739,9 @@ fn cull_face(f: &FaceDraw, idx: usize, first: bool) -> CullFace {
         first_index: f.cmd.first_index,
         base_vertex: f.cmd.base_vertex,
         object: idx as u32,
-        bits: if f.water_exclusion() {
+        bits: if f.terrain_hole() {
+            aurora_render::gpu_cull::pass::TERRAIN_HOLE
+        } else if f.water_exclusion() {
             aurora_render::gpu_cull::pass::WATER_EXCLUSION
         } else {
             f.pass.gpu_code()
@@ -5324,6 +5333,7 @@ impl Scene {
             .unwrap_or_else(|| view.planes[4].truncate().normalize_or_zero());
         struct Local {
             water_exclusion: Vec<DrawCmd>,
+            terrain_hole: Vec<DrawCmd>,
             opaque: Vec<DrawCmd>,
             opaque2: Vec<DrawCmd>,
             mask: Vec<DrawCmd>,
@@ -5355,6 +5365,7 @@ impl Scene {
         }
         let new_local = || Local {
             water_exclusion: Vec::new(),
+            terrain_hole: Vec::new(),
             opaque: Vec::new(),
             opaque2: Vec::new(),
             mask: Vec::new(),
@@ -5560,8 +5571,14 @@ impl Scene {
                 if pass == Pass::Hidden {
                     // LLVolumeGeometryManager excludes attachments and rigged
                     // meshes from PASS_INVISIBLE. No ordinary depth or shadow.
-                    if full && in_view && f.water_exclusion() && avatar.is_none() && !g.rigged {
-                        l.water_exclusion.push(cmd);
+                    // Each exclusion marker keeps its own pass, and its own
+                    // mask channel.
+                    if full && in_view && avatar.is_none() && !g.rigged {
+                        if f.terrain_hole() {
+                            l.terrain_hole.push(cmd);
+                        } else if f.water_exclusion() {
+                            l.water_exclusion.push(cmd);
+                        }
                     }
                     continue;
                 }
@@ -5672,6 +5689,7 @@ impl Scene {
         .into_iter()
         .reduce(|mut a, mut b| {
             a.water_exclusion.append(&mut b.water_exclusion);
+            a.terrain_hole.append(&mut b.terrain_hole);
             a.opaque.append(&mut b.opaque);
             a.opaque2.append(&mut b.opaque2);
             a.mask.append(&mut b.mask);
@@ -5704,6 +5722,7 @@ impl Scene {
         self.visit_tmp = visit;
         self.lists.opaque = result.opaque;
         self.lists.water_exclusion = result.water_exclusion;
+        self.lists.terrain_hole = result.terrain_hole;
         self.lists.opaque_two_sided = result.opaque2;
         self.lists.mask = result.mask;
         self.lists.mask_two_sided = result.mask2;
@@ -8229,6 +8248,26 @@ mod tests {
         assert!(!face.water_exclusion(), "ordinary transparency must not hide water");
     }
 
+    #[test]
+    fn terrain_hole_has_its_own_exclusion_draw() {
+        let mut face = FaceDraw {
+            tex_id: aurora_prim::te::TERRAIN_HOLE_TEXTURE,
+            base_slot: aurora_render::textures::TRANSPARENT,
+            ..test_face(Pass::Hidden, true)
+        };
+        assert_eq!(classify(&face, AlphaKind::Mask), Pass::Hidden);
+        assert!(face.terrain_hole());
+        assert!(!face.water_exclusion(), "a hole is not a water exclusion");
+        assert_eq!(
+            cull_face(&face, 0, true).bits,
+            aurora_render::gpu_cull::pass::TERRAIN_HOLE | FACE_FIRST
+        );
+        face.te_alpha = 0.5;
+        assert!(!face.terrain_hole());
+        face.te_alpha = 1.0;
+        face.pbr_alpha = Some(0);
+        assert!(!face.terrain_hole());
+    }
     /// LLVOAvatar::renderSkinned / renderTransparent: the system body is
     /// alpha-tested and never blended, whatever the alpha of its bake; hair,
     /// eyelashes and skirt are blended, and alpha-tested as well.

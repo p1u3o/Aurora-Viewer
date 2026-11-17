@@ -44,6 +44,9 @@ pub mod pass {
     pub const MASK_2S: u32 = 4;
     pub const BLEND: u32 = 5;
     pub const WATER_EXCLUSION: u32 = 6;
+    /// The terrain-hole marker: the other exclusion pass, with a bin of its
+    /// own so that only the terrain reads what it covers.
+    pub const TERRAIN_HOLE: u32 = 7;
     pub const BITS: u32 = 7;
 }
 
@@ -90,10 +93,13 @@ pub mod avatar_state {
     pub const LOADING: u32 = 4;
 }
 
-pub const BINS: usize = 31;
+pub const BINS: usize = 32;
 pub const BIN_WATER_EXCLUSION: usize = 29;
 /// Shadow casters of the probe being captured, drawn with the alpha test.
 pub const BIN_PROBE_SHADOW: usize = 30;
+/// Terrain-hole markers: drawn into the hole's own mask channel, and never
+/// into the water's.
+pub const BIN_TERRAIN_HOLE: usize = 31;
 pub const MAIN_BINS: usize = 4;
 /// Shadow casters of each cascade drawn depth only: opaque faces, which
 /// `fs_shadow` never discards.
@@ -125,10 +131,10 @@ pub const COUNT_PRE2: usize = COUNT_PRE1 + MAIN_BINS;
 /// casters, then its rigged casters, then their triangles.
 const COUNT_SHADOW: usize = COUNT_PRE2 + MAIN_BINS;
 /// After the shadow statistics (`COUNT_SHADOW` .. `+ SHADOW_STATS`).
-const COUNT_CLAMPED: usize = 51;
+const COUNT_CLAMPED: usize = 52;
 #[cfg(test)]
 const SHADOW_STATS: usize = 9;
-const COUNTS: usize = 53;
+const COUNTS: usize = 54;
 
 /// Keep the whole indirect index range inside the bound u16 index buffer.
 /// Invalid face metadata skips the draw rather than exposing an out-of-range
@@ -570,9 +576,14 @@ pub fn face_bins(frame: &CullFrame, faces: &[CullFace], objects: &[CullObject], 
     if p == pass::HIDDEN {
         return (0, visible);
     }
-    if p == pass::WATER_EXCLUSION {
+    if p == pass::WATER_EXCLUSION || p == pass::TERRAIN_HOLE {
         let allowed = in_view && o.flags & (object_flags::AVATAR | object_flags::RIGGED) == 0 && o.avatar >= n;
-        return (if allowed { 1 << BIN_WATER_EXCLUSION } else { 0 }, visible);
+        let bin = if p == pass::TERRAIN_HOLE {
+            BIN_TERRAIN_HOLE
+        } else {
+            BIN_WATER_EXCLUSION
+        };
+        return (if allowed { 1 << bin } else { 0 }, visible);
     }
     let mut m = 0u32;
     let rigged = o.flags & (object_flags::RIGGED | object_flags::AVATAR) != 0;
@@ -1493,7 +1504,7 @@ mod tests {
             max_storage_buffer_binding_size: 2 << 20,
             ..Default::default()
         };
-        assert_eq!(face_capacity(&limits), 2688);
+        assert_eq!(face_capacity(&limits), 2560);
         assert_eq!(sphere_capacity(&limits), 32768);
         limits.max_storage_buffer_binding_size = 1 << 20;
         assert_eq!(face_capacity(&limits), 1280);
@@ -1655,14 +1666,16 @@ mod tests {
                 .trim_end_matches('u');
             v.parse().unwrap_or_else(|_| panic!("{name}: {v}"))
         };
-        let pairs: [(&str, u32); 52] = [
+        let pairs: [(&str, u32); 54] = [
             ("F_PROBE_SHADOW", frame_flags::PROBE_SHADOW),
             ("F_FIRST_PERSON", frame_flags::FIRST_PERSON),
             ("F_SHOW_SELF", frame_flags::SHOW_SELF),
             ("OBJ_FIRST_PERSON_HIDDEN", object_flags::FIRST_PERSON_HIDDEN),
             ("FACE_FIRST_PERSON_HIDDEN", FACE_FIRST_PERSON_HIDDEN),
             ("PASS_WATER_EXCLUSION", pass::WATER_EXCLUSION),
+            ("PASS_TERRAIN_HOLE", pass::TERRAIN_HOLE),
             ("BIN_WATER_EXCLUSION", BIN_WATER_EXCLUSION as u32),
+            ("BIN_TERRAIN_HOLE", BIN_TERRAIN_HOLE as u32),
             ("BIN_SHADOW_ALPHA", BIN_SHADOW_ALPHA as u32),
             ("BIN_SPOT", BIN_SPOT as u32),
             ("F_SPOT", frame_flags::SPOT),
@@ -1804,9 +1817,10 @@ mod tests {
             let masks: Vec<u32> = (0..CLASSIFY_GROUP)
                 .map(|_| {
                     if round == 0 {
-                        (1 << BINS) - 1
+                        // every bin: one per bit of the mask
+                        u32::MAX
                     } else {
-                        (rand() as u32) & ((1 << BINS) - 1)
+                        rand() as u32
                     }
                 })
                 .collect();
@@ -1875,6 +1889,26 @@ mod tests {
             0,
             "attachments do not exclude water"
         );
+    }
+
+    /// The terrain-hole marker keeps the same guards but takes its own bin:
+    /// the terrain cuts only for it, and the water pass never sees it.
+    #[test]
+    fn terrain_hole_has_its_own_exclusion_bin() {
+        let frame = frame_for_tests();
+        let objects = [CullObject {
+            sphere: [10.0, 0.0, 0.0, 1.0],
+            flags: object_flags::ACTIVE,
+            ..CullObject::NONE
+        }];
+        let faces = [CullFace {
+            object: 0,
+            bits: pass::TERRAIN_HOLE | FACE_FIRST,
+            index_count: 6,
+            ..CullFace::NONE
+        }];
+        let spheres = world_spheres(&objects, &[], &[], &[]);
+        assert_eq!(face_bins(&frame, &faces, &objects, &spheres, 0), (1 << BIN_TERRAIN_HOLE, true));
     }
 
     #[test]

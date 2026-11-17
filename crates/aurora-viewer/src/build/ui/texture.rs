@@ -1468,6 +1468,13 @@ fn is_hide_water(te: &TextureFace, m: Option<&LegacyMaterial>) -> bool {
     te.texture == IMG_ALPHA_GRAD && te.color[3] >= 1.0 && m.is_none_or(|m| m.normal_map.is_nil() && m.specular_map.is_nil())
 }
 
+/// An "occlude terrain" face: the hole marker, opaque, no maps.
+fn is_hide_terrain(te: &TextureFace, m: Option<&LegacyMaterial>) -> bool {
+    te.texture == aurora_prim::te::TERRAIN_HOLE_TEXTURE
+        && te.color[3] >= 1.0
+        && m.is_none_or(|m| m.normal_map.is_nil() && m.specular_map.is_nil())
+}
+
 #[cfg(test)]
 mod empty_map_tests {
     use super::*;
@@ -1582,6 +1589,14 @@ fn face_options(
             if let Some(v) = check(ui, p, water, false, aurora_i18n::tr!("build-ui-texture-occlude-water"), true) {
                 if v {
                     tool.ui.confirm = Some(Confirm::HideWater);
+                } else {
+                    tool.edit_faces(world, |f, _, _| f.texture = DEFAULT_TEXTURE);
+                }
+            }
+            let terrain = sel.iter().all(|x| is_hide_terrain(&x.te, legacy0.as_ref()));
+            if let Some(v) = check(ui, p, terrain, false, aurora_i18n::tr!("build-ui-texture-occlude-terrain"), true) {
+                if v {
+                    tool.ui.confirm = Some(Confirm::HideTerrain);
                 } else {
                     tool.edit_faces(world, |f, _, _| f.texture = DEFAULT_TEXTURE);
                 }
