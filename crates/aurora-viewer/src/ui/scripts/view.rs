@@ -309,16 +309,24 @@ pub(super) fn body(
     } else {
         155.0
     };
-    // The dock marks the room it needs; the source takes the rest (its frame
-    // paints 4 points above and below it, hence the 8).
-    let dock_height = if problems.is_empty() { 0.0 } else { DOCK_HEIGHT };
-    let gaps = if dock_height > 0.0 { 2.0 } else { 1.0 };
-    let height = (ui.available_height() - footer_height - dock_height - ui.spacing().item_spacing.y * gaps - 8.0).max(120.0);
-    source(ui, p, e, id, settings, height, &prefs.search);
-    let clicked = if problems.is_empty() {
-        None
+    // The dock keeps its room, with "No problems." when everything compiles,
+    // unless the window is too short for it and a readable source; the source
+    // takes the rest (its frame paints 4 points above and below it, hence the
+    // 8).
+    let room = ui.available_height();
+    let gap = ui.spacing().item_spacing.y;
+    let dock_height = if room >= footer_height + DOCK_HEIGHT + SOURCE_MIN + gap * 2.0 + 8.0 {
+        DOCK_HEIGHT
     } else {
+        0.0
+    };
+    let gaps = if dock_height > 0.0 { 2.0 } else { 1.0 };
+    let height = (room - footer_height - dock_height - gap * gaps - 8.0).max(SOURCE_MIN);
+    source(ui, p, e, id, settings, height, &prefs.search);
+    let clicked = if dock_height > 0.0 {
         problems_dock(ui, p, problems, all_sources)
+    } else {
+        None
     };
     let footer = ui.scope(|ui| footer(ui, p, e, actions));
     if (e.tools.footer_height - footer.response.rect.height()).abs() > 0.5 {
@@ -330,111 +338,122 @@ pub(super) fn body(
 
 /// The room the Problems dock takes under the source.
 const DOCK_HEIGHT: f32 = 96.0;
+/// The least height the source keeps: a short window gives the dock's room to
+/// the source instead.
+const SOURCE_MIN: f32 = 120.0;
 
 /// The Problems dock (LLScriptEdCore's error list, given columns): the
 /// diagnostics of the scripts the window shows, each one a click away from its
 /// line. Returns the clicked row.
 fn problems_dock(ui: &mut egui::Ui, p: &Palette, rows: &[Problem], all_sources: Option<&mut bool>) -> Option<usize> {
     let mut clicked = None;
-    egui::Frame::new()
-        .fill(p.field.gamma_multiply(0.72))
-        .corner_radius(ui.visuals().window_corner_radius)
-        .inner_margin(4)
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(aurora_i18n::tr!("script-problems-count", count = rows.len() as i64))
-                        .size(11.0)
-                        .color(p.muted),
-                );
-                if let Some(all) = all_sources {
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(ui.available_width(), 20.0),
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            egui::ComboBox::from_id_salt("script_problems_scope")
-                                .selected_text(if *all {
-                                    aurora_i18n::tr!("script-problems-all")
-                                } else {
-                                    aurora_i18n::tr!("script-problems-this")
-                                })
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(all, false, aurora_i18n::tr!("script-problems-this"));
-                                    ui.selectable_value(all, true, aurora_i18n::tr!("script-problems-all"));
-                                });
-                        },
-                    );
-                }
-            });
-            // Columns: the message takes what the other two leave, and each
-            // cell starts at its left edge (a sized label would centre).
-            let (source_width, line_width) = (118.0, 48.0);
-            let message_width = (ui.available_width() - source_width - line_width - 16.0).max(60.0);
-            let cell = |ui: &mut egui::Ui, width: f32, text: RichText, truncate: bool| {
-                ui.allocate_ui_with_layout(Vec2::new(width, 14.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    let label = egui::Label::new(text);
-                    ui.add(if truncate { label.truncate() } else { label });
-                });
-            };
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                for (text, width) in [
-                    (aurora_i18n::tr!("script-problems-message"), message_width),
-                    (aurora_i18n::tr!("script-problems-source"), source_width),
-                    (aurora_i18n::tr!("script-problems-line"), line_width),
-                ] {
-                    cell(ui, width, RichText::new(text).size(11.0).color(p.muted), false);
-                }
-            });
-            egui::ScrollArea::vertical()
-                .id_salt("script_problems")
-                .max_height(DOCK_HEIGHT - 40.0)
+    // Exactly the room reserved for it, whatever the diagnostics are: the dock
+    // stays, saying "No problems." when everything compiles.
+    ui.allocate_ui_with_layout(
+        Vec2::new(ui.available_width(), DOCK_HEIGHT),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            egui::Frame::new()
+                .fill(p.field.gamma_multiply(0.72))
+                .corner_radius(ui.visuals().window_corner_radius)
+                .inner_margin(4)
                 .show(ui, |ui| {
-                    if rows.is_empty() {
-                        ui.label(RichText::new(aurora_i18n::tr!("script-problems-none")).size(11.0).color(p.muted));
-                        return;
-                    }
-                    for (index, row) in rows.iter().enumerate() {
-                        // the highlight goes behind the row's text
-                        let beneath = ui.painter().add(egui::Shape::Noop);
-                        let response = ui
-                            .push_id(("problem", index), |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 8.0;
-                                    cell(
-                                        ui,
-                                        message_width,
-                                        RichText::new(&row.message).monospace().size(11.0).color(p.danger),
-                                        true,
-                                    );
-                                    cell(ui, source_width, RichText::new(&row.source).size(11.0).color(p.muted), true);
-                                    cell(
-                                        ui,
-                                        line_width,
-                                        RichText::new(format!("{}:{}", row.line, row.column)).size(11.0).color(p.muted),
-                                        false,
-                                    );
-                                })
-                            })
-                            .inner;
-                        let hit = ui.interact(response.response.rect, response.response.id.with("row"), egui::Sense::click());
-                        if hit.hovered() {
-                            ui.painter().set(
-                                beneath,
-                                egui::Shape::rect_filled(
-                                    response.response.rect.expand2(Vec2::new(2.0, 0.0)),
-                                    ui.visuals().widgets.inactive.corner_radius,
-                                    p.raised.gamma_multiply(0.25),
-                                ),
+                    ui.set_min_size(ui.available_size());
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(aurora_i18n::tr!("script-problems-count", count = rows.len() as i64))
+                                .size(11.0)
+                                .color(p.muted),
+                        );
+                        if let Some(all) = all_sources {
+                            ui.allocate_ui_with_layout(
+                                Vec2::new(ui.available_width(), 20.0),
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    egui::ComboBox::from_id_salt("script_problems_scope")
+                                        .selected_text(if *all {
+                                            aurora_i18n::tr!("script-problems-all")
+                                        } else {
+                                            aurora_i18n::tr!("script-problems-this")
+                                        })
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(all, false, aurora_i18n::tr!("script-problems-this"));
+                                            ui.selectable_value(all, true, aurora_i18n::tr!("script-problems-all"));
+                                        });
+                                },
                             );
                         }
-                        if hit.clicked() {
-                            clicked = Some(index);
+                    });
+                    // Columns: the message takes what the other two leave, and each
+                    // cell starts at its left edge (a sized label would centre).
+                    let (source_width, line_width) = (118.0, 48.0);
+                    let message_width = (ui.available_width() - source_width - line_width - 16.0).max(60.0);
+                    let cell = |ui: &mut egui::Ui, width: f32, text: RichText, truncate: bool| {
+                        ui.allocate_ui_with_layout(Vec2::new(width, 14.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            let label = egui::Label::new(text);
+                            ui.add(if truncate { label.truncate() } else { label });
+                        });
+                    };
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        for (text, width) in [
+                            (aurora_i18n::tr!("script-problems-message"), message_width),
+                            (aurora_i18n::tr!("script-problems-source"), source_width),
+                            (aurora_i18n::tr!("script-problems-line"), line_width),
+                        ] {
+                            cell(ui, width, RichText::new(text).size(11.0).color(p.muted), false);
                         }
-                    }
+                    });
+                    egui::ScrollArea::vertical()
+                        .id_salt("script_problems")
+                        .max_height(ui.available_height().max(0.0))
+                        .show(ui, |ui| {
+                            if rows.is_empty() {
+                                ui.label(RichText::new(aurora_i18n::tr!("script-problems-none")).size(11.0).color(p.muted));
+                                return;
+                            }
+                            for (index, row) in rows.iter().enumerate() {
+                                // the highlight goes behind the row's text
+                                let beneath = ui.painter().add(egui::Shape::Noop);
+                                let response = ui
+                                    .push_id(("problem", index), |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 8.0;
+                                            cell(
+                                                ui,
+                                                message_width,
+                                                RichText::new(&row.message).monospace().size(11.0).color(p.danger),
+                                                true,
+                                            );
+                                            cell(ui, source_width, RichText::new(&row.source).size(11.0).color(p.muted), true);
+                                            cell(
+                                                ui,
+                                                line_width,
+                                                RichText::new(format!("{}:{}", row.line, row.column)).size(11.0).color(p.muted),
+                                                false,
+                                            );
+                                        })
+                                    })
+                                    .inner;
+                                let hit = ui.interact(response.response.rect, response.response.id.with("row"), egui::Sense::click());
+                                if hit.hovered() {
+                                    ui.painter().set(
+                                        beneath,
+                                        egui::Shape::rect_filled(
+                                            response.response.rect.expand2(Vec2::new(2.0, 0.0)),
+                                            ui.visuals().widgets.inactive.corner_radius,
+                                            p.raised.gamma_multiply(0.25),
+                                        ),
+                                    );
+                                }
+                                if hit.clicked() {
+                                    clicked = Some(index);
+                                }
+                            }
+                        });
                 });
-        });
+        },
+    );
     clicked
 }
 
@@ -442,9 +461,9 @@ fn problems_dock(ui: &mut egui::Ui, p: &Palette, rows: &[Problem], all_sources: 
 /// scripts draws them once, above the tree and the tabs, for the script in
 /// front. Insert, which inserts a function at the cursor, is one of them: the
 /// Legacy Viewer keeps it in the editor's bottom bar, Aurora in the menus.
-pub(super) fn menus(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, actions: &mut Vec<Action>, chosen: &mut Option<Command>) {
+pub(super) fn menus(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, chosen: &mut Option<Command>) {
     let ctx = ui.ctx().clone();
-    let bar = egui::MenuBar::new().ui(ui, |ui| {
+    egui::MenuBar::new().ui(ui, |ui| {
         ui.menu_button(aurora_i18n::tr!("script-menu-file"), |ui| {
             super::focus::claim(&ctx, ui.layer_id(), id);
             for (command, icon, label) in [
@@ -489,26 +508,6 @@ pub(super) fn menus(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, acti
             }
         });
     });
-    // The experience of the script in front, at the right end of the menu row.
-    if !e.target.object.is_nil() {
-        let width = (bar.response.rect.width() * 0.4).clamp(140.0, 320.0);
-        let rect = egui::Rect::from_min_size(
-            egui::pos2(bar.response.rect.right() - width, bar.response.rect.top()),
-            Vec2::new(width, bar.response.rect.height()),
-        );
-        let mut row = ui.new_child(
-            egui::UiBuilder::new()
-                .id_salt("script_experience_row")
-                .max_rect(rect)
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-        );
-        let editable = e.can_edit && e.loaded && e.saving.is_none();
-        if e.experience.combo(&mut row, p, editable)
-            && let Some(request) = e.experience.begin()
-        {
-            actions.push(Action::Experiences { request, target: e.target });
-        }
-    }
 }
 
 /// The Insert menu: a filter and the LSL / Lua functions it leaves, clicking
@@ -563,6 +562,9 @@ fn insertion_menu(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id) {
 /// The toolbar of the editor: Save, Open, the clipboard, Undo / Redo, Find,
 /// its preferences, and the state of the script. A window of the linkset's
 /// scripts draws it once, under the menus, for the script in front.
+/// The width the experience selector takes at the right of the toolbar.
+const EXPERIENCE_WIDTH: f32 = 270.0;
+
 pub(super) fn toolbar(
     ui: &mut egui::Ui,
     p: &Palette,
@@ -620,22 +622,38 @@ pub(super) fn toolbar(
             );
         }
         e.tools.header_width = ui.cursor().left() - left;
-        // an inline Find sits at the right of this row, in the window of a
-        // linkset's scripts (a window of its own puts it beside the body's
-        // header instead)
-        if with_search {
-            let width = Search::inline_width(ui);
-            if settings.search_inline && prefs.search.owns(id) && !ui.is_sizing_pass() && ui.available_width() >= width {
-                let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 24.0), egui::Sense::hover());
-                e.tools.search_slot = Some(
-                    ui.new_child(
-                        egui::UiBuilder::new()
-                            .id_salt("inline_search")
-                            .max_rect(rect)
-                            .layout(egui::Layout::top_down(egui::Align::Min)),
-                    ),
-                );
-            }
+        // At the right of this row: the Find controls when they are inline (in
+        // the window of a linkset's scripts; a window of its own puts them
+        // beside the body's header), then the experience of the script.
+        let experience = (!e.target.object.is_nil()).then_some(EXPERIENCE_WIDTH);
+        let find = with_search
+            .then(|| Search::inline_width(ui))
+            .filter(|_| settings.search_inline && prefs.search.owns(id) && !ui.is_sizing_pass());
+        let reserved = experience.unwrap_or(0.0) + find.unwrap_or(0.0);
+        if let Some(width) = find
+            && ui.available_width() >= width + reserved.min(0.0)
+        {
+            ui.add_space((ui.available_width() - width - reserved).max(0.0));
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 24.0), egui::Sense::hover());
+            e.tools.search_slot = Some(
+                ui.new_child(
+                    egui::UiBuilder::new()
+                        .id_salt("inline_search")
+                        .max_rect(rect)
+                        .layout(egui::Layout::top_down(egui::Align::Min)),
+                ),
+            );
+        }
+        if let Some(width) = experience.filter(|width| ui.available_width() >= *width) {
+            ui.add_space((ui.available_width() - width).max(0.0));
+            ui.allocate_ui_with_layout(Vec2::new(width, 24.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let editable = e.can_edit && e.loaded && e.saving.is_none();
+                if e.experience.combo(ui, p, editable)
+                    && let Some(request) = e.experience.begin()
+                {
+                    actions.push(Action::Experiences { request, target: e.target });
+                }
+            });
         }
     });
     let _ = row;
@@ -668,7 +686,7 @@ fn header(
     let ctx = ui.ctx().clone();
     let mut chosen = None;
     if own_menus {
-        menus(ui, p, e, id, actions, &mut chosen);
+        menus(ui, p, e, id, &mut chosen);
     }
     if let Some(command) = chosen {
         run(command, e, &ctx, id, settings, prefs, actions);

@@ -1266,7 +1266,7 @@ impl Editors {
             // for the script in front
             let mut chosen = None;
             if let Some(e) = self.documents.get_mut(active_index) {
-                view::menus(ui, p, e, source_id, actions, &mut chosen);
+                view::menus(ui, p, e, source_id, &mut chosen);
             }
             if let Some(command) = chosen
                 && let Some(e) = self.documents.get_mut(active_index)

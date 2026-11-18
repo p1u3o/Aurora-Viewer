@@ -2914,15 +2914,15 @@ the scripts of one linkset share a floater, whose tree is built each frame by
 `app/scripts.rs` from `BuildTool::contents` after RequestTaskInventory for
 each prim; `Editor::linkset` names the root (nil for an inventory script,
 which keeps a floater of its own). The window draws its menus under the
-title, its toolbar under them, and its commands at the bottom right (Reset,
-Running, the compile target and Save, in the Legacy Viewer's order); the
-experience of an object's script sits at the right end of the menu row; the
-source paints its current line, the indentation guides and the change bars of
-the unsaved text, and the Problems dock under it lists the diagnostics a
-click jumps to. Choosing a script in the tree or in the strip keeps every
-document: its text, cursor, folds and Find belong to the document, and only
-the one in front is drawn. The Legacy Viewer opens one floater per script:
-this is Aurora's own layout.
+title, its toolbar under them (Save All included, and the experience of an
+object's script at its right end), and its commands at the bottom right
+(Reset, Running, the compile target and Save, in the Legacy Viewer's order);
+the source paints its current line, the indentation guides and the change
+bars of the unsaved text, and the Problems dock under it keeps its room with
+"No problems." or lists the diagnostics a click jumps to. Choosing a script
+in the tree or in the strip keeps every document: its text, cursor, folds and
+Find belong to the document, and only the one in front is drawn. The Legacy
+Viewer opens one floater per script: this is Aurora's own layout.
 
 `ui/scripts/indent.rs` handles the four-column stops for Tab and Backspace
 and keeps the indentation on Enter in both editors, with egui's native cursor
