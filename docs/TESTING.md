@@ -2839,14 +2839,18 @@ the catch-up after a long frame.
 `linkset` adds three linked prims beside the plaza at frame 280, names their
 scripts ("Panel Script", "Door Script", "Lamp Flicker", "Lamp Sparkle") and
 opens the first and the last: the window shows the tree of the linkset on the
-left, grouped by prim, with the File, Edit and Help menus and the toolbar
-above it, and the compile target beside Save at the bottom right. Clicking a
-tree row opens that script (or brings it to the front); the window keeps every
-document, so switching loses no text, and a row shows a star while that
-script's text is unsaved. Right-clicking a script's row opens the contents
-window's menu for it (Open, Copy to inventory or Move, Delete, Close) and
-right-clicking a prim's row offers New script. Closing a script with unsaved
-text asks first, and closing the window asks about each such script in turn.
+left, with a filter field and a star on the script whose text is unsaved, the
+File, Edit, Insert and Help menus and the toolbar (Save All included) above
+it, and a tab strip flush above the source. The source shows the current line,
+indent guides, change bars against the saved script, and the status readout
+(Line, column, Spaces, size); a failing compile fills the Problems dock under
+it, whose rows go to their line. The compile target sits beside Save at the
+bottom right. Clicking a tree row or a tab opens that script (or brings it to
+the front); the window keeps every document, so switching loses no text.
+Right-clicking a script's row opens the contents window's menu for it (Open,
+Copy to inventory or Move, Delete, Close) and right-clicking a prim's row
+offers New script. Closing a script with unsaved text asks first, and closing
+the window asks about each such script in turn.
 `slua` opens an SLua script (the SLua subtype in its item flags, on a demo region with SLua enabled): Lua colors, `ll.` names and Lua help, the compile target on Lua.
 `object-readonly` opens an object script without Modify permission: its source
 and save controls stay unavailable, but Reset remains usable without waiting

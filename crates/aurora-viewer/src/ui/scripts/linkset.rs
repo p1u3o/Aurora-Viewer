@@ -98,11 +98,32 @@ pub(super) enum TreeAction {
 }
 
 /// The tree of the linkset: a group per prim, its scripts under it. Returns
-/// what a click or a menu entry of a row asked for.
-pub(super) fn tree(ui: &mut egui::Ui, p: &Palette, linkset: Option<&Linkset>, active: Option<ScriptTarget>) -> Option<TreeAction> {
+/// what a click or a menu entry of a row asked for. `filter` hides the
+/// scripts whose name does not contain its text (a prim whose name matches
+/// keeps all of its scripts).
+pub(super) fn tree(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    linkset: Option<&Linkset>,
+    active: Option<ScriptTarget>,
+    filter: &mut String,
+) -> Option<TreeAction> {
     let ctx = ui.ctx().clone();
     let mut chosen = None;
-    ui.label(RichText::new(aurora_i18n::tr!("script-linkset-scripts")).size(11.0).color(p.muted));
+    let width = ui.available_width();
+    let (_, cleared) = inventory::tree::search_field(
+        ui,
+        p,
+        filter,
+        aurora_i18n::tr!("script-linkset-filter"),
+        width,
+        !filter.is_empty(),
+        aurora_i18n::tr!("script-linkset-filter-clear"),
+    );
+    if cleared {
+        filter.clear();
+    }
+    let needle = filter.trim().to_lowercase();
     let height = (ui.available_height() - 6.0).max(60.0);
     inventory::tree::frame(ui, p, |ui| {
         inventory::tree::spacing(ui);
@@ -113,8 +134,18 @@ pub(super) fn tree(ui: &mut egui::Ui, p: &Palette, linkset: Option<&Linkset>, ac
                 return;
             };
             let mut closed = collapsed(&ctx, linkset.root);
+            let filtering = !needle.is_empty();
             for prim in &linkset.prims {
-                let open = !closed.contains(&prim.object);
+                let prim_matches = prim.name.to_lowercase().contains(&needle);
+                let scripts: Vec<&Script> = prim
+                    .scripts
+                    .iter()
+                    .filter(|script| !filtering || prim_matches || script.name.to_lowercase().contains(&needle))
+                    .collect();
+                if filtering && !prim_matches && scripts.is_empty() {
+                    continue;
+                }
+                let open = filtering || !closed.contains(&prim.object);
                 let (caret, label) = ui
                     .horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
@@ -144,7 +175,7 @@ pub(super) fn tree(ui: &mut egui::Ui, p: &Palette, linkset: Option<&Linkset>, ac
                 if !open {
                     continue;
                 }
-                for script in &prim.scripts {
+                for script in scripts {
                     let target = ScriptTarget {
                         object: prim.object,
                         item: script.item,
@@ -205,4 +236,91 @@ pub(super) fn tree(ui: &mut egui::Ui, p: &Palette, linkset: Option<&Linkset>, ac
         });
     });
     chosen
+}
+
+/// A tab of the strip: one open script.
+pub(super) struct Tab<'a> {
+    pub target: ScriptTarget,
+    pub name: &'a str,
+    pub lua: bool,
+    pub dirty: bool,
+}
+
+/// What a click of the strip asked for.
+pub(super) enum Tabs {
+    None,
+    Select(ScriptTarget),
+    Close(ScriptTarget),
+}
+
+/// The strip of open scripts, flush above the source: the tab in front takes
+/// the editor's own background, so it sits on its top edge. A tab marks its
+/// unsaved text with a star, as the tree does, and its cross closes it (the
+/// middle button too).
+pub(super) fn tabs(ui: &mut egui::Ui, p: &Palette, tabs: &[Tab<'_>], active: Option<ScriptTarget>, background: egui::Color32) -> Tabs {
+    let mut answer = Tabs::None;
+    let font = widgets::control_font(ui, 12.0);
+    let height = 24.0;
+    let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0));
+    egui::ScrollArea::horizontal()
+        .id_salt("script_linkset_tabs")
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for tab in tabs {
+                    let label = if tab.dirty {
+                        format!("{} *", tab.name)
+                    } else {
+                        tab.name.to_owned()
+                    };
+                    let name = ui.painter().layout_no_wrap(label, font.clone(), p.muted);
+                    let width = 26.0 + name.size().x + 20.0;
+                    let selected = active == Some(tab.target);
+                    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
+                    let fill = if selected {
+                        background
+                    } else if response.hovered() {
+                        p.raised.gamma_multiply(0.30)
+                    } else {
+                        egui::Color32::TRANSPARENT
+                    };
+                    ui.painter().rect_filled(rect, ui.visuals().window_corner_radius, fill);
+                    let center = rect.center().y;
+                    let mut left = rect.left() + 6.0;
+                    if let Some(t) = icons::global(inventory::item_icon(10, 10, u32::from(tab.lua))) {
+                        ui.painter().image(
+                            t.id(),
+                            egui::Rect::from_center_size(egui::pos2(left + 6.0, center), Vec2::splat(13.0)),
+                            uv,
+                            inventory::item_icon_color(10, 10, p),
+                        );
+                    }
+                    left += 15.0;
+                    ui.painter().galley(
+                        egui::pos2(left, center - name.size().y / 2.0),
+                        name.clone(),
+                        if selected { p.ink } else { p.muted },
+                    );
+                    let close = egui::Rect::from_center_size(egui::pos2(rect.right() - 9.0, center), Vec2::splat(15.0));
+                    let cross = ui.interact(close, response.id.with("close"), Sense::click());
+                    if let Some(t) = icons::global("x") {
+                        ui.painter().image(
+                            t.id(),
+                            egui::Rect::from_center_size(close.center(), Vec2::splat(10.0)),
+                            uv,
+                            if cross.hovered() { p.ink } else { p.muted },
+                        );
+                    }
+                    let cross = cross.on_hover_text(aurora_i18n::tr!("script-linkset-close"));
+                    if cross.clicked() || response.middle_clicked() {
+                        answer = Tabs::Close(tab.target);
+                    } else if response.clicked() && !selected {
+                        answer = Tabs::Select(tab.target);
+                    }
+                    response.on_hover_text(tab.name);
+                }
+            });
+        });
+    answer
 }

@@ -89,6 +89,12 @@ pub enum Action {
     },
     /// "New script" of a prim's menu in the tree.
     NewScript(Uuid),
+    /// Save every script the window has open: the linkset's (`linkset` not
+    /// nil), or the one document of a window of its own.
+    SaveAll {
+        linkset: Uuid,
+        target: ScriptTarget,
+    },
 }
 
 struct PendingSave {
@@ -222,6 +228,11 @@ pub struct Editors {
     /// The script shown in each linkset window, by the linkset's root: the
     /// one the user chose in the tree, or the last one opened.
     active: std::collections::HashMap<Uuid, ScriptTarget>,
+    /// The filter of each linkset window's tree, by its root.
+    filters: std::collections::HashMap<Uuid, String>,
+    /// Whether a window's Problems dock lists every script of the linkset,
+    /// by its root.
+    problems_all: std::collections::HashMap<Uuid, bool>,
     panels: dialogs::Panels,
     debug: debug::Debug,
     includes: std::collections::HashMap<Uuid, PendingInclude>,
@@ -983,6 +994,48 @@ impl Editors {
         actions
     }
 
+    /// The Problems dock's rows of one document: its diagnostics, with the
+    /// line and column each one names (a message without one is listed, and
+    /// clicking it does nothing).
+    fn document_problems(e: &Editor) -> Vec<view::Problem> {
+        if !e.is_open() {
+            return Vec::new();
+        }
+        e.errors
+            .iter()
+            .map(|message| {
+                let (line, column) = editing::error_location(message).unwrap_or((0, 0));
+                view::Problem {
+                    source: e.name.clone(),
+                    line,
+                    column,
+                    message: message.clone(),
+                }
+            })
+            .collect()
+    }
+
+    /// Save every script the window has open that has something to save
+    /// (`linkset` nil: the one script of `target`, as Save). A script the
+    /// preprocessor handles answers with its own save later, as Save does.
+    pub fn save_all(&mut self, linkset: Uuid, target: ScriptTarget) -> Vec<Action> {
+        let mut saves = Vec::new();
+        for e in &mut self.documents {
+            if e.closed || !e.can_save() {
+                continue;
+            }
+            let mine = if linkset.is_nil() {
+                e.target == target
+            } else {
+                e.linkset == linkset
+            };
+            if mine && let Some(action) = e.save() {
+                saves.push(action);
+            }
+        }
+        saves
+    }
+
     /// One script in its own window: an inventory script, or one whose object
     /// is not linked to others through the editor's own panel.
     fn show_document(
@@ -996,6 +1049,8 @@ impl Editors {
     ) {
         let id = Self::window_of(&self.documents[index]);
         let mut open = true;
+        let rows = Self::document_problems(&self.documents[index]);
+        let mut clicked = None;
         {
             let e = &mut self.documents[index];
             focus::claim(
@@ -1016,8 +1071,15 @@ impl Editors {
             .allow_partial_outside()
             .rename_title(e.name.clone(), e.can_edit && e.loaded && e.saving.is_none() && e.loading.is_none())
             .show(ctx, p, &mut open, |ui| {
-                view::body(ui, p, e, body_id, settings, panels, actions, true);
+                clicked = view::body(ui, p, e, body_id, settings, panels, actions, true, &rows, None);
             });
+        }
+        if let Some(row) = clicked
+            && let Some(problem) = rows.get(row)
+        {
+            let e = &mut self.documents[index];
+            let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
+            view::go_to_error(ctx, e, body_id, problem.line, problem.column);
         }
         if let Some(name) = super::widgets::take_title_rename(ctx, &id)
             && self.documents[index].can_edit
@@ -1132,6 +1194,8 @@ impl Editors {
             .collect();
         if members.is_empty() {
             self.active.remove(&root);
+            self.filters.remove(&root);
+            self.problems_all.remove(&root);
             return;
         }
         // a script opened or raised from anywhere comes to the front
@@ -1165,9 +1229,26 @@ impl Editors {
             .unwrap_or_else(|| aurora_i18n::tr!("common-object-contents").into());
         let active_index = self.documents.iter().position(|e| e.target == active && !e.closed).unwrap_or(0);
         let source_id = egui::Id::unique((&Self::document_id(&self.documents[active_index]), "source_text"));
+        // the Problems dock: this script's, or every script of the window
+        let all_sources = self.problems_all.entry(root).or_insert(false);
+        let mut problems = Vec::new();
+        let mut problem_rows = Vec::new();
+        for (index, e) in self.documents.iter().enumerate() {
+            if e.closed || (if *all_sources { e.linkset != root } else { e.target != active }) {
+                continue;
+            }
+            for row in Self::document_problems(e) {
+                problems.push(row);
+                problem_rows.push(index);
+            }
+        }
+        let scope = (members.len() > 1).then_some(&mut *all_sources);
+        // Save All: every script this window has open that has something to save
+        let save_all = self.documents.iter().any(|e| !e.closed && e.linkset == root && e.can_save());
         let mut open = true;
         let mut select = None;
         let mut close = None;
+        let mut clicked_problem = None;
         let mut window_ui = Floater::new(
             &window,
             title,
@@ -1184,7 +1265,7 @@ impl Editors {
             // File, Edit and Help, then the toolbar, once for the window and
             // for the script in front
             let mut chosen = None;
-            if let Some(e) = self.documents.get(active_index) {
+            if let Some(e) = self.documents.get_mut(active_index) {
                 view::menus(ui, p, e, source_id, &mut chosen);
             }
             if let Some(command) = chosen
@@ -1193,16 +1274,17 @@ impl Editors {
                 view::run(command, e, ctx, source_id, settings, &mut self.panels, actions);
             }
             if let Some(e) = self.documents.get_mut(active_index) {
-                view::toolbar(ui, p, e, source_id, settings, &mut self.panels, actions, true);
+                view::toolbar(ui, p, e, source_id, settings, &mut self.panels, actions, true, Some(save_all));
             }
             let height = ui.available_height();
             let gap = ui.spacing().item_spacing.x;
             let tree_width = linkset::TREE_WIDTH.min((ui.available_width() - gap).max(160.0) * 0.45);
+            let filter = self.filters.entry(root).or_default();
             ui.horizontal_top(|ui| {
                 ui.allocate_ui_with_layout(
                     Vec2::new(tree_width, height),
                     egui::Layout::top_down(egui::Align::Min),
-                    |ui| match linkset::tree(ui, p, linkset, Some(active)) {
+                    |ui| match linkset::tree(ui, p, linkset, Some(active), filter) {
                         Some(linkset::TreeAction::Open(target)) => select = Some(target),
                         Some(linkset::TreeAction::Close(target)) => close = Some(target),
                         Some(linkset::TreeAction::Take(target)) => actions.push(Action::TakeScript {
@@ -1220,15 +1302,43 @@ impl Editors {
                 ui.add_space(gap);
                 let width = ui.available_width();
                 ui.allocate_ui_with_layout(Vec2::new(width, height), egui::Layout::top_down(egui::Align::Min), |ui| {
-                    if let Some(index) = self.documents.iter().position(|e| e.target == active && !e.closed) {
-                        // Ctrl+F belongs to the script in front
-                        focus::claim(ctx, egui::LayerId::new(egui::Order::Middle, egui::Id::unique(&window)), source_id);
-                        let e = &mut self.documents[index];
-                        view::body(ui, p, e, source_id, settings, &mut self.panels, actions, false);
-                    }
+                    // the strip of the open scripts, flush above the source
+                    ui.scope(|ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        let tabs: Vec<linkset::Tab> = self
+                            .documents
+                            .iter()
+                            .filter(|e| !e.closed && e.linkset == root)
+                            .map(|e| linkset::Tab {
+                                target: e.target,
+                                name: &e.name,
+                                lua: e.lua(),
+                                dirty: e.dirty(),
+                            })
+                            .collect();
+                        match linkset::tabs(ui, p, &tabs, Some(active), settings.color(settings::ColorRole::Background, p)) {
+                            linkset::Tabs::Select(target) => select = Some(target),
+                            linkset::Tabs::Close(target) => close = Some(target),
+                            linkset::Tabs::None => {}
+                        }
+                        if let Some(index) = self.documents.iter().position(|e| e.target == active && !e.closed) {
+                            // Ctrl+F belongs to the script in front
+                            focus::claim(ctx, egui::LayerId::new(egui::Order::Middle, egui::Id::unique(&window)), source_id);
+                            let e = &mut self.documents[index];
+                            clicked_problem = view::body(ui, p, e, source_id, settings, &mut self.panels, actions, false, &problems, scope);
+                        }
+                    });
                 });
             });
         });
+        if let Some(row) = clicked_problem
+            && let (Some(&index), Some(problem)) = (problem_rows.get(row), problems.get(row))
+        {
+            let e = &mut self.documents[index];
+            self.active.insert(root, e.target);
+            let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
+            view::go_to_error(ctx, e, body_id, problem.line, problem.column);
+        }
         if let Some(target) = select {
             match self.documents.iter().position(|e| e.target == target && !e.closed) {
                 Some(index) => self.select_script(ctx, root, index),
@@ -1733,7 +1843,10 @@ mod tests {
                     (source_after.top() - source_before.top()).abs() < 1.5,
                     "inline changed header height: {source_before:?} / {source_after:?}"
                 );
-                assert!((source_after.height() - source_before.height()).abs() < 1.5);
+                assert!(
+                    (source_after.height() - source_before.height()).abs() < 1.5,
+                    "{source_before:?} / {source_after:?}"
+                );
                 let replacement = ctx.read_response(search_id.with("replacement")).unwrap().rect;
                 assert!(replacement.top() > query.rect.bottom() && replacement.bottom() < source_after.top());
                 assert!(
@@ -2646,7 +2759,7 @@ print(\"bye\")"
 
         // the tree lists the linkset, a group per prim, even shut
         let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
-        for name in ["Scripts", "Control Panel", "Door", "Panel Script", "Door Script"] {
+        for name in ["Filter scripts", "Control Panel", "Door", "Panel Script", "Door Script"] {
             assert!(
                 output
                     .shapes

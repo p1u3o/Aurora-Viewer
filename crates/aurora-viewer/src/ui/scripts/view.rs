@@ -62,10 +62,11 @@ impl Tools {
     }
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum Command {
     #[default]
     Save,
+    SaveAll,
     Reload,
     Revert,
     Open,
@@ -145,6 +146,10 @@ pub(super) fn run(
                 actions.push(action);
             }
         }
+        Command::SaveAll => actions.push(Action::SaveAll {
+            linkset: e.linkset,
+            target: e.target,
+        }),
         Command::Reload => {
             let request = uuid::Uuid::new_v4();
             e.loading = Some(request);
@@ -227,6 +232,14 @@ pub(super) fn run(
     }
 }
 
+/// One line of the Problems dock: a diagnostic of a script the window shows.
+pub(super) struct Problem {
+    pub source: String,
+    pub line: usize,
+    pub column: usize,
+    pub message: String,
+}
+
 pub(super) fn body(
     ui: &mut egui::Ui,
     p: &Palette,
@@ -236,7 +249,9 @@ pub(super) fn body(
     prefs: &mut Panels,
     actions: &mut Vec<Action>,
     own_menus: bool,
-) {
+    problems: &[Problem],
+    all_sources: Option<&mut bool>,
+) -> Option<usize> {
     let ctx = ui.ctx().clone();
     e.tools.body_top = ui.cursor().top();
     if own_menus {
@@ -294,19 +309,140 @@ pub(super) fn body(
     } else {
         155.0
     };
-    let height = (ui.available_height() - footer_height - ui.spacing().item_spacing.y - 8.0).max(120.0);
+    // The dock marks the room it needs; the source takes the rest (its frame
+    // paints 4 points above and below it, hence the 8).
+    let dock_height = if problems.is_empty() { 0.0 } else { DOCK_HEIGHT };
+    let gaps = if dock_height > 0.0 { 2.0 } else { 1.0 };
+    let height = (ui.available_height() - footer_height - dock_height - ui.spacing().item_spacing.y * gaps - 8.0).max(120.0);
     source(ui, p, e, id, settings, height, &prefs.search);
-    let footer = ui.scope(|ui| footer(ui, p, e, id, actions));
+    let clicked = if problems.is_empty() {
+        None
+    } else {
+        problems_dock(ui, p, problems, all_sources)
+    };
+    let footer = ui.scope(|ui| footer(ui, p, e, actions));
     if (e.tools.footer_height - footer.response.rect.height()).abs() > 0.5 {
         e.tools.footer_height = footer.response.rect.height();
         ctx.request_repaint();
     }
+    clicked
+}
+
+/// The room the Problems dock takes under the source.
+const DOCK_HEIGHT: f32 = 96.0;
+
+/// The Problems dock (LLScriptEdCore's error list, given columns): the
+/// diagnostics of the scripts the window shows, each one a click away from its
+/// line. Returns the clicked row.
+fn problems_dock(ui: &mut egui::Ui, p: &Palette, rows: &[Problem], all_sources: Option<&mut bool>) -> Option<usize> {
+    let mut clicked = None;
+    egui::Frame::new()
+        .fill(p.field.gamma_multiply(0.72))
+        .corner_radius(ui.visuals().window_corner_radius)
+        .inner_margin(4)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(aurora_i18n::tr!("script-problems-count", count = rows.len() as i64))
+                        .size(11.0)
+                        .color(p.muted),
+                );
+                if let Some(all) = all_sources {
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(ui.available_width(), 20.0),
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            egui::ComboBox::from_id_salt("script_problems_scope")
+                                .selected_text(if *all {
+                                    aurora_i18n::tr!("script-problems-all")
+                                } else {
+                                    aurora_i18n::tr!("script-problems-this")
+                                })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(all, false, aurora_i18n::tr!("script-problems-this"));
+                                    ui.selectable_value(all, true, aurora_i18n::tr!("script-problems-all"));
+                                });
+                        },
+                    );
+                }
+            });
+            // Columns: the message takes what the other two leave, and each
+            // cell starts at its left edge (a sized label would centre).
+            let (source_width, line_width) = (118.0, 48.0);
+            let message_width = (ui.available_width() - source_width - line_width - 16.0).max(60.0);
+            let cell = |ui: &mut egui::Ui, width: f32, text: RichText, truncate: bool| {
+                ui.allocate_ui_with_layout(Vec2::new(width, 14.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let label = egui::Label::new(text);
+                    ui.add(if truncate { label.truncate() } else { label });
+                });
+            };
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                for (text, width) in [
+                    (aurora_i18n::tr!("script-problems-message"), message_width),
+                    (aurora_i18n::tr!("script-problems-source"), source_width),
+                    (aurora_i18n::tr!("script-problems-line"), line_width),
+                ] {
+                    cell(ui, width, RichText::new(text).size(11.0).color(p.muted), false);
+                }
+            });
+            egui::ScrollArea::vertical()
+                .id_salt("script_problems")
+                .max_height(DOCK_HEIGHT - 40.0)
+                .show(ui, |ui| {
+                    if rows.is_empty() {
+                        ui.label(RichText::new(aurora_i18n::tr!("script-problems-none")).size(11.0).color(p.muted));
+                        return;
+                    }
+                    for (index, row) in rows.iter().enumerate() {
+                        // the highlight goes behind the row's text
+                        let beneath = ui.painter().add(egui::Shape::Noop);
+                        let response = ui
+                            .push_id(("problem", index), |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 8.0;
+                                    cell(
+                                        ui,
+                                        message_width,
+                                        RichText::new(&row.message).monospace().size(11.0).color(p.danger),
+                                        true,
+                                    );
+                                    cell(ui, source_width, RichText::new(&row.source).size(11.0).color(p.muted), true);
+                                    cell(
+                                        ui,
+                                        line_width,
+                                        RichText::new(format!("{}:{}", row.line, row.column)).size(11.0).color(p.muted),
+                                        false,
+                                    );
+                                })
+                            })
+                            .inner;
+                        let hit = ui.interact(response.response.rect, response.response.id.with("row"), egui::Sense::click());
+                        if hit.hovered() {
+                            ui.painter().set(
+                                beneath,
+                                egui::Shape::rect_filled(
+                                    response.response.rect.expand2(Vec2::new(2.0, 0.0)),
+                                    ui.visuals().widgets.inactive.corner_radius,
+                                    p.raised.gamma_multiply(0.25),
+                                ),
+                            );
+                        }
+                        if hit.clicked() {
+                            clicked = Some(index);
+                        }
+                    }
+                });
+        });
+    clicked
 }
 
 /// The File, Edit and Help menus of the editor. A window of the linkset's
 /// scripts draws them once, above the tree and the tabs, for the script in
-/// front.
-pub(super) fn menus(ui: &mut egui::Ui, p: &Palette, e: &Editor, id: Id, chosen: &mut Option<Command>) {
+/// front. Insert, which inserts a function at the cursor, is one of them: the
+/// Legacy Viewer keeps it in the editor's bottom bar, Aurora in the menus.
+pub(super) fn menus(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, chosen: &mut Option<Command>) {
     let ctx = ui.ctx().clone();
     egui::MenuBar::new().ui(ui, |ui| {
         ui.menu_button(aurora_i18n::tr!("script-menu-file"), |ui| {
@@ -328,6 +464,17 @@ pub(super) fn menus(ui: &mut egui::Ui, p: &Palette, e: &Editor, id: Id, chosen: 
         ui.menu_button(aurora_i18n::tr!("script-menu-edit"), |ui| {
             edit_menu(ui, p, e, id, chosen);
         });
+        ui.add_enabled_ui(
+            e.loaded && e.can_edit && e.saving.is_none() && !e.tools.processed && !e.colors.active(),
+            |ui| {
+                let response = ui.menu_button(aurora_i18n::tr!("script-menu-insert"), |ui| {
+                    insertion_menu(ui, p, e, id);
+                });
+                // the demo presses this button and types into its filter
+                e.tools.insert_button = Some(response.response.rect);
+                e.tools.insertion_open = response.inner.is_some();
+            },
+        );
         ui.menu_button(aurora_i18n::tr!("script-menu-help"), |ui| {
             super::focus::claim(&ctx, ui.layer_id(), id);
             for (command, icon, label) in [
@@ -344,6 +491,55 @@ pub(super) fn menus(ui: &mut egui::Ui, p: &Palette, e: &Editor, id: Id, chosen: 
     });
 }
 
+/// The Insert menu: a filter and the LSL / Lua functions it leaves, clicking
+/// one writes its name at the cursor (LLScriptEdCore's insert list).
+fn insertion_menu(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id) {
+    super::focus::claim(ui.ctx(), ui.layer_id(), id);
+    let field = crate::ui::widgets::search_text_edit(ui, p, &mut e.tools.insert_filter, |edit| {
+        edit.id(id.with("insert_filter"))
+            .desired_width(260.0)
+            .hint_text(aurora_i18n::tr!("script-insert-filter"))
+    });
+    if !e.tools.insertion_open {
+        field.request_focus();
+    }
+    crate::ui::widgets::divider(ui, p);
+    // Only the results scroll, keeping the field in view.
+    let mut results = egui::ScrollArea::vertical().id_salt((id, "insert_results")).max_height(220.0);
+    if field.changed() {
+        results = results.vertical_scroll_offset(0.0);
+    }
+    let lua = e.lua();
+    let mut chosen = None;
+    let filter = e.tools.insert_filter.trim().to_lowercase();
+    results.show(ui, |ui| {
+        let mut found = false;
+        for entry in reference::all(lua)
+            .iter()
+            .filter(|entry| entry.group == "functions" && entry.name.to_lowercase().contains(&filter))
+        {
+            found = true;
+            if ui.selectable_label(false, &entry.name).on_hover_text(&entry.signature).clicked() {
+                chosen = Some(entry.name.clone());
+                ui.close();
+            }
+        }
+        if !found {
+            ui.label(RichText::new(aurora_i18n::tr!("script-insert-empty")).color(p.muted));
+        }
+    });
+    if let Some(name) = chosen {
+        let [a, b] = editing::cursor(ui.ctx(), id).sorted_cursors();
+        if editing::replace(ui.ctx(), id, &mut e.source, a.index.0..b.index.0, &name) {
+            ui.ctx().memory_mut(|m| m.request_focus(id));
+            e.tools.scroll_to_cursor = true;
+            e.tools.help.visit(&name);
+        } else {
+            e.status = aurora_i18n::tr!("script-source-too-large").into();
+        }
+    }
+}
+
 /// The toolbar of the editor: Save, Open, the clipboard, Undo / Redo, Find,
 /// its preferences, and the state of the script. A window of the linkset's
 /// scripts draws it once, under the menus, for the script in front.
@@ -356,13 +552,18 @@ pub(super) fn toolbar(
     prefs: &mut Panels,
     actions: &mut Vec<Action>,
     with_search: bool,
+    save_all: Option<bool>,
 ) {
     let ctx = ui.ctx().clone();
     let mut chosen = None;
     let row = ui.horizontal(|ui| {
         let left = ui.cursor().left();
-        for (command, icon, label) in [
-            (Command::Save, "device-floppy-filled", aurora_i18n::tr!("common-save")),
+        let mut buttons = vec![(Command::Save, "device-floppy-filled", aurora_i18n::tr!("common-save"))];
+        if let Some(all) = save_all {
+            buttons.push((Command::SaveAll, "files-filled", aurora_i18n::tr!("script-save-all")));
+            let _ = all;
+        }
+        buttons.extend([
             (Command::Export, "download-filled", aurora_i18n::tr!("script-menu-export")),
             (Command::Open, "folder-open-filled", aurora_i18n::tr!("script-menu-open")),
             (Command::External, "external-link-filled", aurora_i18n::tr!("script-menu-external")),
@@ -373,8 +574,14 @@ pub(super) fn toolbar(
             (Command::Redo, "arrow-forward-up", aurora_i18n::tr!("script-edit-redo")),
             (Command::Find, "search-filled", aurora_i18n::tr!("script-search-title")),
             (Command::Preferences, "settings-filled", aurora_i18n::tr!("script-menu-preferences")),
-        ] {
-            if icon_button(ui, p, icon, label, enabled(command, e, &ctx, id)) {
+        ]);
+        for (command, icon, label) in buttons {
+            let enabled = if command == Command::SaveAll {
+                save_all.unwrap_or(false)
+            } else {
+                enabled(command, e, &ctx, id)
+            };
+            if icon_button(ui, p, icon, label, enabled) {
                 chosen = Some(command);
             }
         }
@@ -411,7 +618,7 @@ pub(super) fn toolbar(
             }
         }
     });
-    e.tools.header_height = row.response.rect.height();
+    let _ = row;
     if let Some(command) = chosen {
         run(command, e, &ctx, id, settings, prefs, actions);
     }
@@ -446,7 +653,7 @@ fn header(
     if let Some(command) = chosen {
         run(command, e, &ctx, id, settings, prefs, actions);
     }
-    toolbar(ui, p, e, id, settings, prefs, actions, false);
+    toolbar(ui, p, e, id, settings, prefs, actions, false, None);
 }
 
 /// The compile target picker (panel_script_ed.xml `compile_target`, in its
@@ -477,19 +684,22 @@ fn compile_target(ui: &mut egui::Ui, e: &mut Editor) {
         .on_hover_text(aurora_i18n::tr!("script-target-hint"));
 }
 
-fn footer(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, actions: &mut Vec<Action>) {
-    let ctx = ui.ctx().clone();
+fn footer(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, actions: &mut Vec<Action>) {
     ui.horizontal(|ui| {
-        insertion(ui, p, e, id);
-        ui.label(
-            RichText::new(aurora_i18n::tr!(
-                "script-position",
-                line = (e.tools.position.0 + e.first_line()) as i64,
-                column = (e.tools.position.1 + e.first_line()) as i64
-            ))
-            .small()
-            .color(p.muted),
+        // The Legacy Viewer's status line of the editor: where the cursor is,
+        // the indentation, and how much of the source the server takes.
+        let position = aurora_i18n::tr!(
+            "script-position",
+            line = (e.tools.position.0 + e.first_line()) as i64,
+            column = (e.tools.position.1 + e.first_line()) as i64
         );
+        let spaces = aurora_i18n::tr!("script-spaces", count = indent::TAB_SIZE as i64);
+        let size = aurora_i18n::tr!(
+            "script-source-size",
+            used = size_label(e.source.len()),
+            limit = size_label(aurora_net::scripts::MAX_SOURCE)
+        );
+        ui.label(RichText::new(format!("{position}  ·  {spaces}  ·  {size}")).small().color(p.muted));
     });
     ui.horizontal(|ui| {
         if !e.target.object.is_nil() {
@@ -526,43 +736,88 @@ fn footer(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, actions: &mut 
         ui.label(RichText::new(aurora_i18n::tr!("script-source-too-large")).color(p.danger));
     }
     ui.label(RichText::new(&e.status).color(if e.compile_failed { p.danger } else { p.muted }));
-    egui::ScrollArea::vertical()
-        .id_salt((id, "errors"))
-        .max_height(65.0)
-        .show(ui, |ui| {
-            for error in &e.errors {
-                let location = editing::error_location(error);
-                if ui
-                    .selectable_label(false, RichText::new(error).monospace().color(p.danger))
-                    .clicked()
-                    && let Some((line, column)) = location
-                {
-                    e.tools.processed = e.tools.diagnostics_processed && !e.tools.processed_source.is_empty();
-                    let text = if e.tools.processed { &e.tools.processed_source } else { &e.source };
-                    // LLScriptEdCore::onErrorList: a Lua error's line counts from 1
-                    let at = editing::line_cursor(text, line.saturating_sub(e.first_line()), column);
-                    editing::select(&ctx, visible_id(id, e.tools.processed), at..at, true);
-                    e.tools.scroll_to_cursor = true;
-                }
-            }
-        });
     // The compile target and Save, at the bottom right of the window (the
-    // target on Save's left, the Legacy Viewer's order of the two).
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if ui
-            .add_enabled_ui(e.can_save(), |ui| flat_button(ui, p, aurora_i18n::tr!("common-save")))
-            .inner
-            .clicked()
-        {
-            actions.extend(e.save());
+    // target on Save's left, the Legacy Viewer's order of the two). The row
+    // keeps its height: `with_layout` would take the room left below.
+    ui.allocate_ui_with_layout(
+        Vec2::new(ui.available_width(), ui.spacing().interact_size.y.max(26.0)),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            if ui
+                .add_enabled_ui(e.can_save(), |ui| flat_button(ui, p, aurora_i18n::tr!("common-save")))
+                .inner
+                .clicked()
+            {
+                actions.extend(e.save());
+            }
+            ui.add_enabled_ui(
+                e.can_edit && e.loaded && e.saving.is_none() && (e.target.object.is_nil() || e.running.is_some()),
+                |ui| {
+                    compile_target(ui, e);
+                },
+            );
+        },
+    );
+}
+
+/// Puts the cursor on a diagnostic's line and column, in the processed source
+/// when the diagnostics shown are its own (LLScriptEdCore::onErrorList).
+pub(super) fn go_to_error(ctx: &egui::Context, e: &mut Editor, id: Id, line: usize, column: usize) {
+    if line == 0 {
+        return;
+    }
+    e.tools.processed = e.tools.diagnostics_processed && !e.tools.processed_source.is_empty();
+    let text = if e.tools.processed { &e.tools.processed_source } else { &e.source };
+    // LLScriptEdCore::onErrorList: a Lua error's line counts from 1
+    let at = editing::line_cursor(text, line.saturating_sub(e.first_line()), column);
+    editing::select(ctx, visible_id(id, e.tools.processed), at..at, true);
+    e.tools.scroll_to_cursor = true;
+}
+
+/// A byte count for the status line: "512 B", "1.8 KB", "1 MB".
+fn size_label(bytes: usize) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.0} MB", bytes as f32 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f32 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// The columns of indentation of a line: a tab reaches the next stop.
+fn indent_columns(line: &str) -> usize {
+    let mut columns = 0;
+    for ch in line.chars() {
+        match ch {
+            ' ' => columns += 1,
+            '\t' => columns += indent::TAB_SIZE - columns % indent::TAB_SIZE,
+            _ => break,
         }
-        ui.add_enabled_ui(
-            e.can_edit && e.loaded && e.saving.is_none() && (e.target.object.is_nil() || e.running.is_some()),
-            |ui| {
-                compile_target(ui, e);
-            },
-        );
-    });
+    }
+    columns
+}
+
+/// The lines of `text` that differ from `baseline`, as an inclusive range:
+/// the region the two differ in, without marking the lines they share around
+/// it (a line inserted in the middle marks that region, not the rest).
+fn changed_lines(text: &str, baseline: &str) -> Option<(usize, usize)> {
+    if text == baseline {
+        return None;
+    }
+    let edited: Vec<&str> = text.lines().collect();
+    let saved: Vec<&str> = baseline.lines().collect();
+    let mut first = 0;
+    while first < edited.len() && first < saved.len() && edited[first] == saved[first] {
+        first += 1;
+    }
+    let (mut last_edited, mut last_saved) = (edited.len(), saved.len());
+    while last_edited > first && last_saved > first && edited[last_edited - 1] == saved[last_saved - 1] {
+        last_edited -= 1;
+        last_saved -= 1;
+    }
+    let last = if last_edited > first { last_edited - 1 } else { first }.min(edited.len().saturating_sub(1));
+    Some((first, last))
 }
 
 fn edit_menu(ui: &mut egui::Ui, p: &Palette, e: &Editor, id: Id, chosen: &mut Option<Command>) {
@@ -654,7 +909,10 @@ fn source(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, settings: &Scr
                                 ui.fonts_mut(|f| f.layout_job(job))
                             };
                             let mut show = |ui: &mut egui::Ui, buffer: &mut dyn egui::TextBuffer| {
-                                egui::TextEdit::multiline(buffer)
+                                // a slot under the text for the caret's row and
+                                // the indent guides
+                                let beneath = ui.painter().add(egui::Shape::Noop);
+                                let output = egui::TextEdit::multiline(buffer)
                                     .id(id)
                                     .code_editor()
                                     .layouter(&mut layouter)
@@ -663,9 +921,10 @@ fn source(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, settings: &Scr
                                     .min_size(Vec2::new(0.0, viewport.height()))
                                     .frame(egui::Frame::NONE)
                                     .interactive(interactive)
-                                    .show(ui)
+                                    .show(ui);
+                                (output, beneath)
                             };
-                            let output = if editable {
+                            let (output, beneath) = if editable {
                                 indent::edit(ui, id, &mut e.source, show)
                             } else {
                                 let mut text = if e.tools.processed {
@@ -738,6 +997,57 @@ fn source(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, settings: &Scr
                                     .translate(output.galley_pos.to_vec2());
                                 ui.scroll_to_rect(rect, Some(egui::Align::Center));
                             }
+                            // The caret's row and the indentation guides, behind
+                            // the text (the slot was reserved before it was drawn).
+                            let mut beneath_shapes = Vec::new();
+                            if e.loaded && !ui.is_sizing_pass() {
+                                let caret = output
+                                    .galley
+                                    .pos_from_cursor(editing::cursor(ui.ctx(), id).primary)
+                                    .translate(output.galley_pos.to_vec2());
+                                let right = output.text_clip_rect.right();
+                                if caret.height() > 1.0 && caret.top() < output.text_clip_rect.bottom() {
+                                    let band = egui::Rect::from_min_max(
+                                        egui::pos2(output.galley_pos.x, caret.top()),
+                                        egui::pos2(right, caret.bottom()),
+                                    )
+                                    .intersect(output.text_clip_rect);
+                                    if band.height() > 1.0 {
+                                        beneath_shapes.push(egui::Shape::rect_filled(band, 0.0, p.raised.gamma_multiply(0.30)));
+                                    }
+                                }
+                                let space = ui.fonts_mut(|f| f.glyph_width(&font, ' '));
+                                let lines: Vec<&str> = text.lines().collect();
+                                let mut line = e.first_line();
+                                let mut line_start = true;
+                                for row in &output.galley.rows {
+                                    let y = output.galley_pos.y + row.pos.y;
+                                    if y > output.text_clip_rect.bottom() {
+                                        break;
+                                    }
+                                    if line_start
+                                        && row.height() >= 1.0
+                                        && y + row.height() >= output.text_clip_rect.top()
+                                        && let Some(prefix) = lines.get(line.saturating_sub(e.first_line()))
+                                    {
+                                        for level in 1..=indent_columns(prefix) / indent::TAB_SIZE {
+                                            let x = output.galley_pos.x + (level * indent::TAB_SIZE) as f32 * space;
+                                            if x >= output.text_clip_rect.right() - 2.0 {
+                                                break;
+                                            }
+                                            beneath_shapes.push(egui::Shape::line_segment(
+                                                [egui::pos2(x, y), egui::pos2(x, y + row.height())],
+                                                egui::Stroke::new(1.0, p.muted_dim.gamma_multiply(0.6)),
+                                            ));
+                                        }
+                                    }
+                                    if row.ends_with_newline {
+                                        line += 1;
+                                    }
+                                    line_start = row.ends_with_newline;
+                                }
+                            }
+                            ui.painter().set(beneath, egui::Shape::Vec(beneath_shapes));
                             let left = gutter.left() + viewport.min.x;
                             let clip = egui::Rect::from_min_max(
                                 egui::pos2(left, ui.clip_rect().top()),
@@ -745,6 +1055,12 @@ fn source(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, settings: &Scr
                             );
                             let painter = ui.painter().with_clip_rect(clip);
                             painter.rect_filled(clip, 0.0, settings.color(ColorRole::Background, p));
+                            // the lines whose text differs from the saved script
+                            let changed = if e.loaded && !e.tools.processed {
+                                changed_lines(text, &e.baseline)
+                            } else {
+                                None
+                            };
                             let mut line = e.first_line();
                             let mut line_start = true;
                             for row in &output.galley.rows {
@@ -764,6 +1080,18 @@ fn source(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, settings: &Scr
                                             p.muted
                                         },
                                     );
+                                    if let Some((first, last)) = changed
+                                        && (first..=last).contains(&line.saturating_sub(e.first_line()))
+                                    {
+                                        painter.rect_filled(
+                                            egui::Rect::from_min_max(
+                                                egui::pos2(left + 52.0, y + 1.0),
+                                                egui::pos2(left + 55.0, y + row.height() - 1.0),
+                                            ),
+                                            0.0,
+                                            p.amber,
+                                        );
+                                    }
                                 }
                                 if row.ends_with_newline {
                                     line += 1;
@@ -790,67 +1118,6 @@ fn source(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, settings: &Scr
                     });
             });
         });
-}
-
-fn insertion(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id) {
-    let lua = e.lua();
-    let mut chosen = None;
-    ui.add_enabled_ui(
-        e.loaded && e.can_edit && e.saving.is_none() && !e.tools.processed && !e.colors.active(),
-        |ui| {
-            let popup = egui::ComboBox::from_id_salt((id, "insert"))
-                .selected_text(aurora_i18n::tr!("script-insert"))
-                .width(155.0)
-                .height(280.0)
-                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                .show_ui(ui, |ui| {
-                    super::focus::claim(ui.ctx(), ui.layer_id(), id);
-                    let field = crate::ui::widgets::search_text_edit(ui, p, &mut e.tools.insert_filter, |edit| {
-                        edit.id(id.with("insert_filter"))
-                            .desired_width(260.0)
-                            .hint_text(aurora_i18n::tr!("script-insert-filter"))
-                    });
-                    if !e.tools.insertion_open {
-                        field.request_focus();
-                    }
-                    crate::ui::widgets::divider(ui, p);
-                    // Only the results scroll, keeping the search field visible.
-                    let mut results = egui::ScrollArea::vertical().id_salt((id, "insert_results")).max_height(220.0);
-                    if field.changed() {
-                        results = results.vertical_scroll_offset(0.0);
-                    }
-                    let filter = e.tools.insert_filter.trim().to_lowercase();
-                    results.show(ui, |ui| {
-                        let mut found = false;
-                        for entry in reference::all(lua)
-                            .iter()
-                            .filter(|e| e.group == "functions" && e.name.to_lowercase().contains(&filter))
-                        {
-                            found = true;
-                            if ui.selectable_label(false, &entry.name).on_hover_text(&entry.signature).clicked() {
-                                chosen = Some(entry.name.clone());
-                                ui.close();
-                            }
-                        }
-                        if !found {
-                            ui.label(RichText::new(aurora_i18n::tr!("script-insert-empty")).color(p.muted));
-                        }
-                    });
-                });
-            e.tools.insert_button = Some(popup.response.rect);
-            e.tools.insertion_open = popup.inner.is_some();
-        },
-    );
-    if let Some(name) = chosen {
-        let [a, b] = editing::cursor(ui.ctx(), id).sorted_cursors();
-        if editing::replace(ui.ctx(), id, &mut e.source, a.index.0..b.index.0, &name) {
-            ui.ctx().memory_mut(|m| m.request_focus(id));
-            e.tools.scroll_to_cursor = true;
-            e.tools.help.visit(&name);
-        } else {
-            e.status = aurora_i18n::tr!("script-source-too-large").into();
-        }
-    }
 }
 
 pub(super) fn dialogs(
@@ -1121,6 +1388,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_changed_lines_are_the_region_between_the_saved_and_the_edited_text() {
+        // no change: no bars
+        assert_eq!(changed_lines("a\nb\n", "a\nb\n"), None);
+        // one line edited in the middle
+        assert_eq!(changed_lines("a\nB\nc\n", "a\nb\nc\n"), Some((1, 1)));
+        // a line added in the middle marks it alone
+        assert_eq!(changed_lines("a\nnew\nb\nc\n", "a\nb\nc\n"), Some((1, 1)));
+        // a line removed marks the line the rest moved onto
+        assert_eq!(changed_lines("a\nc\n", "a\nb\nc\n"), Some((1, 1)));
+        // everything differs
+        assert_eq!(changed_lines("x\n", "a\nb\n"), Some((0, 0)));
+        // the end of the file
+        assert_eq!(changed_lines("a\nb\nc\n", "a\nb\n"), Some((2, 2)));
+    }
+
+    #[test]
+    fn indentation_is_counted_in_columns_and_a_tab_reaches_the_next_stop() {
+        assert_eq!(indent_columns("    x"), 4);
+        assert_eq!(indent_columns("\tx"), 4);
+        assert_eq!(indent_columns("  \tx"), 4);
+        assert_eq!(indent_columns("\t\tx"), 8);
+        assert_eq!(indent_columns("x"), 0);
+        assert_eq!(indent_columns(""), 0);
+        // the spaces of a comment that ends the line are not indentation
+        assert_eq!(indent_columns("//      note"), 0);
+    }
+
+    #[test]
+    fn the_status_line_sizes_read_as_a_person_expects() {
+        assert_eq!(size_label(512), "512 B");
+        assert_eq!(size_label(2048), "2.0 KB");
+        assert_eq!(size_label(1024 * 1024), "1 MB");
+    }
+
+    #[test]
     fn script_reset_click_does_not_require_source_permissions_or_running_info() {
         use aurora_net::scripts::ScriptTarget;
         use uuid::Uuid;
@@ -1163,7 +1465,7 @@ mod tests {
                         events,
                         ..Default::default()
                     },
-                    |ui| footer(ui, &p, e, Id::unique("reset_test"), &mut actions),
+                    |ui| footer(ui, &p, e, &mut actions),
                 );
                 output.textures_delta.clear();
                 (output, actions)
@@ -1334,7 +1636,18 @@ mod tests {
                             },
                             |ui| {
                                 bounds = ui.available_rect_before_wrap();
-                                body(ui, &p, e, Id::unique("resize_source"), &settings, &mut prefs, &mut vec![], true);
+                                body(
+                                    ui,
+                                    &p,
+                                    e,
+                                    Id::unique("resize_source"),
+                                    &settings,
+                                    &mut prefs,
+                                    &mut vec![],
+                                    true,
+                                    &[],
+                                    None,
+                                );
                                 bottom = ui.min_rect().bottom();
                             },
                         )
@@ -1365,7 +1678,8 @@ mod tests {
                         "clickable editor: {:?} / {editor:?}",
                         input.rect
                     );
-                    assert!(editor.height() > if size.y > 800.0 { 600.0 } else { 120.0 }, "{editor:?}");
+                    let least = if size.y > 800.0 { size.y - 360.0 } else { 120.0 };
+                    assert!(editor.height() > least, "{editor:?}");
                     assert!(
                         (4.0..25.0).contains(&(editor.bottom() - gutter.bottom())),
                         "{editor:?} / {gutter:?}"

@@ -1050,6 +1050,15 @@ impl App {
             Action::TakeScript { object, item } => self.take_task_script(object, item),
             Action::DeleteScript { object, item } => self.remove_task_items(object, &[item]),
             Action::NewScript(object) => self.new_task_script(object),
+            Action::SaveAll { linkset, target } => self.save_task_scripts(linkset, target),
+        }
+    }
+
+    /// "Save all": every open script of the window that has something to save
+    /// (`linkset` nil: the one script, as Save).
+    fn save_task_scripts(&mut self, linkset: Uuid, target: ScriptTarget) {
+        for action in self.script_editors.save_all(linkset, target) {
+            self.apply_script_action(action);
         }
     }
 
@@ -1069,8 +1078,7 @@ impl App {
         self.copy_selected_contents(object, vec![task]);
     }
 
-    /// "New script" of a prim's menu in the script editor's tree: the item the
-    /// Contents panel creates (LLPanelContents::onNewScriptFlyoutCommit), in
+    /// "New script" of a prim's menu in the script editor's tree: the item the    /// Contents panel creates (LLPanelContents::onNewScriptFlyoutCommit), in
     /// the panel's language choice, Lua where the prim's region runs SLua.
     fn new_task_script(&mut self, object: Uuid) {
         let Some(idx) = self.world.objects.index_of_uuid(&object) else {

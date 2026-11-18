@@ -10,7 +10,7 @@ use egui::{
 };
 use std::ops::Range;
 
-const TAB_SIZE: usize = 4;
+pub(super) const TAB_SIZE: usize = 4;
 
 fn line_before(source: &str, at: CharIndex) -> &str {
     let byte = source.byte_index_from_char_index(at).0;
