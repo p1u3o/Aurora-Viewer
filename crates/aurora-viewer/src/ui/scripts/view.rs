@@ -442,9 +442,9 @@ fn problems_dock(ui: &mut egui::Ui, p: &Palette, rows: &[Problem], all_sources: 
 /// scripts draws them once, above the tree and the tabs, for the script in
 /// front. Insert, which inserts a function at the cursor, is one of them: the
 /// Legacy Viewer keeps it in the editor's bottom bar, Aurora in the menus.
-pub(super) fn menus(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, chosen: &mut Option<Command>) {
+pub(super) fn menus(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, actions: &mut Vec<Action>, chosen: &mut Option<Command>) {
     let ctx = ui.ctx().clone();
-    egui::MenuBar::new().ui(ui, |ui| {
+    let bar = egui::MenuBar::new().ui(ui, |ui| {
         ui.menu_button(aurora_i18n::tr!("script-menu-file"), |ui| {
             super::focus::claim(&ctx, ui.layer_id(), id);
             for (command, icon, label) in [
@@ -489,6 +489,26 @@ pub(super) fn menus(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, chos
             }
         });
     });
+    // The experience of the script in front, at the right end of the menu row.
+    if !e.target.object.is_nil() {
+        let width = (bar.response.rect.width() * 0.4).clamp(140.0, 320.0);
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(bar.response.rect.right() - width, bar.response.rect.top()),
+            Vec2::new(width, bar.response.rect.height()),
+        );
+        let mut row = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("script_experience_row")
+                .max_rect(rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        let editable = e.can_edit && e.loaded && e.saving.is_none();
+        if e.experience.combo(&mut row, p, editable)
+            && let Some(request) = e.experience.begin()
+        {
+            actions.push(Action::Experiences { request, target: e.target });
+        }
+    }
 }
 
 /// The Insert menu: a filter and the LSL / Lua functions it leaves, clicking
@@ -648,7 +668,7 @@ fn header(
     let ctx = ui.ctx().clone();
     let mut chosen = None;
     if own_menus {
-        menus(ui, p, e, id, &mut chosen);
+        menus(ui, p, e, id, actions, &mut chosen);
     }
     if let Some(command) = chosen {
         run(command, e, &ctx, id, settings, prefs, actions);
@@ -701,29 +721,6 @@ fn footer(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, actions: &mut Vec<Acti
         );
         ui.label(RichText::new(format!("{position}  ·  {spaces}  ·  {size}")).small().color(p.muted));
     });
-    ui.horizontal(|ui| {
-        if !e.target.object.is_nil() {
-            // LLLiveLSLEditor::onReset (indra/newview/llpreviewscript.cpp):
-            // resetting does not require access to the source or a running reply.
-            ui.add_enabled_ui(e.can_reset && e.saving.is_none(), |ui| {
-                if flat_button(ui, p, aurora_i18n::tr!("script-reset")).clicked() {
-                    actions.push(Action::Reset(e.target));
-                }
-            });
-            ui.add_enabled_ui(e.can_edit && e.running.is_some() && e.saving.is_none(), |ui| {
-                let mut running = e.running.unwrap_or(false);
-                if crate::ui::widgets::checkbox(ui, p, &mut running, aurora_i18n::tr!("script-running")).changed() {
-                    actions.push(Action::Running { target: e.target, running });
-                }
-            });
-        }
-    });
-    if !e.target.object.is_nil()
-        && e.experience.show(ui, p, e.can_edit && e.loaded && e.saving.is_none())
-        && let Some(request) = e.experience.begin()
-    {
-        actions.push(Action::Experiences { request, target: e.target });
-    }
     if !e.target.object.is_nil() && e.loaded && e.can_read && e.running.is_none() {
         ui.horizontal(|ui| {
             ui.label(RichText::new(aurora_i18n::tr!("script-waiting-running")).color(p.warn));
@@ -736,8 +733,8 @@ fn footer(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, actions: &mut Vec<Acti
         ui.label(RichText::new(aurora_i18n::tr!("script-source-too-large")).color(p.danger));
     }
     ui.label(RichText::new(&e.status).color(if e.compile_failed { p.danger } else { p.muted }));
-    // The compile target and Save, at the bottom right of the window (the
-    // target on Save's left, the Legacy Viewer's order of the two). The row
+    // The commands of the script, at the bottom right of the window, in the
+    // Legacy Viewer's order: Reset, Running, the compile target, Save. The row
     // keeps its height: `with_layout` would take the room left below.
     ui.allocate_ui_with_layout(
         Vec2::new(ui.available_width(), ui.spacing().interact_size.y.max(26.0)),
@@ -756,6 +753,21 @@ fn footer(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, actions: &mut Vec<Acti
                     compile_target(ui, e);
                 },
             );
+            if !e.target.object.is_nil() {
+                ui.add_enabled_ui(e.can_edit && e.running.is_some() && e.saving.is_none(), |ui| {
+                    let mut running = e.running.unwrap_or(false);
+                    if crate::ui::widgets::checkbox(ui, p, &mut running, aurora_i18n::tr!("script-running")).changed() {
+                        actions.push(Action::Running { target: e.target, running });
+                    }
+                });
+                // LLLiveLSLEditor::onReset (indra/newview/llpreviewscript.cpp):
+                // resetting does not require access to the source or a running reply.
+                ui.add_enabled_ui(e.can_reset && e.saving.is_none(), |ui| {
+                    if flat_button(ui, p, aurora_i18n::tr!("script-reset")).clicked() {
+                        actions.push(Action::Reset(e.target));
+                    }
+                });
+            }
         },
     );
 }

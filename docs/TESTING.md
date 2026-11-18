@@ -2844,9 +2844,11 @@ File, Edit, Insert and Help menus and the toolbar (Save All included) above
 it, and a tab strip flush above the source. The source shows the current line,
 indent guides, change bars against the saved script, and the status readout
 (Line, column, Spaces, size); a failing compile fills the Problems dock under
-it, whose rows go to their line. The compile target sits beside Save at the
-bottom right. Clicking a tree row or a tab opens that script (or brings it to
-the front); the window keeps every document, so switching loses no text.
+it, whose rows go to their line. The bottom right of the window holds Reset,
+Running, the compile target and Save, and the object's experience selector is
+at the right end of the menu row. Clicking a tree row or a tab opens that
+script (or brings it to the front); the window keeps every document, so
+switching loses no text.
 Right-clicking a script's row opens the contents window's menu for it (Open,
 Copy to inventory or Move, Delete, Close) and right-clicking a prim's row
 offers New script. Closing a script with unsaved text asks first, and closing
