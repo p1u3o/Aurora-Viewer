@@ -79,7 +79,7 @@ pub(super) fn find(ctx: &egui::Context, editors: &mut [Editor], search: &mut Sea
         .iter()
         .map(|e| {
             let window = super::Editors::window_of(e);
-            let owner = Id::unique((&format!("script_editor_{}_{}", e.target.object, e.target.item), "source_text"));
+            let owner = Id::unique((&super::Editors::document_id(e), "source_text"));
             (window, owner)
         })
         .collect();

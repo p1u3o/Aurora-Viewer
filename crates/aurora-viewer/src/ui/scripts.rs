@@ -787,11 +787,17 @@ impl Editors {
         self.documents.iter().any(|e| e.colors.picker.is_open())
     }
 
+    /// The identity of a document's own parts: its source, its dialogs and
+    /// the commands its controls leave for the next pass.
+    pub(super) fn document_id(e: &Editor) -> String {
+        format!("script_editor_{}_{}", e.target.object, e.target.item)
+    }
+
     /// The floater a document is drawn in: its own, or the one its linkset's
     /// scripts share (the tree of the linkset and a tab per open script).
     pub(super) fn window_of(e: &Editor) -> String {
         if e.linkset.is_nil() {
-            format!("script_editor_{}_{}", e.target.object, e.target.item)
+            Self::document_id(e)
         } else {
             format!("script_linkset_{}", e.linkset)
         }
@@ -841,7 +847,7 @@ impl Editors {
                 }
                 // a file job (an external editor's save, an export) answers
                 // its own document, even in a tab that is not in front
-                let body_id = egui::Id::unique((&format!("script_editor_{}_{}", e.target.object, e.target.item), "source_text"));
+                let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
                 view::poll_files(ctx, e, body_id, settings, &mut actions);
                 if let Some(job) = e.processing.as_ref() {
                     for request in job.includes.try_iter() {
@@ -976,10 +982,10 @@ impl Editors {
             focus::claim(
                 ctx,
                 egui::LayerId::new(egui::Order::Middle, egui::Id::unique(&id)),
-                egui::Id::unique((&id, "source_text")),
+                egui::Id::unique((&Self::document_id(e), "source_text")),
             );
             let title = format!("{}{}", e.name, if e.dirty() { " *" } else { "" });
-            let body_id = egui::Id::unique((&id, "source_text"));
+            let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
             let panels = &mut self.panels;
             Floater::new(
                 &id,
@@ -1020,7 +1026,7 @@ impl Editors {
         actions: &mut Vec<Action>,
         close: bool,
     ) {
-        let id = Self::window_of(&self.documents[index]);
+        let id = Self::document_id(&self.documents[index]);
         let source_id = egui::Id::unique((&id, "source_text"));
         {
             let e = &mut self.documents[index];
@@ -1138,7 +1144,8 @@ impl Editors {
             .map(|l| l.name.clone())
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| aurora_i18n::tr!("common-object-contents").into());
-        let source_id = egui::Id::unique((&format!("script_editor_{}_{}", active.object, active.item), "source_text"));
+        let active_index = self.documents.iter().position(|e| e.target == active && !e.closed).unwrap_or(0);
+        let source_id = egui::Id::unique((&Self::document_id(&self.documents[active_index]), "source_text"));
         let mut open = true;
         let mut select = None;
         let mut close = None;
@@ -1248,8 +1255,7 @@ impl Editors {
         let e = &mut self.documents[index];
         if e.loaded {
             e.tools.focus_start = false;
-            let id = format!("script_editor_{}_{}", e.target.object, e.target.item);
-            focus::text(ctx, egui::Id::unique((&id, "source_text")));
+            focus::text(ctx, egui::Id::unique((&Self::document_id(e), "source_text")));
         } else {
             e.tools.focus_start = true;
         }
