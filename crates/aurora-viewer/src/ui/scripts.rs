@@ -36,7 +36,7 @@ pub(crate) use editing::matches_filtered as search_matches_filtered;
 pub(crate) use editing::next_match as next_search_match;
 pub use focus::editor_focused;
 pub(crate) use indent::edit_scoped as edit_code;
-pub use linkset::{Linkset, Prim as LinksetPrim, Script as LinksetScript};
+pub use linkset::{Linkset, Prim as LinksetPrim, Script as LinksetScript, ScriptMenu as LinksetScriptMenu};
 pub(crate) use syntax::highlight as highlight_lsl;
 
 pub enum Action {
@@ -75,6 +75,19 @@ pub enum Action {
     /// A script of the linkset's tree that is not open yet: the app gives it
     /// an editor of its own tab.
     OpenScript(ScriptTarget),
+    /// "Copy to inventory" of a script's contents menu, the same action as in
+    /// the contents window.
+    TakeScript {
+        object: Uuid,
+        item: Uuid,
+    },
+    /// "Delete" of a script's contents menu.
+    DeleteScript {
+        object: Uuid,
+        item: Uuid,
+    },
+    /// "New script" of a prim's menu in the tree.
+    NewScript(Uuid),
 }
 
 struct PendingSave {
@@ -997,7 +1010,7 @@ impl Editors {
             .allow_partial_outside()
             .rename_title(e.name.clone(), e.can_edit && e.loaded && e.saving.is_none() && e.loading.is_none())
             .show(ctx, p, &mut open, |ui| {
-                view::body(ui, p, e, body_id, settings, panels, actions);
+                view::body(ui, p, e, body_id, settings, panels, actions, true);
             });
         }
         if let Some(name) = super::widgets::take_title_rename(ctx, &id)
@@ -1160,15 +1173,38 @@ impl Editors {
         // the tree and a readable source side by side
         window_ui.min_size = Vec2::new(600.0, 380.0);
         window_ui.show(ctx, p, &mut open, |ui| {
+            // File, Edit and Help once for the window, above the tree and the
+            // tabs, for the script in front
+            let mut chosen = None;
+            if let Some(e) = self.documents.get(active_index) {
+                view::menus(ui, p, e, source_id, &mut chosen);
+            }
+            if let Some(command) = chosen
+                && let Some(e) = self.documents.get_mut(active_index)
+            {
+                view::run(command, e, ctx, source_id, settings, &mut self.panels, actions);
+            }
             let height = ui.available_height();
             let gap = ui.spacing().item_spacing.x;
             let tree_width = linkset::TREE_WIDTH.min((ui.available_width() - gap).max(160.0) * 0.45);
             ui.horizontal_top(|ui| {
-                ui.allocate_ui_with_layout(Vec2::new(tree_width, height), egui::Layout::top_down(egui::Align::Min), |ui| {
-                    if let Some(target) = linkset::tree(ui, p, linkset, Some(active)) {
-                        select = Some(target);
-                    }
-                });
+                ui.allocate_ui_with_layout(
+                    Vec2::new(tree_width, height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| match linkset::tree(ui, p, linkset, Some(active)) {
+                        Some(linkset::TreeAction::Open(target)) => select = Some(target),
+                        Some(linkset::TreeAction::Take(target)) => actions.push(Action::TakeScript {
+                            object: target.object,
+                            item: target.item,
+                        }),
+                        Some(linkset::TreeAction::Delete(target)) => actions.push(Action::DeleteScript {
+                            object: target.object,
+                            item: target.item,
+                        }),
+                        Some(linkset::TreeAction::NewScript(object)) => actions.push(Action::NewScript(object)),
+                        None => {}
+                    },
+                );
                 ui.add_space(gap);
                 let width = ui.available_width();
                 ui.allocate_ui_with_layout(Vec2::new(width, height), egui::Layout::top_down(egui::Align::Min), |ui| {
@@ -1192,7 +1228,7 @@ impl Editors {
                         // Ctrl+F belongs to the tab in front
                         focus::claim(ctx, egui::LayerId::new(egui::Order::Middle, egui::Id::unique(&window)), source_id);
                         let e = &mut self.documents[index];
-                        view::body(ui, p, e, source_id, settings, &mut self.panels, actions);
+                        view::body(ui, p, e, source_id, settings, &mut self.panels, actions, false);
                     }
                 });
             });
@@ -2521,21 +2557,29 @@ print(\"bye\")"
             name: name.into(),
             flags: 0,
             running: Some(true),
+            menu: LinksetScriptMenu {
+                moves: false,
+                refused: None,
+                tip: "Copy the script to the inventory",
+                can_delete: true,
+            },
         };
         let linkset = Linkset {
             root: Uuid::from_u128(500),
-            name: "Control Panel".into(),
+            name: "Linkset".into(),
             prims: vec![
                 LinksetPrim {
                     object: panel.object,
                     name: "Control Panel".into(),
                     loading: false,
+                    can_new_script: true,
                     scripts: vec![script(panel, "Panel Script")],
                 },
                 LinksetPrim {
                     object: door.object,
                     name: "Door".into(),
                     loading: false,
+                    can_new_script: true,
                     scripts: vec![script(door, "Door Script")],
                 },
             ],
@@ -2645,6 +2689,12 @@ print(\"bye\")"
             name: "Spare Script".into(),
             flags: 0,
             running: None,
+            menu: LinksetScriptMenu {
+                moves: false,
+                refused: None,
+                tip: "Copy the script to the inventory",
+                can_delete: true,
+            },
         });
         let mut settings = settings::ScriptSettings::default();
         let load = editors.open(panel, "Panel Script".into(), true, true, 0).unwrap();
@@ -2691,6 +2741,100 @@ print(\"bye\")"
         // the click did not replace the document already open
         assert_eq!(editors.documents.len(), 1);
         assert_eq!(editors.active.get(&linkset.root), Some(&panel));
+    }
+
+    /// A row's context menu offers the entries of the contents window, and a
+    /// prim's offers a new script; each runs the app's own action.
+    #[test]
+    fn a_rows_context_menu_offers_the_contents_actions() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let (linkset, panel, _door) = linkset_fixture();
+        let mut settings = settings::ScriptSettings::default();
+        // the tab's name differs from the tree's, to click the tree row
+        let load = editors.open(panel, "Panel Doc".into(), true, true, 0).unwrap();
+        editors.loaded(load, panel, Ok("panel source".into()));
+        editors.documents[0].linkset = linkset.root;
+        let linksets = std::slice::from_ref(&linkset);
+        for _ in 0..3 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        let at = text_at(&output, "Panel Script");
+        click_at(&ctx, &mut editors, &mut settings, linksets, at, egui::PointerButton::Secondary);
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        for entry in [
+            aurora_i18n::tr!("common-open"),
+            aurora_i18n::tr!("build-ui-contents-copy-to-inventory"),
+            aurora_i18n::tr!("common-delete"),
+        ] {
+            text_at(&output, entry);
+        }
+        let at = text_at(&output, aurora_i18n::tr!("build-ui-contents-copy-to-inventory"));
+        let actions = click_at(&ctx, &mut editors, &mut settings, linksets, at, egui::PointerButton::Primary);
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                Action::TakeScript { object, item } if *object == panel.object && *item == panel.item
+            )),
+            "Copy to inventory takes the script"
+        );
+
+        // the prim's own menu: a new script in its contents
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        let at = text_at(&output, "Control Panel");
+        click_at(&ctx, &mut editors, &mut settings, linksets, at, egui::PointerButton::Secondary);
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        let at = text_at(&output, aurora_i18n::tr!("common-new-script"));
+        let actions = click_at(&ctx, &mut editors, &mut settings, linksets, at, egui::PointerButton::Primary);
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, Action::NewScript(object) if *object == panel.object)),
+            "New script creates one in that prim"
+        );
+    }
+
+    fn text_at(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
+        output
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.job.text == label => Some(t.pos + t.galley.size() * 0.5),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{label} is drawn"))
+    }
+
+    fn click_at(
+        ctx: &egui::Context,
+        editors: &mut Editors,
+        settings: &mut settings::ScriptSettings,
+        linksets: &[Linkset],
+        at: egui::Pos2,
+        button: egui::PointerButton,
+    ) -> Vec<Action> {
+        let mut actions = Vec::new();
+        for pressed in [true, false] {
+            let (_, taken) = frame_linksets_actions(
+                ctx,
+                editors,
+                settings,
+                vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                linksets,
+            );
+            actions.extend(taken);
+        }
+        actions
     }
 
     #[test]

@@ -216,26 +216,7 @@ impl App {
             ContentsAction::Notecard(object, item) => self.open_task_notecard(object, item),
             ContentsAction::Copy(request) => self.copy_contents(*request),
             ContentsAction::Take(object, items) => self.copy_selected_contents(object, items),
-            ContentsAction::Remove(object, ids) => {
-                let Some(idx) = self.world.objects.index_of_uuid(&object) else {
-                    return;
-                };
-                if !self.build.contents_editable(&self.world, idx) {
-                    return;
-                }
-                let Some(c) = self.interactions.contents.as_mut().filter(|c| c.target.object == object) else {
-                    return;
-                };
-                let Some(Ok(items)) = &mut c.result else { return };
-                if !ids.iter().all(|id| items.iter().any(|item| item.id == *id)) {
-                    return;
-                }
-                for id in &ids {
-                    self.build.remove_item(&self.world, idx, *id);
-                }
-                items.retain(|item| !ids.contains(&item.id));
-                self.flush_build();
-            }
+            ContentsAction::Remove(object, ids) => self.remove_task_items(object, &ids),
             ContentsAction::Drop(object, ids, ctrl) => {
                 let Some(idx) = self.world.objects.index_of_uuid(&object) else {
                     return;
@@ -250,6 +231,46 @@ impl App {
                 }
             }
         }
+    }
+
+    /// RemoveTaskInventory for items of an object's contents, after the same
+    /// checks as the contents window (LLPanelObjectInventory's Delete): the
+    /// object may be modified and the items are still listed. The Open
+    /// window's copy of a listing follows when it shows the same object, and
+    /// so does the script editor's tree.
+    pub(super) fn remove_task_items(&mut self, object: Uuid, ids: &[Uuid]) {
+        let Some(idx) = self.world.objects.index_of_uuid(&object) else {
+            return;
+        };
+        if !self.build.contents_editable(&self.world, idx) {
+            return;
+        }
+        let listed_in_contents = self
+            .build
+            .contents
+            .objects
+            .get(&object)
+            .is_some_and(|listing| ids.iter().all(|id| listing.items.iter().any(|item| item.item_id == *id)));
+        let listed_in_window = self
+            .interactions
+            .contents
+            .as_ref()
+            .filter(|c| c.target.object == object)
+            .and_then(|c| c.result.as_ref())
+            .and_then(|items| items.as_ref().ok())
+            .is_some_and(|items| ids.iter().all(|id| items.iter().any(|item| item.id == *id)));
+        if !listed_in_contents && !listed_in_window {
+            return;
+        }
+        for id in ids {
+            self.build.remove_item(&self.world, idx, *id);
+        }
+        if let Some(c) = self.interactions.contents.as_mut().filter(|c| c.target.object == object)
+            && let Some(Ok(items)) = &mut c.result
+        {
+            items.retain(|item| !ids.contains(&item.id));
+        }
+        self.flush_build();
     }
 
     fn contents_copy_alert(&mut self, text: String) {

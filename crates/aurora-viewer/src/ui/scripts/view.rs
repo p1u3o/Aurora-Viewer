@@ -63,7 +63,7 @@ impl Tools {
 }
 
 #[derive(Clone, Copy, Default)]
-enum Command {
+pub(super) enum Command {
     #[default]
     Save,
     Reload,
@@ -125,7 +125,7 @@ fn enabled(command: Command, e: &Editor, ctx: &egui::Context, id: Id) -> bool {
     }
 }
 
-fn run(
+pub(super) fn run(
     command: Command,
     e: &mut Editor,
     ctx: &egui::Context,
@@ -235,6 +235,7 @@ pub(super) fn body(
     settings: &ScriptSettings,
     prefs: &mut Panels,
     actions: &mut Vec<Action>,
+    own_menus: bool,
 ) {
     let ctx = ui.ctx().clone();
     e.tools.body_top = ui.cursor().top();
@@ -250,7 +251,7 @@ pub(super) fn body(
         let left = ui.available_width() - gap - search_width;
         ui.horizontal_top(|ui| {
             let header = ui.allocate_ui_with_layout(Vec2::new(left, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-                header(ui, p, e, id, settings, prefs, actions);
+                header(ui, p, e, id, settings, prefs, actions, own_menus);
             });
             e.tools.header_height = header.response.rect.height();
             let (rect, _) = ui.allocate_exact_size(Vec2::new(search_width, e.tools.header_height), egui::Sense::hover());
@@ -268,7 +269,7 @@ pub(super) fn body(
             }
         });
     } else {
-        let header = ui.scope(|ui| header(ui, p, e, id, settings, prefs, actions));
+        let header = ui.scope(|ui| header(ui, p, e, id, settings, prefs, actions, own_menus));
         e.tools.header_height = header.response.rect.height();
     }
     if e.loaded && !e.can_edit {
@@ -298,17 +299,11 @@ pub(super) fn body(
     }
 }
 
-fn header(
-    ui: &mut egui::Ui,
-    p: &Palette,
-    e: &mut Editor,
-    id: Id,
-    settings: &ScriptSettings,
-    prefs: &mut Panels,
-    actions: &mut Vec<Action>,
-) {
+/// The File, Edit and Help menus of the editor. A window of the linkset's
+/// scripts draws them once, above the tree and the tabs, for the script in
+/// front.
+pub(super) fn menus(ui: &mut egui::Ui, p: &Palette, e: &Editor, id: Id, chosen: &mut Option<Command>) {
     let ctx = ui.ctx().clone();
-    let mut chosen = None;
     egui::MenuBar::new().ui(ui, |ui| {
         ui.menu_button(aurora_i18n::tr!("script-menu-file"), |ui| {
             super::focus::claim(&ctx, ui.layer_id(), id);
@@ -322,12 +317,12 @@ fn header(
                 (Command::Preferences, "settings-filled", aurora_i18n::tr!("script-menu-preferences")),
             ] {
                 if menu::item_if(ui, p, icon, label, enabled(command, e, &ctx, id)) {
-                    chosen = Some(command);
+                    *chosen = Some(command);
                 }
             }
         });
         ui.menu_button(aurora_i18n::tr!("script-menu-edit"), |ui| {
-            edit_menu(ui, p, e, id, &mut chosen);
+            edit_menu(ui, p, e, id, chosen);
         });
         ui.menu_button(aurora_i18n::tr!("script-menu-help"), |ui| {
             super::focus::claim(&ctx, ui.layer_id(), id);
@@ -338,11 +333,28 @@ fn header(
                 (Command::Debug, "bug-filled", aurora_i18n::tr!("script-debug-title")),
             ] {
                 if menu::item_if(ui, p, icon, label, enabled(command, e, &ctx, id)) {
-                    chosen = Some(command);
+                    *chosen = Some(command);
                 }
             }
         });
     });
+}
+
+fn header(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    e: &mut Editor,
+    id: Id,
+    settings: &ScriptSettings,
+    prefs: &mut Panels,
+    actions: &mut Vec<Action>,
+    own_menus: bool,
+) {
+    let ctx = ui.ctx().clone();
+    let mut chosen = None;
+    if own_menus {
+        menus(ui, p, e, id, &mut chosen);
+    }
     ui.horizontal(|ui| {
         let left = ui.cursor().left();
         for (command, icon, label) in [
@@ -1277,7 +1289,7 @@ mod tests {
                             },
                             |ui| {
                                 bounds = ui.available_rect_before_wrap();
-                                body(ui, &p, e, Id::unique("resize_source"), &settings, &mut prefs, &mut vec![]);
+                                body(ui, &p, e, Id::unique("resize_source"), &settings, &mut prefs, &mut vec![], true);
                                 bottom = ui.min_rect().bottom();
                             },
                         )

@@ -746,7 +746,8 @@ impl App {
     /// listing of yet.
     fn script_linkset_views(&mut self) -> Vec<crate::ui::scripts::Linkset> {
         use crate::build::contents::AT_LSL_TEXT;
-        use crate::ui::scripts::{Linkset, LinksetPrim, LinksetScript};
+        use crate::build::task_inventory::TransferKind;
+        use crate::ui::scripts::{Linkset, LinksetPrim, LinksetScript, LinksetScriptMenu};
         let mut roots: Vec<Uuid> = Vec::new();
         for e in &self.script_editors.documents {
             if e.is_open() && !e.linkset.is_nil() && !roots.contains(&e.linkset) {
@@ -775,10 +776,12 @@ impl App {
                 // last Open window asked for.
                 self.build.request_contents(&self.world, prim, false);
                 let listing = self.build.contents.objects.get(&object);
+                let editable = self.build.contents_editable(&self.world, prim);
                 let mut entry = LinksetPrim {
                     object,
                     name: crate::build::replace::object_name(&self.build, &self.world, object),
                     loading: listing.is_none_or(|listing| listing.loading),
+                    can_new_script: editable,
                     scripts: Vec::new(),
                 };
                 for item in listing
@@ -786,6 +789,8 @@ impl App {
                     .flat_map(|listing| listing.items.iter())
                     .filter(|item| item.asset_type == AT_LSL_TEXT)
                 {
+                    // the contents window's menu entries, from its own rules
+                    let transfer = self.build.task_transfer_kind(&self.world, object, item);
                     entry.scripts.push(LinksetScript {
                         item: item.item_id,
                         name: item.name.clone(),
@@ -796,6 +801,12 @@ impl App {
                             .running
                             .get(&(object, item.item_id))
                             .map(|(running, _)| *running),
+                        menu: LinksetScriptMenu {
+                            moves: matches!(transfer, Ok(kind) if kind != TransferKind::Copy),
+                            refused: transfer.err(),
+                            tip: aurora_i18n::tr!("contents-copy-selection-tip"),
+                            can_delete: editable,
+                        },
                     });
                 }
                 view.prims.push(entry);
@@ -1017,7 +1028,47 @@ impl App {
                 }
             }
             Action::OpenScript(target) => self.open_script(target),
+            Action::TakeScript { object, item } => self.take_task_script(object, item),
+            Action::DeleteScript { object, item } => self.remove_task_items(object, &[item]),
+            Action::NewScript(object) => self.new_task_script(object),
         }
+    }
+
+    /// "Copy to inventory" (or Move) of a script's contents menu: the same
+    /// folder copy and move warning as the contents window, for that one item.
+    fn take_task_script(&mut self, object: Uuid, item: Uuid) {
+        let Some(task) = self
+            .build
+            .contents
+            .objects
+            .get(&object)
+            .and_then(|listing| listing.items.iter().find(|it| it.item_id == item))
+            .cloned()
+        else {
+            return;
+        };
+        self.copy_selected_contents(object, vec![task]);
+    }
+
+    /// "New script" of a prim's menu in the script editor's tree: the item the
+    /// Contents panel creates (LLPanelContents::onNewScriptFlyoutCommit), in
+    /// the panel's language choice, Lua where the prim's region runs SLua.
+    fn new_task_script(&mut self, object: Uuid) {
+        let Some(idx) = self.world.objects.index_of_uuid(&object) else {
+            return;
+        };
+        if !self.build.contents_editable(&self.world, idx) {
+            return;
+        }
+        let lua = self
+            .world
+            .objects
+            .get(idx)
+            .and_then(|o| self.world.regions.get(&o.key.region))
+            .is_some_and(|r| r.lua_scripts)
+            && self.build.ui.new_script_lua.unwrap_or(true);
+        self.build.new_script(&self.world, idx, lua);
+        self.flush_build();
     }
 
     /// AURORA_DEMO_EDITOR_SYNC=1|<port>: the sync turned on for the run,
