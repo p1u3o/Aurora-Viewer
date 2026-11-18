@@ -41,6 +41,12 @@ pub(super) struct Tools {
     pub overview: Option<egui::Rect>,
     pub position: (usize, usize),
     pub scroll_to_cursor: bool,
+    /// The name Ctrl+click (or the context menu) asked the window to take the
+    /// caret to the declaration of.
+    pub goto_word: Option<String>,
+    /// The word the context menu asked the dock to find in the window's
+    /// scripts.
+    pub references_word: Option<String>,
     pub revert: bool,
     pub file_job: Option<files::Job>,
     pub file_snapshot: String,
@@ -264,6 +270,7 @@ pub(super) fn body(
     all_sources: Option<&mut bool>,
     folded: &mut bool,
     tab: &mut DockTab,
+    search: Option<SearchDock<'_>>,
 ) -> Option<DockClick> {
     let ctx = ui.ctx().clone();
     e.tools.body_top = ui.cursor().top();
@@ -339,7 +346,7 @@ pub(super) fn body(
     let height = (room - footer_height - dock_height - gap * gaps - 8.0).max(SOURCE_MIN);
     source(ui, p, e, id, settings, height, &prefs.search, problems);
     let clicked = if dock_height > 0.0 {
-        dock(ui, p, e, problems, all_sources, folded, tab)
+        dock(ui, p, e, problems, all_sources, folded, tab, search)
     } else {
         None
     };
@@ -367,6 +374,8 @@ pub(super) enum DockTab {
     Problems,
     /// The states, events, functions and globals of the script in front.
     Outline,
+    /// A word found in every script of the window.
+    Search,
 }
 
 /// What a click in the dock asked for.
@@ -375,6 +384,15 @@ pub(super) enum DockClick {
     Problem(usize),
     /// An item of the outline, by its place in it.
     Outline(usize),
+    /// A hit of the search, by its place in the list.
+    Search(usize),
+}
+
+/// The Search tab's state for one frame: the query being typed and the hits
+/// the window's scripts gave it.
+pub(super) struct SearchDock<'a> {
+    pub query: &'a mut String,
+    pub hits: &'a [super::navigate::Hit],
 }
 
 /// The outline of a document, as the text on screen declares it.
@@ -384,9 +402,9 @@ pub(super) fn outline_items(e: &Editor) -> Vec<super::outline::Item> {
 }
 
 /// Puts the cursor on a line of the text on screen (the outline's rows).
-pub(super) fn go_to_line(ctx: &egui::Context, e: &mut Editor, id: Id, line: usize) {
+pub(super) fn go_to_line(ctx: &egui::Context, e: &mut Editor, id: Id, line: usize, column: usize) {
     let text = if e.tools.processed { &e.tools.processed_source } else { &e.source };
-    let at = editing::line_cursor(text, line, 0);
+    let at = editing::line_cursor(text, line, column);
     editing::select(ctx, visible_id(id, e.tools.processed), at..at, true);
     e.tools.scroll_to_cursor = true;
 }
@@ -429,6 +447,83 @@ fn outline_dock(ui: &mut egui::Ui, p: &Palette, e: &Editor) -> Option<DockClick>
     clicked
 }
 
+/// One cell of a tab's table: the text takes its room and starts at its left
+/// edge (a sized label would centre).
+fn cell(ui: &mut egui::Ui, width: f32, text: RichText, truncate: bool) {
+    ui.allocate_ui_with_layout(Vec2::new(width, 14.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        let label = egui::Label::new(text);
+        ui.add(if truncate { label.truncate() } else { label });
+    });
+}
+
+/// The Search tab of the dock: a field and the word's hits in the window's
+/// scripts, a click away from each. `query` is the window's own.
+fn search_dock(ui: &mut egui::Ui, p: &Palette, search: SearchDock<'_>) -> Option<DockClick> {
+    let SearchDock { query, hits } = search;
+    let mut clicked = None;
+    let width = ui.available_width();
+    let clear = !query.is_empty();
+    let (_, cleared) = inventory::tree::search_field(
+        ui,
+        p,
+        query,
+        aurora_i18n::tr!("script-search-in-scripts"),
+        width,
+        clear,
+        aurora_i18n::tr!("script-linkset-filter-clear"),
+    );
+    if cleared {
+        query.clear();
+    }
+    let (name_width, line_width) = (140.0, 54.0);
+    let text_width = (ui.available_width() - name_width - line_width - 16.0).max(60.0);
+    egui::ScrollArea::vertical()
+        .id_salt("script_search")
+        .max_height(ui.available_height().max(0.0))
+        .show(ui, |ui| {
+            if hits.is_empty() {
+                ui.label(RichText::new(aurora_i18n::tr!("script-search-none")).size(11.0).color(p.muted));
+                return;
+            }
+            for (index, hit) in hits.iter().enumerate() {
+                // the highlight goes behind the row's text
+                let beneath = ui.painter().add(egui::Shape::Noop);
+                let row = ui
+                    .push_id(("search", index), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 8.0;
+                            cell(ui, name_width, RichText::new(&hit.name).size(11.0).color(p.ink), true);
+                            cell(
+                                ui,
+                                line_width,
+                                RichText::new(format!("{}:{}", hit.line + hit.first, hit.column))
+                                    .size(11.0)
+                                    .color(p.muted),
+                                false,
+                            );
+                            cell(ui, text_width, RichText::new(&hit.text).monospace().size(11.0).color(p.muted), true);
+                        })
+                    })
+                    .inner;
+                let hit_response = ui.interact(row.response.rect, row.response.id.with("row"), egui::Sense::click());
+                if hit_response.hovered() {
+                    ui.painter().set(
+                        beneath,
+                        egui::Shape::rect_filled(
+                            row.response.rect.expand2(Vec2::new(2.0, 0.0)),
+                            ui.visuals().widgets.inactive.corner_radius,
+                            p.raised.gamma_multiply(0.25),
+                        ),
+                    );
+                }
+                if hit_response.clicked() {
+                    clicked = Some(DockClick::Search(index));
+                }
+            }
+        });
+    clicked
+}
+
 /// The dock under the source: the diagnostics of the scripts the window shows
 /// (each one a click away from its line) or, on its other tab, the outline of
 /// the script in front. Returns what a click asked for.
@@ -440,6 +535,7 @@ fn dock(
     all_sources: Option<&mut bool>,
     folded: &mut bool,
     tab: &mut DockTab,
+    search: Option<SearchDock<'_>>,
 ) -> Option<DockClick> {
     let mut clicked = None;
     // Exactly the room reserved for it, whatever the list holds: the dock
@@ -490,6 +586,18 @@ fn dock(
                         {
                             *tab = DockTab::Outline;
                         }
+                        // a window of a linkset finds a word in every script it
+                        // has open; one script's own search is Ctrl+F
+                        if search.is_some()
+                            && ui
+                                .selectable_label(
+                                    *tab == DockTab::Search,
+                                    RichText::new(aurora_i18n::tr!("script-dock-search")).size(11.0),
+                                )
+                                .clicked()
+                        {
+                            *tab = DockTab::Search;
+                        }
                         if *tab == DockTab::Problems
                             && let Some(all) = all_sources
                         {
@@ -516,6 +624,12 @@ fn dock(
                     }
                     if *tab == DockTab::Outline {
                         clicked = outline_dock(ui, p, e);
+                        return;
+                    }
+                    if *tab == DockTab::Search
+                        && let Some(search) = search
+                    {
+                        clicked = search_dock(ui, p, search);
                         return;
                     }
                     // Columns: the message takes what the other two leave, and each
@@ -1261,7 +1375,33 @@ fn source(
                                 show(ui, &mut text)
                             };
                             let mut chosen = None;
-                            menu::context_menu(&output.response, p, |ui| edit_menu(ui, p, e, base_id, &mut chosen));
+                            // the word the pointer is on, for the window's
+                            // definition and references commands
+                            let pointed = output
+                                .response
+                                .hover_pos()
+                                .map(|pos| output.galley.cursor_from_pos(pos - output.galley_pos).index.0)
+                                .map(|at| editing::word(e.source.as_str(), at, lua).to_owned())
+                                .unwrap_or_default();
+                            let (mut goto, mut references) = (None, None);
+                            menu::context_menu(&output.response, p, |ui| {
+                                edit_menu(ui, p, e, base_id, &mut chosen);
+                                if !pointed.is_empty() && !e.linkset.is_nil() {
+                                    menu::separator(ui, p);
+                                    if menu::item(ui, p, "arrow-narrow-right", aurora_i18n::tr!("script-goto-definition")) {
+                                        goto = Some(pointed.clone());
+                                    }
+                                    if menu::item(ui, p, "search-filled", aurora_i18n::tr!("script-find-references")) {
+                                        references = Some(pointed.clone());
+                                    }
+                                }
+                            });
+                            if let Some(word) = goto {
+                                e.tools.goto_word = Some(word);
+                            }
+                            if let Some(word) = references {
+                                e.tools.references_word = Some(word);
+                            }
                             if let Some(command) = chosen {
                                 // Context commands use the same dispatcher as the menus.
                                 ui.ctx().data_mut(|d| d.insert_temp(Id::unique((base_id, "command")), command));
@@ -1517,6 +1657,18 @@ fn source(
                                     (*output.response)
                                         .clone()
                                         .on_hover_text(format!("{}\n{}", entry.signature, entry.tooltip));
+                                }
+                            }
+                            // Ctrl (Cmd) on a name and a click: the window takes
+                            // the caret to where the name is declared
+                            if output.response.clicked()
+                                && ui.ctx().input(|i| i.modifiers.command || i.modifiers.ctrl)
+                                && let Some(pos) = output.response.interact_pointer_pos()
+                            {
+                                let at = output.galley.cursor_from_pos(pos - output.galley_pos).index.0;
+                                let word = editing::word(text, at, lua).to_owned();
+                                if !word.is_empty() {
+                                    e.tools.goto_word = Some(word);
                                 }
                             }
                             // The overview strip at the right of the source: the
@@ -2071,6 +2223,7 @@ mod tests {
                                     None,
                                     &mut false,
                                     &mut DockTab::default(),
+                                    None,
                                 );
                                 bottom = ui.min_rect().bottom();
                             },

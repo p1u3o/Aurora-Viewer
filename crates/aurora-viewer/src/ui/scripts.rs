@@ -28,6 +28,7 @@ mod focus;
 mod folding;
 mod indent;
 mod linkset;
+mod navigate;
 mod outline;
 mod preprocessor;
 pub mod recovery;
@@ -254,6 +255,8 @@ pub struct Editors {
     /// Which list each window's dock shows, by its root (the script's item for
     /// a window of its own).
     dock_tabs: std::collections::HashMap<Uuid, view::DockTab>,
+    /// The word each window's dock searches its scripts for, by its root.
+    dock_search: std::collections::HashMap<Uuid, String>,
     /// The quick open (Ctrl+P) of a window, while it is up.
     quick_open: Option<QuickOpen>,
     panels: dialogs::Panels,
@@ -1358,7 +1361,9 @@ impl Editors {
             .allow_partial_outside()
             .rename_title(e.name.clone(), e.can_edit && e.loaded && e.saving.is_none() && e.loading.is_none())
             .show(ctx, p, &mut open, |ui| {
-                clicked = view::body(ui, p, e, body_id, settings, panels, actions, true, &rows, None, folded, dock_tab);
+                clicked = view::body(
+                    ui, p, e, body_id, settings, panels, actions, true, &rows, None, folded, dock_tab, None,
+                );
             });
         }
         match clicked {
@@ -1374,10 +1379,24 @@ impl Editors {
                 let line = view::outline_items(e).get(item).map(|item| item.line);
                 if let Some(line) = line {
                     let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
-                    view::go_to_line(ctx, e, body_id, line);
+                    view::go_to_line(ctx, e, body_id, line, 0);
                 }
             }
+            // only a window of a linkset has the Search tab
+            Some(view::DockClick::Search(_)) => {}
             None => {}
+        }
+        // Ctrl+click on a name: the declaration, in this script alone
+        if let Some(word) = self.documents[index].tools.goto_word.take() {
+            let e = &mut self.documents[index];
+            let found = navigate::definition(&[(index, e.source.as_str(), e.lua())], &word, index);
+            match found {
+                Some((_, line, column)) => {
+                    let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
+                    view::go_to_line(ctx, e, body_id, line, column);
+                }
+                None => e.status = aurora_i18n::tr!("script-goto-not-found").into(),
+            }
         }
         if let Some(name) = super::widgets::take_title_rename(ctx, &id)
             && self.documents[index].can_edit
@@ -1550,8 +1569,19 @@ impl Editors {
         let scope = (members.len() > 1).then_some(&mut *all_sources);
         // the dock folds to its header, remembered for this window
         let folded = self.problems_folded.entry(root).or_insert(false);
-        // and shows the diagnostics or the outline, as last chosen there
+        // and shows the diagnostics, the outline or the window's scripts found
+        // by a word, as last chosen there
         let dock_tab = self.dock_tabs.entry(root).or_default();
+        let dock_search = self.dock_search.entry(root).or_default();
+        // the Search tab's hits, in the scripts as they are edited
+        let scripts: Vec<(usize, &str, &str, bool)> = self
+            .documents
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| !e.closed && e.linkset == root)
+            .map(|(index, e)| (index, e.name.as_str(), e.source.as_str(), e.lua()))
+            .collect();
+        let hits = navigate::find(&scripts, dock_search);
         // Ctrl+P: the window's scripts in a quick open list, from the script in
         // front (the filter field when the listing is not there yet)
         let mut filter_focus = false;
@@ -1694,6 +1724,10 @@ impl Editors {
                                 scope,
                                 folded,
                                 dock_tab,
+                                Some(view::SearchDock {
+                                    query: dock_search,
+                                    hits: &hits,
+                                }),
                             );
                         }
                     });
@@ -1747,8 +1781,46 @@ impl Editors {
                     let line = view::outline_items(e).get(index).map(|item| item.line);
                     if let Some(line) = line {
                         let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
-                        view::go_to_line(ctx, e, body_id, line);
+                        view::go_to_line(ctx, e, body_id, line, 0);
                     }
+                }
+                view::DockClick::Search(index) => {
+                    if let Some(hit) = hits.get(index) {
+                        let e = &mut self.documents[hit.document];
+                        self.active.insert(root, e.target);
+                        let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
+                        view::go_to_line(ctx, e, body_id, hit.line, hit.column);
+                    }
+                }
+            }
+        }
+        // the context menu's Find references: the dock's Search tab, on that
+        // word
+        if let Some(word) = self.documents[active_index].tools.references_word.take() {
+            self.dock_search.insert(root, word);
+            self.dock_tabs.insert(root, view::DockTab::Search);
+        }
+        // Ctrl+click on a name (or the menu's command): the window takes the
+        // caret to where the name is declared
+        if self.documents[active_index].tools.goto_word.is_some() {
+            let word = self.documents[active_index].tools.goto_word.take().unwrap_or_default();
+            let scripts: Vec<(usize, &str, bool)> = self
+                .documents
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| !e.closed && e.linkset == root)
+                .map(|(index, e)| (index, e.source.as_str(), e.lua()))
+                .collect();
+            let found = navigate::definition(&scripts, &word, active_index);
+            match found {
+                Some((document, line, column)) => {
+                    let e = &mut self.documents[document];
+                    self.active.insert(root, e.target);
+                    let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
+                    view::go_to_line(ctx, e, body_id, line, column);
+                }
+                None => {
+                    self.documents[active_index].status = aurora_i18n::tr!("script-goto-not-found").into();
                 }
             }
         }
@@ -3691,6 +3763,118 @@ print(\"bye\")"
             "the tree ends at {} and the status bar at {}",
             tree.bottom(),
             bar.bottom()
+        );
+    }
+
+    /// The dock's Search tab lists a word in every script of the window, and a
+    /// click opens that script on the line.
+    #[test]
+    fn the_search_tab_finds_a_word_in_the_windows_scripts() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let (linkset, panel, door) = linkset_fixture();
+        let mut settings = settings::ScriptSettings::default();
+        for (target, name, source) in [
+            (panel, "Panel Script", "integer count = 0;\nllSay(0, \"count\");\n"),
+            (
+                door,
+                "Door Script",
+                "default\n{\n    state_entry()\n    {\n        count = 1;\n    }\n}\n",
+            ),
+        ] {
+            let load = editors.open(target, name.into(), true, true, 0).unwrap();
+            editors.loaded(load, target, Ok(source.into()));
+            editors.documents.iter_mut().find(|e| e.target == target).unwrap().linkset = linkset.root;
+        }
+        let linksets = std::slice::from_ref(&linkset);
+        for _ in 0..3 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        // the Search tab, on "count"
+        editors.dock_tabs.insert(linkset.root, view::DockTab::Search);
+        editors.dock_search.insert(linkset.root, "count".into());
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        // two hits in the panel's script, one in the door's, with their places
+        for cell in ["0:8", "1:10", "4:8"] {
+            text_at(&output, cell);
+        }
+        // a click opens that script on the line
+        let at = text_at(&output, "4:8");
+        click_at(&ctx, &mut editors, &mut settings, linksets, at, egui::PointerButton::Primary);
+        frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        assert_eq!(editors.active.get(&linkset.root), Some(&door), "the door's script is in front");
+        assert_eq!(
+            editors.documents.iter().find(|e| e.target == door).unwrap().tools.position.0,
+            4,
+            "the caret is on the hit's line"
+        );
+    }
+
+    /// Ctrl and a click on a name takes the window to where the name is
+    /// declared, in another script of the linkset.
+    #[test]
+    fn ctrl_click_goes_to_the_declaration_in_another_script() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let (linkset, panel, door) = linkset_fixture();
+        let mut settings = settings::ScriptSettings::default();
+        let panel_source = "default\n{\n    state_entry()\n    {\n        helper(1);\n    }\n}\n";
+        for (target, name, source) in [
+            (panel, "Panel Script", panel_source),
+            (door, "Door Script", "integer helper(integer n)\n{\n    return n;\n}\n"),
+        ] {
+            let load = editors.open(target, name.into(), true, true, 0).unwrap();
+            editors.loaded(load, target, Ok(source.into()));
+            editors.documents.iter_mut().find(|e| e.target == target).unwrap().linkset = linkset.root;
+        }
+        let linksets = std::slice::from_ref(&linkset);
+        for _ in 0..3 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        // the panel's script in front, its source on screen
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        let row = row_at(&output, "Panel Script");
+        click_at(&ctx, &mut editors, &mut settings, linksets, row, egui::PointerButton::Primary);
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        assert_eq!(editors.active.get(&linkset.root), Some(&panel));
+        // the place of `helper` in it
+        let source = panel_source;
+        let found = source.find("helper").expect("helper is in the source");
+        let (galley, pos) = output
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(text) if text.galley.job.text == source => Some((text.galley.clone(), text.pos)),
+                _ => None,
+            })
+            .expect("the panel's source on screen");
+        let at = pos + galley.pos_from_cursor(egui::text::CCursor::new(found)).center().to_vec2();
+        for pressed in [true, false] {
+            frame_linksets(
+                &ctx,
+                &mut editors,
+                &mut settings,
+                vec![
+                    egui::Event::ModifiersChanged(egui::Modifiers::CTRL),
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::CTRL,
+                    },
+                ],
+                linksets,
+            );
+        }
+        frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        assert_eq!(editors.active.get(&linkset.root), Some(&door), "the door declares it");
+        assert_eq!(
+            editors.documents.iter().find(|e| e.target == door).unwrap().tools.position.0,
+            0,
+            "the caret is on the declaration"
         );
     }
 

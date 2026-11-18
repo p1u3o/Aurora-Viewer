@@ -2863,7 +2863,12 @@ diagnostics of the dock in turn; Ctrl+P opens the window's scripts in a quick
 open list (typing narrows it, Enter opens the first, Escape closes it). The
 dock's second tab, Outline, lists the states, events, functions and globals
 the script declares with their lines, and a click goes to one
-(`ui/scripts/outline.rs`). The
+(`ui/scripts/outline.rs`). The dock's third tab, Search, finds a word in every
+script the window has open, with its script, line and text, and a click opens
+that script on the hit. In the source, Ctrl+click on a name (or the context
+menu's Go to the definition) takes the window to where the name is declared,
+in this script or another one of the linkset, and Find references fills the
+Search tab with it. The
 tree's filter and the tab strip share their row, so the tree's list and the
 source start on the same line, with the tree's bottom on the source's status
 bar; each tab's tooltip names the prim the script is in, and its menu closes
