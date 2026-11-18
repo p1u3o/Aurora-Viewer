@@ -744,6 +744,9 @@ pub struct App {
     empty_lists: DrawLists,
     quit_at: Option<Instant>,
     exit_prompt: ui::exit::ExitPrompt,
+    /// The quit or logout chosen while the open scripts asked about their
+    /// text: it goes on once they are settled (`resume_exit`).
+    exit_pending: Option<ui::exit::Action>,
     /// The spinning cat behind the Konami code (`crate::oiia`).
     oiia: crate::oiia::Oiia,
     /// saves the window layout shortly after it changes (ui/layout.rs)
@@ -1996,6 +1999,7 @@ impl App {
             empty_lists: DrawLists::default(),
             quit_at: None,
             exit_prompt: Default::default(),
+            exit_pending: None,
             oiia: Default::default(),
             layout_autosave: Default::default(),
             loading_stage: String::new(),
@@ -7131,6 +7135,7 @@ impl App {
             return;
         }
         self.exit_prompt.request();
+        self.exit_pending = None;
         self.down.clear();
         self.right_drag = false;
         self.mic_button_held = false;
@@ -7159,11 +7164,18 @@ impl App {
     }
 
     fn confirm_exit(&mut self, action: ui::exit::Action) {
-        if action != ui::exit::Action::Cancel
-            && (!self.close_wearable_editor() || !self.script_editors.prepare_exit() || !self.texture_library.prepare_exit(&self.egui_ctx))
-        {
-            self.exit_prompt.open = false;
-            return;
+        if action != ui::exit::Action::Cancel {
+            // The editors that ask something first (LLFloaterView::canCloseFloaters):
+            // the scripts' own prompts go on asking, and the quit waits for them
+            // (resume_exit); a Cancel there abandons it (Action::CloseCancelled).
+            let wearable = self.close_wearable_editor();
+            let scripts = wearable && self.script_editors.prepare_exit();
+            let textures = wearable && scripts && self.texture_library.prepare_exit(&self.egui_ctx);
+            if !(wearable && scripts && textures) {
+                self.exit_pending = (wearable && !scripts).then_some(action);
+                self.exit_prompt.open = false;
+                return;
+            }
         }
         if !self.exit_prompt.confirm(action, Instant::now()) {
             return;
@@ -7180,6 +7192,18 @@ impl App {
             self.release_bridge();
             self.net.send(NetCommand::Logout);
         }
+    }
+
+    /// The quit held while the open scripts asked about their text
+    /// (`confirm_exit`): once the last one is saved or discarded, it goes on,
+    /// as if the choice had just been made.
+    fn resume_exit(&mut self) {
+        let Some(action) = self.exit_pending else { return };
+        if !self.script_editors.exit_ready() {
+            return;
+        }
+        self.exit_pending = None;
+        self.confirm_exit(action);
     }
 
     /// Log out, save the window, layout, inventory cache and settings, exit.
@@ -20062,6 +20086,8 @@ impl App {
                 }
                 self.show_task_notecards(&ctx, &p);
                 self.show_scripts(&ctx, &p);
+                // the last script's prompt answered: the quit goes on
+                self.resume_exit();
                 self.show_script_recovery(&ctx, &p);
                 for action in ui::inventory::task_drop::confirm(&ctx, &p, &mut self.task_transfer) {
                     self.apply_inventory_action(action);

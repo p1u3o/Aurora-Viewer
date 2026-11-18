@@ -10,8 +10,8 @@ use super::{
 use crate::{
     theme::Palette,
     ui::{
-        menu,
-        widgets::{Floater, flat_button, icon_button},
+        inventory, menu,
+        widgets::{self, Floater, flat_button, icon_button},
     },
 };
 use egui::{Id, RichText, Vec2};
@@ -19,6 +19,10 @@ use egui::{Id, RichText, Vec2};
 #[derive(Default)]
 pub(super) struct Tools {
     pub focus_start: bool,
+    /// The keyboard to this script, asked once every source of the frame is
+    /// drawn: a request made before a text edit draws does not hold (a tab
+    /// chosen by a key or a click takes it).
+    pub focus_request: bool,
     pub body_top: f32,
     pub search_slot: Option<egui::Ui>,
     header_width: f32,
@@ -33,6 +37,8 @@ pub(super) struct Tools {
     pub processed: bool,
     pub processed_source: String,
     pub has_processed: bool,
+    /// Where the overview strip of the source was drawn this frame.
+    pub overview: Option<egui::Rect>,
     pub position: (usize, usize),
     pub scroll_to_cursor: bool,
     pub revert: bool,
@@ -163,7 +169,12 @@ pub(super) fn run(
             e.tools.file_job = Some(files::open(settings.convert_tabs));
         }
         Command::Export => e.tools.file_job = Some(files::save(e.name.clone(), e.source.clone(), e.lua())),
-        Command::Preferences => prefs.preferences.open = true,
+        Command::Preferences => {
+            prefs.preferences.open = true;
+            // the panel is drawn under the windows: bring it over them, or a
+            // large script window hides it entirely
+            crate::ui::widgets::bring_floater_front(ctx, super::dialogs::Preferences::WINDOW);
+        }
         Command::External => {
             e.tools.file_snapshot.clone_from(&e.source);
             // the script takes the same file again: the watch of the last
@@ -251,7 +262,9 @@ pub(super) fn body(
     own_menus: bool,
     problems: &[Problem],
     all_sources: Option<&mut bool>,
-) -> Option<usize> {
+    folded: &mut bool,
+    tab: &mut DockTab,
+) -> Option<DockClick> {
     let ctx = ui.ctx().clone();
     e.tools.body_top = ui.cursor().top();
     if own_menus {
@@ -315,16 +328,18 @@ pub(super) fn body(
     // 8).
     let room = ui.available_height();
     let gap = ui.spacing().item_spacing.y;
-    let dock_height = if room >= footer_height + DOCK_HEIGHT + SOURCE_MIN + gap * 2.0 + 8.0 {
-        DOCK_HEIGHT
+    // A folded dock keeps only its header line.
+    let dock_room = if *folded { DOCK_HEADER } else { DOCK_HEIGHT };
+    let dock_height = if room >= footer_height + dock_room + SOURCE_MIN + gap * 2.0 + 8.0 {
+        dock_room
     } else {
         0.0
     };
     let gaps = if dock_height > 0.0 { 2.0 } else { 1.0 };
     let height = (room - footer_height - dock_height - gap * gaps - 8.0).max(SOURCE_MIN);
-    source(ui, p, e, id, settings, height, &prefs.search);
+    source(ui, p, e, id, settings, height, &prefs.search, problems);
     let clicked = if dock_height > 0.0 {
-        problems_dock(ui, p, problems, all_sources)
+        dock(ui, p, e, problems, all_sources, folded, tab)
     } else {
         None
     };
@@ -337,35 +352,147 @@ pub(super) fn body(
 }
 
 /// The room the Problems dock takes under the source.
-const DOCK_HEIGHT: f32 = 96.0;
+const DOCK_HEIGHT: f32 = 112.0;
+/// Folded, it keeps the room of its header alone.
+const DOCK_HEADER: f32 = 30.0;
 /// The least height the source keeps: a short window gives the dock's room to
 /// the source instead.
 const SOURCE_MIN: f32 = 120.0;
 
-/// The Problems dock (LLScriptEdCore's error list, given columns): the
-/// diagnostics of the scripts the window shows, each one a click away from its
-/// line. Returns the clicked row.
-fn problems_dock(ui: &mut egui::Ui, p: &Palette, rows: &[Problem], all_sources: Option<&mut bool>) -> Option<usize> {
+/// Which list the dock under the source shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum DockTab {
+    /// LLScriptEdCore's error list, given columns.
+    #[default]
+    Problems,
+    /// The states, events, functions and globals of the script in front.
+    Outline,
+}
+
+/// What a click in the dock asked for.
+pub(super) enum DockClick {
+    /// A row of the diagnostics, by its place in the list.
+    Problem(usize),
+    /// An item of the outline, by its place in it.
+    Outline(usize),
+}
+
+/// The outline of a document, as the text on screen declares it.
+pub(super) fn outline_items(e: &Editor) -> Vec<super::outline::Item> {
+    let text = if e.tools.processed { &e.tools.processed_source } else { &e.source };
+    super::outline::outline(text, e.lua())
+}
+
+/// Puts the cursor on a line of the text on screen (the outline's rows).
+pub(super) fn go_to_line(ctx: &egui::Context, e: &mut Editor, id: Id, line: usize) {
+    let text = if e.tools.processed { &e.tools.processed_source } else { &e.source };
+    let at = editing::line_cursor(text, line, 0);
+    editing::select(ctx, visible_id(id, e.tools.processed), at..at, true);
+    e.tools.scroll_to_cursor = true;
+}
+
+/// The outline list of the dock: each state, event, function and global of the
+/// script in front with its line, a click away from it.
+fn outline_dock(ui: &mut egui::Ui, p: &Palette, e: &Editor) -> Option<DockClick> {
+    let items = outline_items(e);
     let mut clicked = None;
-    // Exactly the room reserved for it, whatever the diagnostics are: the dock
+    let first = e.first_line();
+    egui::ScrollArea::vertical()
+        .id_salt("script_outline")
+        .max_height(ui.available_height().max(0.0))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 1.0;
+            if items.is_empty() {
+                ui.label(RichText::new(aurora_i18n::tr!("script-outline-none")).size(11.0).color(p.muted));
+                return;
+            }
+            for (index, item) in items.iter().enumerate() {
+                let (icon, tint) = match item.kind {
+                    super::outline::Kind::State => ("circle-dot-filled", p.violet_light),
+                    super::outline::Kind::Event => ("bolt-filled", p.teal),
+                    super::outline::Kind::Function => ("function-filled", p.indigo_light),
+                    super::outline::Kind::Global => ("variable", p.muted),
+                };
+                let label = widgets::name_with_suffix(&item.name, &format!("   {}", item.line + first), inventory::tree::font(), p.ink);
+                let row = ui
+                    .horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        super::linkset::icon(ui, icon, tint);
+                        inventory::tree::label(ui, label, false, egui::Sense::click(), None)
+                    })
+                    .inner;
+                if row.clicked() {
+                    clicked = Some(DockClick::Outline(index));
+                }
+            }
+        });
+    clicked
+}
+
+/// The dock under the source: the diagnostics of the scripts the window shows
+/// (each one a click away from its line) or, on its other tab, the outline of
+/// the script in front. Returns what a click asked for.
+fn dock(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    e: &mut Editor,
+    rows: &[Problem],
+    all_sources: Option<&mut bool>,
+    folded: &mut bool,
+    tab: &mut DockTab,
+) -> Option<DockClick> {
+    let mut clicked = None;
+    // Exactly the room reserved for it, whatever the list holds: the dock
     // stays, saying "No problems." when everything compiles.
+    let height = if *folded { DOCK_HEADER } else { DOCK_HEIGHT };
     ui.allocate_ui_with_layout(
-        Vec2::new(ui.available_width(), DOCK_HEIGHT),
+        Vec2::new(ui.available_width(), height),
         egui::Layout::top_down(egui::Align::Min),
         |ui| {
             egui::Frame::new()
                 .fill(p.field.gamma_multiply(0.72))
                 .corner_radius(ui.visuals().window_corner_radius)
-                .inner_margin(4)
+                // the sides of the status bar below, so the scope's right edge
+                // lines up with Save
+                .inner_margin(egui::Margin {
+                    left: 8,
+                    right: 8,
+                    top: 4,
+                    bottom: 4,
+                })
                 .show(ui, |ui| {
                     ui.set_min_size(ui.available_size());
                     ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(aurora_i18n::tr!("script-problems-count", count = rows.len() as i64))
-                                .size(11.0)
-                                .color(p.muted),
-                        );
-                        if let Some(all) = all_sources {
+                        // The chevron folds the dock to its header, as an
+                        // IDE's problems view does.
+                        let (icon, tip) = if *folded {
+                            ("chevron-right", aurora_i18n::tr!("script-problems-unfold"))
+                        } else {
+                            ("chevron-down", aurora_i18n::tr!("script-problems-fold"))
+                        };
+                        if icon_button(ui, p, icon, tip, true) {
+                            *folded = !*folded;
+                        }
+                        // the two lists, as tabs of the dock
+                        let problems = aurora_i18n::tr!("script-problems-count", count = rows.len() as i64);
+                        if ui
+                            .selectable_label(*tab == DockTab::Problems, RichText::new(problems).size(11.0))
+                            .clicked()
+                        {
+                            *tab = DockTab::Problems;
+                        }
+                        if ui
+                            .selectable_label(
+                                *tab == DockTab::Outline,
+                                RichText::new(aurora_i18n::tr!("script-dock-outline")).size(11.0),
+                            )
+                            .clicked()
+                        {
+                            *tab = DockTab::Outline;
+                        }
+                        if *tab == DockTab::Problems
+                            && let Some(all) = all_sources
+                        {
                             ui.allocate_ui_with_layout(
                                 Vec2::new(ui.available_width(), 20.0),
                                 egui::Layout::right_to_left(egui::Align::Center),
@@ -384,6 +511,13 @@ fn problems_dock(ui: &mut egui::Ui, p: &Palette, rows: &[Problem], all_sources: 
                             );
                         }
                     });
+                    if *folded {
+                        return;
+                    }
+                    if *tab == DockTab::Outline {
+                        clicked = outline_dock(ui, p, e);
+                        return;
+                    }
                     // Columns: the message takes what the other two leave, and each
                     // cell starts at its left edge (a sized label would centre).
                     let (source_width, line_width) = (118.0, 48.0);
@@ -447,7 +581,7 @@ fn problems_dock(ui: &mut egui::Ui, p: &Palette, rows: &[Problem], all_sources: 
                                     );
                                 }
                                 if hit.clicked() {
-                                    clicked = Some(index);
+                                    clicked = Some(DockClick::Problem(index));
                                 }
                             }
                         });
@@ -563,7 +697,7 @@ fn insertion_menu(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id) {
 /// its preferences, and the state of the script. A window of the linkset's
 /// scripts draws it once, under the menus, for the script in front.
 /// The width the experience selector takes at the right of the toolbar.
-const EXPERIENCE_WIDTH: f32 = 270.0;
+const EXPERIENCE_WIDTH: f32 = 180.0;
 
 pub(super) fn toolbar(
     ui: &mut egui::Ui,
@@ -661,6 +795,10 @@ pub(super) fn toolbar(
         run(command, e, &ctx, id, settings, prefs, actions);
     }
     if ctx.memory(|m| m.has_focus(visible_id(id, e.tools.processed))) {
+        // Ctrl+Shift+S saves the window's scripts (Save All, as its button)
+        if save_all == Some(true) && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::S)) {
+            run(Command::SaveAll, e, &ctx, id, settings, prefs, actions);
+        }
         for (key, command) in [
             (egui::Key::S, Command::Save),
             (egui::Key::G, Command::Goto),
@@ -723,22 +861,7 @@ fn compile_target(ui: &mut egui::Ui, e: &mut Editor) {
 }
 
 fn footer(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, actions: &mut Vec<Action>) {
-    ui.horizontal(|ui| {
-        // The Legacy Viewer's status line of the editor: where the cursor is,
-        // the indentation, and how much of the source the server takes.
-        let position = aurora_i18n::tr!(
-            "script-position",
-            line = (e.tools.position.0 + e.first_line()) as i64,
-            column = (e.tools.position.1 + e.first_line()) as i64
-        );
-        let spaces = aurora_i18n::tr!("script-spaces", count = indent::TAB_SIZE as i64);
-        let size = aurora_i18n::tr!(
-            "script-source-size",
-            used = size_label(e.source.len()),
-            limit = size_label(aurora_net::scripts::MAX_SOURCE)
-        );
-        ui.label(RichText::new(format!("{position}  ·  {spaces}  ·  {size}")).small().color(p.muted));
-    });
+    // The lines that only come up when they have something to say.
     if !e.target.object.is_nil() && e.loaded && e.can_read && e.running.is_none() {
         ui.horizontal(|ui| {
             ui.label(RichText::new(aurora_i18n::tr!("script-waiting-running")).color(p.warn));
@@ -750,44 +873,204 @@ fn footer(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, actions: &mut Vec<Acti
     if e.source.len() > aurora_net::scripts::MAX_SOURCE {
         ui.label(RichText::new(aurora_i18n::tr!("script-source-too-large")).color(p.danger));
     }
-    ui.label(RichText::new(&e.status).color(if e.compile_failed { p.danger } else { p.muted }));
-    // The commands of the script, at the bottom right of the window, in the
-    // Legacy Viewer's order: Reset, Running, the compile target, Save. The row
-    // keeps its height: `with_layout` would take the room left below.
-    ui.allocate_ui_with_layout(
-        Vec2::new(ui.available_width(), ui.spacing().interact_size.y.max(26.0)),
-        egui::Layout::right_to_left(egui::Align::Center),
-        |ui| {
-            if ui
-                .add_enabled_ui(e.can_save(), |ui| flat_button(ui, p, aurora_i18n::tr!("common-save")))
-                .inner
-                .clicked()
-            {
-                actions.extend(e.save());
-            }
-            ui.add_enabled_ui(
-                e.can_edit && e.loaded && e.saving.is_none() && (e.target.object.is_nil() || e.running.is_some()),
+    if !e.status.is_empty() {
+        ui.label(RichText::new(&e.status).color(if e.compile_failed { p.danger } else { p.muted }));
+    }
+    // The status bar under the source: where the cursor is on the left, the
+    // commands of the script on the right (Running, Reset, the compile target
+    // and Save, right to left). The row keeps its height: `with_layout` would
+    // take the room left below.
+    let bar = egui::Frame::new()
+        .fill(p.bar)
+        .corner_radius(ui.visuals().widgets.inactive.corner_radius)
+        .inner_margin(egui::Margin::symmetric(8, 2))
+        .show(ui, |ui| {
+            ui.allocate_ui_with_layout(
+                Vec2::new(ui.available_width(), ui.spacing().interact_size.y.max(26.0)),
+                egui::Layout::right_to_left(egui::Align::Center),
                 |ui| {
-                    compile_target(ui, e);
+                    if ui
+                        .add_enabled_ui(e.can_save(), |ui| flat_button(ui, p, aurora_i18n::tr!("common-save")))
+                        .inner
+                        .clicked()
+                    {
+                        actions.extend(e.save());
+                    }
+                    ui.add_enabled_ui(
+                        e.can_edit && e.loaded && e.saving.is_none() && (e.target.object.is_nil() || e.running.is_some()),
+                        |ui| {
+                            compile_target(ui, e);
+                        },
+                    );
+                    if !e.target.object.is_nil() {
+                        // LLLiveLSLEditor::onReset (indra/newview/llpreviewscript.cpp):
+                        // resetting does not require access to the source or a running reply.
+                        ui.add_enabled_ui(e.can_reset && e.saving.is_none(), |ui| {
+                            if flat_button(ui, p, aurora_i18n::tr!("script-reset")).clicked() {
+                                actions.push(Action::Reset(e.target));
+                            }
+                        });
+                        ui.add_enabled_ui(e.can_edit && e.running.is_some() && e.saving.is_none(), |ui| {
+                            let mut running = e.running.unwrap_or(false);
+                            if crate::ui::widgets::checkbox(ui, p, &mut running, aurora_i18n::tr!("script-running")).changed() {
+                                actions.push(Action::Running { target: e.target, running });
+                            }
+                        });
+                    }
+                    // Added last in a right-to-left row: it takes the room on the left,
+                    // and its text starts there.
+                    let position = aurora_i18n::tr!(
+                        "script-position",
+                        line = (e.tools.position.0 + e.first_line()) as i64,
+                        column = (e.tools.position.1 + e.first_line()) as i64
+                    );
+                    let spaces = aurora_i18n::tr!("script-spaces", count = indent::TAB_SIZE as i64);
+                    let size = aurora_i18n::tr!(
+                        "script-source-size",
+                        used = size_label(e.source.len()),
+                        limit = size_label(aurora_net::scripts::MAX_SOURCE)
+                    );
+                    let readout = format!("{position}  ·  {spaces}  ·  {size}");
+                    let width = ui.available_width();
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(width, ui.spacing().interact_size.y.max(26.0)),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.add(egui::Label::new(RichText::new(readout).small().color(p.muted)).truncate());
+                        },
+                    );
                 },
             );
-            if !e.target.object.is_nil() {
-                ui.add_enabled_ui(e.can_edit && e.running.is_some() && e.saving.is_none(), |ui| {
-                    let mut running = e.running.unwrap_or(false);
-                    if crate::ui::widgets::checkbox(ui, p, &mut running, aurora_i18n::tr!("script-running")).changed() {
-                        actions.push(Action::Running { target: e.target, running });
-                    }
-                });
-                // LLLiveLSLEditor::onReset (indra/newview/llpreviewscript.cpp):
-                // resetting does not require access to the source or a running reply.
-                ui.add_enabled_ui(e.can_reset && e.saving.is_none(), |ui| {
-                    if flat_button(ui, p, aurora_i18n::tr!("script-reset")).clicked() {
-                        actions.push(Action::Reset(e.target));
-                    }
-                });
-            }
-        },
+        });
+    // the hairline that sets the bar apart from the source above it
+    ui.painter().hline(
+        bar.response.rect.x_range(),
+        bar.response.rect.top(),
+        egui::Stroke::new(1.0, p.muted_dim.gamma_multiply(0.7)),
     );
+}
+
+/// The width of the overview strip at the right of the source.
+const OVERVIEW_WIDTH: f32 = 9.0;
+
+/// The overview strip at the right of the source: the whole script in the
+/// height of the window, with the part on screen (a thumb), the lines whose
+/// text differs from the saved script (amber) and the diagnostics (the danger
+/// colour). A click puts the caret on the line there, as an IDE's overview
+/// ruler does. Painted over the scroll area's clip, at screen coordinates: it
+/// stays put while the text scrolls.
+fn overview(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    e: &mut Editor,
+    id: Id,
+    strip: egui::Rect,
+    viewport: egui::Rect,
+    rows: &[egui::epaint::text::PlacedRow],
+    problems: &[Problem],
+) {
+    let text = if e.tools.processed { &e.tools.processed_source } else { &e.source };
+    let content = output_height(rows, text);
+    let at = |y: f32| strip.top() + (y / content).clamp(0.0, 1.0) * strip.height();
+    let painter = ui.painter().with_clip_rect(strip);
+    // the part of the script the window shows, when it does not show it all
+    if viewport.height() < content {
+        let top = at(viewport.min.y.max(0.0));
+        let bottom = at(viewport.max.y.min(content));
+        painter.rect_filled(
+            egui::Rect::from_min_max(egui::pos2(strip.left(), top), egui::pos2(strip.right(), bottom.max(top + 2.0))),
+            ui.visuals().window_corner_radius,
+            p.raised.gamma_multiply(0.35),
+        );
+    }
+    // the changed lines and the diagnostics, as thin marks at the right edge
+    let changed = if e.loaded && !e.tools.processed {
+        changed_lines(text, &e.baseline)
+    } else {
+        None
+    };
+    let mut line = e.first_line();
+    let mut line_start = true;
+    for row in rows {
+        if line_start {
+            let index = line.saturating_sub(e.first_line());
+            let y = at(row.pos.y);
+            let tick = egui::Rect::from_min_max(egui::pos2(strip.right() - 4.0, y), egui::pos2(strip.right() - 1.0, y + 2.0));
+            if let Some((first, last)) = changed
+                && (first..=last).contains(&index)
+            {
+                painter.rect_filled(tick, 0.0, p.amber);
+            }
+            if problems.iter().any(|problem| problem.line == line && problem.source == e.name) {
+                painter.rect_filled(tick.expand2(egui::Vec2::new(1.0, 0.0)), 0.0, p.danger);
+            }
+        }
+        if row.ends_with_newline {
+            line += 1;
+        }
+        line_start = row.ends_with_newline;
+    }
+    let response = ui.interact(strip, egui::Id::unique((id, "overview")), egui::Sense::click());
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if response.clicked()
+        && let Some(pos) = response.interact_pointer_pos()
+    {
+        let y = ((pos.y - strip.top()) / strip.height()).clamp(0.0, 1.0) * content;
+        let mut target = None;
+        let mut line = e.first_line();
+        for row in rows {
+            if (row.pos.y..row.pos.y + row.height()).contains(&y) {
+                target = Some(line.saturating_sub(e.first_line()));
+                break;
+            }
+            if row.ends_with_newline {
+                line += 1;
+            }
+        }
+        let target = target.unwrap_or_else(|| text.lines().count().saturating_sub(1));
+        let at = editing::line_cursor(text, target, 0);
+        editing::select(ui.ctx(), id, at..at, true);
+        e.tools.scroll_to_cursor = true;
+    }
+    e.tools.overview = Some(strip);
+}
+
+/// The height the overview strip maps: the text's rows, or the text's lines
+/// when the galley has not laid them out yet.
+fn output_height(rows: &[egui::epaint::text::PlacedRow], text: &str) -> f32 {
+    rows.last()
+        .map(|row| row.pos.y + row.height())
+        .unwrap_or_else(|| text.lines().count().max(1) as f32)
+        .max(1.0)
+}
+
+/// F8 (`Some(true)`) or Shift+F8 (`Some(false)`), for the diagnostics in walk:
+/// the keys belong to the script window while its source has the keyboard.
+pub(super) fn problem_key(ctx: &egui::Context) -> Option<bool> {
+    ctx.input_mut(|i| {
+        if i.consume_key(egui::Modifiers::SHIFT, egui::Key::F8) {
+            Some(false)
+        } else if i.consume_key(egui::Modifiers::NONE, egui::Key::F8) {
+            Some(true)
+        } else {
+            None
+        }
+    })
+}
+
+/// The row F8 or Shift+F8 goes to, from the caret: the first diagnostic of the
+/// dock's order after it (or the last one when it is past them), the last one
+/// before it (or the first one when it is before them). `rows` holds each
+/// row's script and line, `at` the caret's.
+pub(super) fn problem_row(rows: &[(usize, usize)], at: (usize, usize), next: bool) -> Option<usize> {
+    if rows.is_empty() {
+        return None;
+    }
+    if next {
+        rows.iter().position(|row| *row > at).or(Some(0))
+    } else {
+        rows.iter().rposition(|row| *row < at).or(Some(rows.len() - 1))
+    }
 }
 
 /// Puts the cursor on a diagnostic's line and column, in the processed source
@@ -879,7 +1162,16 @@ fn edit_menu(ui: &mut egui::Ui, p: &Palette, e: &Editor, id: Id, chosen: &mut Op
     }
 }
 
-fn source(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, settings: &ScriptSettings, height: f32, search: &Search) {
+fn source(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    e: &mut Editor,
+    id: Id,
+    settings: &ScriptSettings,
+    height: f32,
+    search: &Search,
+    problems: &[Problem],
+) {
     if std::mem::take(&mut e.tools.reset_history) {
         egui::text_edit::TextEditState::default().store(ui.ctx(), id);
         egui::text_edit::TextEditState::default().store(ui.ctx(), visible_id(id, true));
@@ -942,11 +1234,15 @@ fn source(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, settings: &Scr
                                 // a slot under the text for the caret's row and
                                 // the indent guides
                                 let beneath = ui.painter().add(egui::Shape::Noop);
+                                // the overview strip and the scroll bar keep
+                                // their room at the right of the text
+                                let bar = ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_inner_margin;
+                                let width = (ui.available_width() - OVERVIEW_WIDTH - bar).max(0.0);
                                 let output = egui::TextEdit::multiline(buffer)
                                     .id(id)
                                     .code_editor()
                                     .layouter(&mut layouter)
-                                    .desired_width(f32::INFINITY)
+                                    .desired_width(width)
                                     .desired_rows(1)
                                     .min_size(Vec2::new(0.0, viewport.height()))
                                     .frame(egui::Frame::NONE)
@@ -1027,10 +1323,29 @@ fn source(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, settings: &Scr
                                     .translate(output.galley_pos.to_vec2());
                                 ui.scroll_to_rect(rect, Some(egui::Align::Center));
                             }
-                            // The caret's row and the indentation guides, behind
-                            // the text (the slot was reserved before it was drawn).
+                            // The other places the word under the caret appears,
+                            // dimmed behind the text (the box of a reference),
+                            // then the caret's row and the indentation guides.
                             let mut beneath_shapes = Vec::new();
                             if e.loaded && !ui.is_sizing_pass() {
+                                let caret_at = editing::cursor(ui.ctx(), id).primary.index.0;
+                                if let Some((mine, found)) = editing::occurrences(text, caret_at, lua) {
+                                    for range in found {
+                                        if range == mine {
+                                            continue;
+                                        }
+                                        for rect in crate::ui::chat::range_rects(&output.galley, output.galley_pos, range) {
+                                            if !rect.intersects(output.text_clip_rect) {
+                                                continue;
+                                            }
+                                            beneath_shapes.push(egui::Shape::rect_filled(
+                                                rect.intersect(output.text_clip_rect).expand2(Vec2::new(0.5, 0.0)),
+                                                ui.visuals().widgets.inactive.corner_radius,
+                                                p.raised.gamma_multiply(0.38),
+                                            ));
+                                        }
+                                    }
+                                }
                                 let caret = output
                                     .galley
                                     .pos_from_cursor(editing::cursor(ui.ctx(), id).primary)
@@ -1075,6 +1390,32 @@ fn source(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, settings: &Scr
                                         line += 1;
                                     }
                                     line_start = row.ends_with_newline;
+                                }
+                                // the bracket at the caret and its match, lit
+                                // behind the text
+                                if let Some((first, second)) = editing::bracket_match(text, caret_at) {
+                                    for index in [first, second] {
+                                        let start = output
+                                            .galley
+                                            .pos_from_cursor(egui::text::CCursor::new(index))
+                                            .translate(output.galley_pos.to_vec2());
+                                        let end = output
+                                            .galley
+                                            .pos_from_cursor(egui::text::CCursor::new(index + 1))
+                                            .translate(output.galley_pos.to_vec2());
+                                        // a bracket split by the wrapping marks nothing
+                                        if (start.top() - end.top()).abs() > 1.0 {
+                                            continue;
+                                        }
+                                        let rect = egui::Rect::from_min_max(start.min, end.max);
+                                        if rect.intersects(output.text_clip_rect) {
+                                            beneath_shapes.push(egui::Shape::rect_filled(
+                                                rect.expand2(Vec2::new(1.0, 0.0)),
+                                                ui.visuals().widgets.inactive.corner_radius,
+                                                p.raised.gamma_multiply(0.55),
+                                            ));
+                                        }
+                                    }
                                 }
                             }
                             ui.painter().set(beneath, egui::Shape::Vec(beneath_shapes));
@@ -1122,6 +1463,11 @@ fn source(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, settings: &Scr
                                             p.amber,
                                         );
                                     }
+                                    // the lines a diagnostic is reported on (the
+                                    // dock may list every script of the window)
+                                    if problems.iter().any(|problem| problem.line == line && problem.source == e.name) {
+                                        painter.circle_filled(egui::pos2(left + 4.0, y + row.height() / 2.0), 2.5, p.danger);
+                                    }
                                 }
                                 if row.ends_with_newline {
                                     line += 1;
@@ -1132,6 +1478,35 @@ fn source(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, settings: &Scr
                                 [egui::pos2(left + 55.0, clip.top()), egui::pos2(left + 55.0, clip.bottom())],
                                 egui::Stroke::new(1.0, p.muted_dim),
                             );
+                            // The diagnostics of this script in the code: a
+                            // squiggle under the span the compile points at
+                            // (LSL gives a place, not a length), so that a row
+                            // of the dock is visible where it matters.
+                            let squiggle = ui.painter().with_clip_rect(output.text_clip_rect);
+                            for problem in problems.iter().filter(|problem| problem.source == e.name) {
+                                if problem.line == 0 {
+                                    continue;
+                                }
+                                let line = problem.line.saturating_sub(e.first_line());
+                                let span = editing::error_span(text, line, problem.column);
+                                let warning = problem.message.to_ascii_uppercase().contains("WARNING");
+                                let color = if warning { p.amber } else { p.danger };
+                                for rect in crate::ui::chat::range_rects(&output.galley, output.galley_pos, span) {
+                                    if !rect.intersects(output.text_clip_rect) {
+                                        continue;
+                                    }
+                                    let y = rect.bottom() - 2.0;
+                                    let mut points = Vec::new();
+                                    let mut x = rect.left();
+                                    let mut up = true;
+                                    while x <= rect.right() {
+                                        points.push(egui::pos2(x, if up { y } else { y - 1.8 }));
+                                        x += 2.0;
+                                        up = !up;
+                                    }
+                                    squiggle.add(egui::Shape::line(points, egui::Stroke::new(1.0, color)));
+                                }
+                            }
                             if e.folding.reveal(output.cursor_range.unwrap_or_default().primary) {
                                 ui.ctx().request_repaint();
                             }
@@ -1142,6 +1517,23 @@ fn source(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, settings: &Scr
                                     (*output.response)
                                         .clone()
                                         .on_hover_text(format!("{}\n{}", entry.signature, entry.tooltip));
+                                }
+                            }
+                            // The overview strip at the right of the source: the
+                            // whole script in the height of the window, with
+                            // what is visible, the changed lines and the
+                            // diagnostics; a click goes there. Last, so that it
+                            // paints over the text it maps.
+                            e.tools.overview = None;
+                            if e.loaded && !ui.is_sizing_pass() && !output.galley.rows.is_empty() {
+                                let bar = ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_inner_margin;
+                                let right = ui.clip_rect().right() - bar - 1.0;
+                                let strip = egui::Rect::from_min_max(
+                                    egui::pos2(right - OVERVIEW_WIDTH, ui.clip_rect().top() + 1.0),
+                                    egui::pos2(right, ui.clip_rect().bottom() - 1.0),
+                                );
+                                if strip.width() > 1.0 && strip.height() > 1.0 {
+                                    overview(ui, p, e, id, strip, viewport, &output.galley.rows, problems);
                                 }
                             }
                         });
@@ -1581,7 +1973,7 @@ mod tests {
                             focused: true,
                             ..Default::default()
                         },
-                        |ui| source(ui, &p, e, id, &settings, 800.0, &Search::default()),
+                        |ui| source(ui, &p, e, id, &settings, 800.0, &Search::default(), &[]),
                     )
                 };
                 for _ in 0..2 {
@@ -1677,6 +2069,8 @@ mod tests {
                                     true,
                                     &[],
                                     None,
+                                    &mut false,
+                                    &mut DockTab::default(),
                                 );
                                 bottom = ui.min_rect().bottom();
                             },

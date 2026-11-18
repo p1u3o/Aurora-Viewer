@@ -188,6 +188,16 @@ impl App {
         if matches!(mode.as_str(), "folding" | "object-folding") {
             raw.events.extend(self.script_editors.demo_folding_events(self.frame_count));
         }
+        if mode == "linkset" && self.frame_count == 400 {
+            // Find on the script in front, as Ctrl+F does
+            raw.events.push(egui::Event::Key {
+                key: egui::Key::F,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            });
+        }
         if self.frame_count == 321
             && matches!(
                 mode.as_str(),
@@ -358,8 +368,22 @@ impl App {
         );
         if self.frame_count == 280 {
             self.panels.perf = false;
-            if mode == "linkset" {
+            if matches!(mode.as_str(), "linkset" | "quit") {
                 self.demo_script_linkset();
+            }
+            if mode == "quit" {
+                // AURORA_DEMO_SCRIPTS=quit: a quit chosen while scripts ask
+                // about their text is held, and goes on once the last one is
+                // discarded (see the frames below).
+                for e in &mut self.script_editors.documents {
+                    if e.is_open() {
+                        e.source.push_str("\n// an edit that is not saved yet\n");
+                    }
+                }
+                log::info!(
+                    "script demo quit: {} scripts with unsaved text",
+                    self.script_editors.documents.len()
+                );
             }
             if matches!(mode.as_str(), "word-wrap" | "no-word-wrap" | "word-wrap-preferences") {
                 self.settings.script_editor.word_wrap = mode != "no-word-wrap";
@@ -550,6 +574,23 @@ impl App {
             // one script holds unsaved text: its row of the tree shows the star
             source.push_str("// an edit that is not saved yet\n");
             self.script_editors.demo_edit(target, source, false);
+        }
+        if mode == "quit" {
+            // 320: a quit while two scripts have unsaved text: held, and each
+            // script asks in turn; 400: both discarded, so the viewer must
+            // close by itself here (its log would stop at this line)
+            if self.frame_count == 320 {
+                self.exit_prompt.request();
+                self.confirm_exit(crate::ui::exit::Action::Quit);
+                log::info!("script demo quit: held for {} script(s) to answer", self.script_editors.prompting());
+            }
+            if self.frame_count == 360 {
+                log::info!("script demo quit: {} script(s) asking", self.script_editors.prompting());
+            }
+            if self.frame_count == 400 {
+                let discarded = self.script_editors.demo_discard_prompts();
+                log::info!("script demo quit: {discarded} discard(s), the viewer must close now");
+            }
         }
         if self.frame_count == 320
             && matches!(
@@ -761,6 +802,7 @@ impl App {
     fn script_linkset_views(&mut self) -> Vec<crate::ui::scripts::Linkset> {
         use crate::build::contents::AT_LSL_TEXT;
         use crate::build::task_inventory::TransferKind;
+        use crate::ui::inventory::permissions::Permissions;
         use crate::ui::scripts::{Linkset, LinksetPrim, LinksetScript, LinksetScriptMenu};
         let mut roots: Vec<Uuid> = Vec::new();
         for e in &self.script_editors.documents {
@@ -809,6 +851,7 @@ impl App {
                         item: item.item_id,
                         name: item.name.clone(),
                         flags: item.flags,
+                        permissions: Permissions::new(item.owner_mask, item.next_owner_mask),
                         running: self
                             .build
                             .contents
@@ -1051,6 +1094,8 @@ impl App {
             Action::DeleteScript { object, item } => self.remove_task_items(object, &[item]),
             Action::NewScript(object) => self.new_task_script(object),
             Action::SaveAll { linkset, target } => self.save_task_scripts(linkset, target),
+            // a cancelled close prompt abandons a quit that waited for it
+            Action::CloseCancelled => self.exit_pending = None,
         }
     }
 

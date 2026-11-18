@@ -5,11 +5,12 @@
 //! LLLiveLSLEditor, indra/newview/llpreviewscript.cpp): the tree takes the
 //! rows of the inventory's contents (`ui/inventory/tree.rs`).
 
+use super::super::inventory::permissions::{Permissions, Rights};
 use super::super::widgets;
 use super::super::{icons, inventory, menu};
 use crate::theme::Palette;
 use aurora_net::scripts::ScriptTarget;
-use egui::{Id, RichText, Sense, Vec2};
+use egui::{FontId, Id, RichText, Sense, TextFormat, Vec2};
 use uuid::Uuid;
 
 /// Room the tree keeps beside the source.
@@ -39,6 +40,8 @@ pub struct Script {
     pub flags: u32,
     /// Whether it runs, once the simulator answered.
     pub running: Option<bool>,
+    /// The rights the contents window shows for it (its C/M/T letters).
+    pub permissions: Permissions,
     /// Its open document has unsaved text: the row marks it with a star, in
     /// place of a tab strip's dot.
     pub dirty: bool,
@@ -65,6 +68,30 @@ pub struct Linkset {
     pub prims: Vec<Prim>,
 }
 
+impl Linkset {
+    /// The scripts whose name, or whose prim's name, contains `query`
+    /// (case-insensitively), in the tree's order: what a quick open lists.
+    pub fn matching(&self, query: &str) -> Vec<(ScriptTarget, &str, &str)> {
+        let needle = query.trim().to_lowercase();
+        let mut found = Vec::new();
+        for prim in &self.prims {
+            for script in &prim.scripts {
+                if needle.is_empty() || script.name.to_lowercase().contains(&needle) || prim.name.to_lowercase().contains(&needle) {
+                    found.push((
+                        ScriptTarget {
+                            object: prim.object,
+                            item: script.item,
+                        },
+                        prim.name.as_str(),
+                        script.name.as_str(),
+                    ));
+                }
+            }
+        }
+        found
+    }
+}
+
 fn collapsed_id(root: Uuid) -> Id {
     Id::unique(("script_linkset_collapsed", root))
 }
@@ -77,7 +104,7 @@ fn collapsed(ctx: &egui::Context, root: Uuid) -> Vec<Uuid> {
 
 /// The row icon of a name of the skin's set (Tabler and inventory icons
 /// alike), `16` points wide, or the room it takes when the set has none.
-fn icon(ui: &mut egui::Ui, name: &str, tint: egui::Color32) {
+pub(super) fn icon(ui: &mut egui::Ui, name: &str, tint: egui::Color32) {
     if let Some(t) = icons::global(name) {
         ui.add(egui::Image::new(&t).fit_to_exact_size(Vec2::splat(16.0)).tint(tint));
     } else {
@@ -97,35 +124,46 @@ pub(super) enum TreeAction {
     NewScript(Uuid),
 }
 
+/// The filter field over the tree: hides the scripts whose name does not
+/// contain its text (a prim whose name matches keeps all of its scripts).
+/// `focus` sends the keyboard to it.
+pub(super) fn filter(ui: &mut egui::Ui, p: &Palette, text: &mut String, focus: bool) {
+    let width = ui.available_width();
+    let (field, cleared) = inventory::tree::search_field(
+        ui,
+        p,
+        text,
+        aurora_i18n::tr!("script-linkset-filter"),
+        width,
+        !text.is_empty(),
+        aurora_i18n::tr!("script-linkset-filter-clear"),
+    );
+    if focus {
+        ui.ctx().memory_mut(|m| m.request_focus(field.id));
+    }
+    if cleared {
+        text.clear();
+    }
+}
+
 /// The tree of the linkset: a group per prim, its scripts under it. Returns
-/// what a click or a menu entry of a row asked for. `filter` hides the
-/// scripts whose name does not contain its text (a prim whose name matches
-/// keeps all of its scripts).
+/// what a click or a menu entry of a row asked for. `needle` is the filter
+/// field's text (lowercase, trimmed): the scripts whose name does not contain
+/// it are hidden (a prim whose name matches keeps all of its scripts).
 pub(super) fn tree(
     ui: &mut egui::Ui,
     p: &Palette,
     linkset: Option<&Linkset>,
     active: Option<ScriptTarget>,
-    filter: &mut String,
+    needle: &str,
 ) -> Option<TreeAction> {
     let ctx = ui.ctx().clone();
     let mut chosen = None;
-    let width = ui.available_width();
-    let (_, cleared) = inventory::tree::search_field(
-        ui,
-        p,
-        filter,
-        aurora_i18n::tr!("script-linkset-filter"),
-        width,
-        !filter.is_empty(),
-        aurora_i18n::tr!("script-linkset-filter-clear"),
-    );
-    if cleared {
-        filter.clear();
-    }
-    let needle = filter.trim().to_lowercase();
     let height = (ui.available_height() - 6.0).max(60.0);
     inventory::tree::frame(ui, p, |ui| {
+        // the panel reaches the window's bottom, as the source's status bar
+        // does, rather than stopping under its last row
+        ui.set_min_height(ui.available_height());
         inventory::tree::spacing(ui);
         inventory::tree::scroll(ui, height - 8.0).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -136,11 +174,11 @@ pub(super) fn tree(
             let mut closed = collapsed(&ctx, linkset.root);
             let filtering = !needle.is_empty();
             for prim in &linkset.prims {
-                let prim_matches = prim.name.to_lowercase().contains(&needle);
+                let prim_matches = prim.name.to_lowercase().contains(needle);
                 let scripts: Vec<&Script> = prim
                     .scripts
                     .iter()
-                    .filter(|script| !filtering || prim_matches || script.name.to_lowercase().contains(&needle))
+                    .filter(|script| !filtering || prim_matches || script.name.to_lowercase().contains(needle))
                     .collect();
                 if filtering && !prim_matches && scripts.is_empty() {
                     continue;
@@ -185,12 +223,16 @@ pub(super) fn tree(
                         ui.add_space(ui.spacing().indent - 4.0);
                         let tint = if script.running == Some(true) { p.teal } else { p.muted };
                         icon(ui, inventory::item_icon(10, 10, script.flags), tint);
-                        // the star of unsaved text, in place of a tab strip's dot
-                        let name = if script.dirty {
-                            widgets::name_with_suffix(&script.name, " *", inventory::tree::font(), p.ink)
-                        } else {
-                            inventory::tree::name(&script.name, p)
-                        };
+                        // the contents window's C/M/T letters, then the star of
+                        // unsaved text (LLItemBridge::getLabelSuffix)
+                        let mut name = widgets::name_with_suffix(&script.name, "", inventory::tree::font(), p.ink);
+                        name.append(" ", 0.0, TextFormat::simple(FontId::proportional(12.0), p.muted));
+                        script
+                            .permissions
+                            .append_with_rights(&mut name, p, &crate::ui::fonts::semibold(ui.ctx()), Rights::Mine);
+                        if script.dirty {
+                            name.append(" *", 0.0, TextFormat::simple(inventory::tree::font(), p.ink.gamma_multiply(0.85)));
+                        }
                         let selected = active == Some(target);
                         let response = inventory::tree::label(ui, name, selected, Sense::click(), None);
                         if response.clicked() {
@@ -200,9 +242,14 @@ pub(super) fn tree(
                             chosen = Some(TreeAction::Close(target));
                         }
                         let response = response.on_hover_text(if script.running == Some(true) {
-                            format!("{}\n{}", script.name, aurora_i18n::tr!("script-running"))
+                            format!(
+                                "{}\n{}\n\n{}",
+                                script.name,
+                                aurora_i18n::tr!("script-running"),
+                                script.permissions.tooltip()
+                            )
                         } else {
-                            script.name.clone()
+                            format!("{}\n\n{}", script.name, script.permissions.tooltip())
                         });
                         // the entries of the contents window's menu, with the
                         // rights it reads
@@ -242,25 +289,31 @@ pub(super) fn tree(
 pub(super) struct Tab<'a> {
     pub target: ScriptTarget,
     pub name: &'a str,
+    /// The prim that holds it: the tab's tooltip names it, as two prims may
+    /// hold scripts of the same name.
+    pub prim: &'a str,
     pub lua: bool,
     pub dirty: bool,
 }
 
-/// What a click of the strip asked for.
+/// What a click or a menu entry of the strip asked for.
 pub(super) enum Tabs {
     None,
     Select(ScriptTarget),
     Close(ScriptTarget),
+    CloseOthers(ScriptTarget),
+    CloseAll,
 }
 
 /// The strip of open scripts, flush above the source: the tab in front takes
 /// the editor's own background, so it sits on its top edge. A tab marks its
 /// unsaved text with a star, as the tree does, and its cross closes it (the
-/// middle button too).
+/// middle button too); its menu closes the others or all of them.
 pub(super) fn tabs(ui: &mut egui::Ui, p: &Palette, tabs: &[Tab<'_>], active: Option<ScriptTarget>, background: egui::Color32) -> Tabs {
     let mut answer = Tabs::None;
     let font = widgets::control_font(ui, 12.0);
-    let height = 24.0;
+    // as tall as the tree's filter field, which shares its row
+    let height = ui.spacing().interact_size.y.max(24.0);
     let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0));
     egui::ScrollArea::horizontal()
         .id_salt("script_linkset_tabs")
@@ -318,7 +371,19 @@ pub(super) fn tabs(ui: &mut egui::Ui, p: &Palette, tabs: &[Tab<'_>], active: Opt
                     } else if response.clicked() && !selected {
                         answer = Tabs::Select(tab.target);
                     }
-                    response.on_hover_text(tab.name);
+                    // the tab's own menu: the others, or every script
+                    menu::context_menu_of_button(&response, p, |ui| {
+                        if menu::item(ui, p, "x", aurora_i18n::tr!("common-close")) {
+                            answer = Tabs::Close(tab.target);
+                        }
+                        if menu::item(ui, p, "tabs", aurora_i18n::tr!("script-linkset-close-others")) {
+                            answer = Tabs::CloseOthers(tab.target);
+                        }
+                        if menu::item(ui, p, "circle-x", aurora_i18n::tr!("script-linkset-close-all")) {
+                            answer = Tabs::CloseAll;
+                        }
+                    });
+                    response.on_hover_text(format!("{} › {}", tab.prim, tab.name));
                 }
             });
         });

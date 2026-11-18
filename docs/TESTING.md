@@ -2835,7 +2835,7 @@ tests compare the complete physical trajectories at 30–500 fps, variable
 rates, the smoothing between steps, the anchoring, the change of origin and
 the catch-up after a long frame.
 
-**`AURORA_DEMO_SCRIPTS=inventory|object|object-readonly|both|save|object-save|error|readonly|syntax|object-syntax|syntax-readonly|indent|object-indent|tabstops|object-tabstops|close-brace|object-close-brace|colors|color-picker|color-accept|color-cancel|comment-lines|comment-block|multiline-indent|multiline-outdent|folding|object-folding|word-wrap|no-word-wrap|word-wrap-preferences|experience|experience-save|workbench|object-workbench|insert-filter|insert-empty|search|search-left|search-inline|search-overlay|search-outside|preferences|help|preprocessor|object-preprocessor|processed|preprocessor-error|lua|slua|linkset`**:
+**`AURORA_DEMO_SCRIPTS=inventory|object|object-readonly|both|save|object-save|error|readonly|syntax|object-syntax|syntax-readonly|indent|object-indent|tabstops|object-tabstops|close-brace|object-close-brace|colors|color-picker|color-accept|color-cancel|comment-lines|comment-block|multiline-indent|multiline-outdent|folding|object-folding|word-wrap|no-word-wrap|word-wrap-preferences|experience|experience-save|workbench|object-workbench|insert-filter|insert-empty|search|search-left|search-inline|search-overlay|search-outside|preferences|help|preprocessor|object-preprocessor|processed|preprocessor-error|lua|slua|linkset|quit`**:
 `linkset` adds three linked prims beside the plaza at frame 280, names their
 scripts ("Panel Script", "Door Script", "Lamp Flicker", "Lamp Sparkle") and
 opens the first and the last: the window shows the tree of the linkset on the
@@ -2854,6 +2854,33 @@ Right-clicking a script's row opens the contents window's menu for it (Open,
 Copy to inventory or Move, Delete, Close) and right-clicking a prim's row
 offers New script. Closing a script with unsaved text asks first, and closing
 the window asks about each such script in turn.
+The chevron of the Problems dock folds it to its header, and a script's
+diagnostic also marks its line in the gutter at the left of the source. With
+the keyboard in the source, Ctrl+Tab and Ctrl+Shift+Tab cycle the window's
+scripts, Ctrl+W closes the script in front (asking about its text),
+Ctrl+Shift+S saves every script of the window, and F8 / Shift+F8 walk the
+diagnostics of the dock in turn; Ctrl+P opens the window's scripts in a quick
+open list (typing narrows it, Enter opens the first, Escape closes it). The
+dock's second tab, Outline, lists the states, events, functions and globals
+the script declares with their lines, and a click goes to one
+(`ui/scripts/outline.rs`). The
+tree's filter and the tab strip share their row, so the tree's list and the
+source start on the same line, with the tree's bottom on the source's status
+bar; each tab's tooltip names the prim the script is in, and its menu closes
+the other scripts or all of them. At the right of the source, a thin overview
+strip maps the whole script (the part on screen, the changed lines and the
+diagnostics), and a click in it puts the caret on the line there. The bracket
+at the caret and its match are lit behind the text. Each tree row shows the
+contents window's C/M/T letters after the script's name.
+A diagnostic is also drawn in the code: a squiggle under the word its place
+points at, red for an error and amber for a warning. The other places the word
+under the caret appears are boxed behind the text, dimmed, and the tree's
+panel reaches the same bottom as the status bar.
+`quit` opens the same linkset with unsaved text, chooses Quit at frame 320
+(the quit is held while each script asks about its text) and discards both at
+frame 400: the viewer must close by itself, the log ending on
+`script demo quit: 2 discard(s), the viewer must close now`. The prompt buttons
+themselves are covered by `a_quit_waits_for_the_scripts_and_goes_on_after_the_last_one`.
 `slua` opens an SLua script (the SLua subtype in its item flags, on a demo region with SLua enabled): Lua colors, `ll.` names and Lua help, the compile target on Lua.
 `object-readonly` opens an object script without Modify permission: its source
 and save controls stay unavailable, but Reset remains usable without waiting

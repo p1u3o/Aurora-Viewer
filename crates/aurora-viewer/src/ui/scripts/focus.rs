@@ -66,6 +66,18 @@ pub fn editor_focused(ctx: &egui::Context) -> bool {
     state.frame + 1 >= ctx.cumulative_frame_nr() && resolve(ctx, &state).is_some()
 }
 
+/// The script whose source has the keyboard, as the last frame resolved it:
+/// the editor's window commands (Ctrl+Tab, Ctrl+W) run before the sources are
+/// drawn, so they read the activation of the frame before rather than
+/// `editor_focused`'s answer.
+pub(super) fn active(ctx: &egui::Context) -> Option<Id> {
+    let state = ctx.data(|d| d.get_temp::<State>(state_id()))?;
+    if state.frame + 1 < ctx.cumulative_frame_nr() || ctx.memory(|m| m.top_modal_layer()).is_some() {
+        return None;
+    }
+    state.active
+}
+
 /// The keyboard goes to a document's source, at the cursor it kept (a tab
 /// chosen in a linkset window).
 pub(super) fn text(ctx: &egui::Context, id: Id) {
