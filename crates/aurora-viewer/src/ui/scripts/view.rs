@@ -388,35 +388,11 @@ pub(super) fn split_body(
     tab: &mut DockTab,
     search: Option<SearchDock<'_>>,
 ) -> Option<DockClick> {
-    // The window's first layout pass measures the content with the width it
-    // had before the split: measuring one pane keeps it from growing.
-    if ui.is_sizing_pass() {
-        return body(
-            ui,
-            p,
-            left,
-            left_id,
-            settings,
-            prefs,
-            actions,
-            false,
-            problems,
-            all_sources,
-            folded,
-            tab,
-            None,
-        );
-    }
-    let gap = ui.spacing().item_spacing.x;
-    let half = ((ui.available_width() - gap) / 2.0).max(120.0);
-    ui.horizontal_top(|ui| {
-        ui.allocate_ui_with_layout(Vec2::new(half, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-            pane_rows(ui, p, left, settings);
-        });
-        ui.add_space(gap);
-        ui.allocate_ui_with_layout(Vec2::new(half, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-            pane_rows(ui, p, right, settings);
-        });
+    // Two equal columns: egui splits the width exactly, and each column's own
+    // layout keeps the two sources at the same height.
+    ui.columns(2, |columns| {
+        pane_rows(&mut columns[0], p, left, settings);
+        pane_rows(&mut columns[1], p, right, settings);
     });
     let room = ui.available_height();
     let gap_y = ui.spacing().item_spacing.y;
@@ -433,16 +409,11 @@ pub(super) fn split_body(
     };
     let gaps = if dock_height > 0.0 { 2.0 } else { 1.0 };
     let height = (room - footer_height - dock_height - gap_y * gaps - 8.0).max(SOURCE_MIN);
-    ui.horizontal_top(|ui| {
-        ui.allocate_ui_with_layout(Vec2::new(half, height), egui::Layout::top_down(egui::Align::Min), |ui| {
-            left.tools.body_top = ui.cursor().top();
-            source(ui, p, left, left_id, settings, height, &prefs.search, problems);
-        });
-        ui.add_space(gap);
-        ui.allocate_ui_with_layout(Vec2::new(half, height), egui::Layout::top_down(egui::Align::Min), |ui| {
-            right.tools.body_top = ui.cursor().top();
-            source(ui, p, right, right_id, settings, height, &prefs.search, problems);
-        });
+    ui.columns(2, |columns| {
+        left.tools.body_top = columns[0].cursor().top();
+        source(&mut columns[0], p, left, left_id, settings, height, &prefs.search, problems);
+        right.tools.body_top = columns[1].cursor().top();
+        source(&mut columns[1], p, right, right_id, settings, height, &prefs.search, problems);
     });
     let clicked = if dock_height > 0.0 {
         dock(ui, p, left, problems, all_sources, folded, tab, search)

@@ -4070,8 +4070,23 @@ print(\"bye\")"
             frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
         }
         assert_eq!(editors.active.get(&linkset.root), Some(&door), "the door's script in front");
+        let before = ctx
+            .memory(|m| m.area_rect(egui::Id::unique(format!("script_linkset_{}", linkset.root))))
+            .expect("the window")
+            .width();
         editors.splits.insert(linkset.root, panel);
         let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        for _ in 0..3 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        let after = ctx
+            .memory(|m| m.area_rect(egui::Id::unique(format!("script_linkset_{}", linkset.root))))
+            .expect("the window")
+            .width();
+        assert!(
+            (after - before).abs() < 1.0,
+            "opening the split keeps the window's width: {before} -> {after}"
+        );
         let text_pos = |label: &str| {
             output
                 .shapes
