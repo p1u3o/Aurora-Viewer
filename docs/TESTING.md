@@ -2839,10 +2839,13 @@ the catch-up after a long frame.
 `linkset` adds three linked prims beside the plaza at frame 280, names their
 scripts ("Panel Script", "Door Script", "Lamp Flicker", "Lamp Sparkle") and
 opens the first and the last: the window shows the tree of the linkset on the
-left, grouped by prim, and a tab per open script. Clicking a tree row opens
-that script in a tab (or brings its tab to the front); the tabs keep every
-document, so switching loses no text. Closing a tab with unsaved text asks
-first, and closing the window asks about each such script in turn.
+left, grouped by prim, and a tab per open script, under the File, Edit and
+Help menus. Clicking a tree row opens that script in a tab (or brings its tab
+to the front); the tabs keep every document, so switching loses no text.
+Right-clicking a script's row opens the contents window's menu for it (Open,
+Copy to inventory or Move, Delete) and right-clicking a prim's row offers New
+script. Closing a tab with unsaved text asks first, and closing the window
+asks about each such script in turn.
 `slua` opens an SLua script (the SLua subtype in its item flags, on a demo region with SLua enabled): Lua colors, `ll.` names and Lua help, the compile target on Lua.
 `object-readonly` opens an object script without Modify permission: its source
 and save controls stay unavailable, but Reset remains usable without waiting
