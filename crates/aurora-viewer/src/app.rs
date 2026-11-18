@@ -18061,10 +18061,13 @@ impl App {
                     ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, egui::Id::unique(ui::options::WINDOW)));
                 }
                 // Keep disconnected script drafts accessible for copying.
-                for action in self
-                    .script_editors
-                    .show(&ctx, &p, &mut self.settings.script_editor, &mut self.settings.build.color_picker)
-                {
+                for action in self.script_editors.show(
+                    &ctx,
+                    &p,
+                    &mut self.settings.script_editor,
+                    &mut self.settings.build.color_picker,
+                    &[],
+                ) {
                     self.apply_script_action(action);
                 }
             }

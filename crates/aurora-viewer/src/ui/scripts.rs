@@ -2,6 +2,10 @@
 //! LLLiveLSLEditor and LLScriptEdCore, Firestorm indra/newview,
 //! originally LGPL 2.1). Each document owns its pending requests and
 //! saved snapshot, so late replies cannot replace another editor's text.
+//!
+//! The scripts of one linkset share a window: the tree of the linkset beside
+//! the source and a tab per open script (`linkset.rs`), Aurora's own layout
+//! where the Legacy Viewer opens one floater per script.
 
 use super::widgets::{Floater, flat_button};
 use crate::theme::Palette;
@@ -20,16 +24,19 @@ pub(crate) use files::live_folder;
 mod focus;
 mod folding;
 mod indent;
+mod linkset;
 mod preprocessor;
 pub mod recovery;
 mod reference;
 pub mod settings;
 mod syntax;
 mod view;
+
 pub(crate) use editing::matches_filtered as search_matches_filtered;
 pub(crate) use editing::next_match as next_search_match;
 pub use focus::editor_focused;
 pub(crate) use indent::edit_scoped as edit_code;
+pub use linkset::{Linkset, Prim as LinksetPrim, Script as LinksetScript};
 pub(crate) use syntax::highlight as highlight_lsl;
 
 pub enum Action {
@@ -65,6 +72,9 @@ pub enum Action {
     },
     Reset(ScriptTarget),
     QueryRunning(ScriptTarget),
+    /// A script of the linkset's tree that is not open yet: the app gives it
+    /// an editor of its own tab.
+    OpenScript(ScriptTarget),
 }
 
 struct PendingSave {
@@ -77,6 +87,10 @@ struct PendingSave {
 
 pub struct Editor {
     pub target: ScriptTarget,
+    /// The linkset this script belongs to, when it is inside an object: the
+    /// scripts of one linkset share a window, its tree and its tabs. Nil for
+    /// an agent inventory script.
+    pub linkset: Uuid,
     /// Inventory list that opened this editor, if any.
     pub(crate) inventory_owner: Option<egui::Id>,
     pub name: String,
@@ -111,6 +125,11 @@ pub struct Editor {
 }
 
 impl Editor {
+    /// Whether the window (or tab) still shows this script.
+    pub(crate) fn is_open(&self) -> bool {
+        !self.closed
+    }
+
     /// SLua source: Lua colors, words and help.
     fn lua(&self) -> bool {
         self.compile == CompileTarget::Luau
@@ -181,6 +200,9 @@ impl Editor {
 pub struct Editors {
     pub rlva_hidden: bool,
     pub documents: Vec<Editor>,
+    /// The script shown in each linkset window, by the linkset's root: the
+    /// tab the user chose, or the last one opened.
+    active: std::collections::HashMap<Uuid, ScriptTarget>,
     panels: dialogs::Panels,
     debug: debug::Debug,
     includes: std::collections::HashMap<Uuid, PendingInclude>,
@@ -287,6 +309,9 @@ impl Editors {
         self.includes.clear();
         self.documents.retain(|e| e.dirty() || e.saving.is_some());
         for e in &mut self.documents {
+            // the linkset is gone with the connection: each kept draft gets
+            // its own window again, with its name
+            e.linkset = Uuid::nil();
             e.colors.cancel(&mut e.source);
             e.loading = None;
             e.experience.loading = None;
@@ -567,6 +592,7 @@ impl Editors {
         let request = can_read.then(Uuid::new_v4);
         self.documents.push(Editor {
             target,
+            linkset: Uuid::nil(),
             inventory_owner: None,
             name,
             source: String::new(),
@@ -761,12 +787,23 @@ impl Editors {
         self.documents.iter().any(|e| e.colors.picker.is_open())
     }
 
+    /// The floater a document is drawn in: its own, or the one its linkset's
+    /// scripts share (the tree of the linkset and a tab per open script).
+    pub(super) fn window_of(e: &Editor) -> String {
+        if e.linkset.is_nil() {
+            format!("script_editor_{}_{}", e.target.object, e.target.item)
+        } else {
+            format!("script_linkset_{}", e.linkset)
+        }
+    }
+
     pub fn show(
         &mut self,
         ctx: &egui::Context,
         p: &Palette,
         settings: &mut settings::ScriptSettings,
         color_prefs: &mut super::color_picker::Preferences,
+        linksets: &[Linkset],
     ) -> Vec<Action> {
         if self.rlva_hidden {
             return Vec::new();
@@ -776,186 +813,101 @@ impl Editors {
         if self.panels.preferences.show(ctx, p, settings) {
             actions.push(Action::SettingsChanged);
         }
-        for e in &mut self.documents {
-            if e.closed {
-                continue;
+        // One window per linkset, with its tree and tabs, over the scripts
+        // whose own windows follow.
+        let mut roots: Vec<Uuid> = Vec::new();
+        for e in &self.documents {
+            if !e.closed && !e.linkset.is_nil() && !roots.contains(&e.linkset) {
+                roots.push(e.linkset);
             }
-            let id = format!("script_editor_{}_{}", e.target.object, e.target.item);
-            e.recompile_allowed = settings.preprocessor && settings.recompile;
-            if e.processor_settings != *settings {
-                e.processor_settings.clone_from(settings);
-            }
-            e.processor_environment.agent = self.agent;
-            e.lua_scripts = self.lua_scripts;
-            if e.processor_environment.agent_name != self.agent_name {
-                e.processor_environment.agent_name.clone_from(&self.agent_name);
-            }
-            if let Some(job) = e.processing.as_ref() {
-                for request in job.includes.try_iter() {
-                    self.includes.insert(
-                        request.id,
-                        PendingInclude {
-                            owner: e.target,
-                            asset: Uuid::nil(),
-                            reply: request.reply,
-                        },
-                    );
-                    actions.push(Action::Include {
-                        request: request.id,
-                        name: request.name,
-                    });
-                }
-            }
-            if let Some(result) = e.processing.as_ref().and_then(|job| job.done.try_recv().ok()) {
-                e.processing = None;
-                self.includes.retain(|_, include| include.owner != e.target);
-                match result {
-                    Ok(output) => {
-                        e.tools.has_processed = true;
-                        e.tools.diagnostics_processed = true;
-                        e.tools.processed_source = output.uploaded.clone();
-                        // LLPreviewLSL::saveIfNeeded: //mono and //lsl2 only choose between the LSL VMs
-                        if let Some(mono) = output.mono
-                            && matches!(e.compile, CompileTarget::Mono | CompileTarget::Lsl2)
-                        {
-                            e.compile = if mono { CompileTarget::Mono } else { CompileTarget::Lsl2 };
-                            if let Some(pending) = e.saving.as_mut() {
-                                pending.compile = e.compile;
-                            }
-                        }
-                        e.errors = output.warnings;
-                        if let Some(pending) = e.saving.as_ref() {
-                            actions.push(Action::Save {
-                                request: pending.request,
-                                target: e.target,
-                                options: ScriptOptions {
-                                    compile: pending.compile,
-                                    running: pending.running,
-                                    experience: pending.experience.unwrap_or_default(),
-                                },
-                                source: output.uploaded,
-                            });
-                        }
-                    }
-                    Err(reason) => {
-                        e.saving = None;
-                        e.close_after_save = false;
-                        e.compile_failed = true;
-                        e.errors = vec![reason];
-                        e.status = aurora_i18n::tr!("script-preproc-failed").into();
-                    }
-                }
-            }
-            if std::mem::take(&mut e.raise) {
-                super::widgets::expand_floater(ctx, &id);
-            }
-            let mut open = true;
-            let title = format!("{}{}", e.name, if e.dirty() { " *" } else { "" });
-            focus::claim(
-                ctx,
-                egui::LayerId::new(egui::Order::Middle, egui::Id::unique(&id)),
-                egui::Id::unique((&id, "source_text")),
-            );
-            Floater::new(
-                &id,
-                title,
-                ctx.content_rect().center() - Vec2::new(330.0, 260.0),
-                Vec2::new(660.0, 520.0),
-            )
-            .cascade(super::widgets::CascadeGroup::Script)
-            .allow_partial_outside()
-            .rename_title(e.name.clone(), e.can_edit && e.loaded && e.saving.is_none() && e.loading.is_none())
-            .show(ctx, p, &mut open, |ui| {
-                view::body(
-                    ui,
-                    p,
-                    e,
-                    egui::Id::unique((&id, "source_text")),
-                    settings,
-                    &mut self.panels,
-                    &mut actions,
-                );
-            });
-            if let Some(name) = super::widgets::take_title_rename(ctx, &id)
-                && e.can_edit
-                && e.loaded
-                && e.saving.is_none()
-                && e.loading.is_none()
-                && name != e.name
+        }
+        for root in roots {
+            self.show_linkset(ctx, p, root, settings, color_prefs, linksets, &mut actions);
+        }
+        for index in 0..self.documents.len() {
             {
-                e.name = name.clone();
-                actions.push(Action::Rename { target: e.target, name });
-            }
-            view::dialogs(
-                ctx,
-                p,
-                e,
-                egui::Id::unique((&id, "source_text")),
-                settings,
-                &mut self.panels,
-                &mut actions,
-            );
-            let source_id = egui::Id::unique((&id, "source_text"));
-            if let Some(literal) = e.colors.clicked.take() {
-                e.colors.open(&mut e.source, ctx, source_id, egui::Id::unique(&id), literal);
-            }
-            e.colors.show(
-                ctx,
-                p,
-                color_prefs,
-                &mut e.source,
-                e.can_edit && e.loaded && e.saving.is_none() && e.loading.is_none() && !e.tools.processed,
-            );
-            if !open {
-                e.colors.cancel(&mut e.source);
-                if e.dirty() || e.saving.is_some() {
-                    e.close_prompt = true;
-                } else {
-                    e.closed = true;
+                let e = &mut self.documents[index];
+                if e.closed {
+                    continue;
                 }
-            }
-            if e.close_prompt {
-                let mut prompt_open = true;
-                Floater::new(
-                    &format!("{id}_close"),
-                    aurora_i18n::tr!("ui-inventory-dialogs-save-changes"),
-                    ctx.content_rect().center() - Vec2::new(220.0, 90.0),
-                    Vec2::new(440.0, 180.0),
-                )
-                .fixed()
-                .show(ctx, p, &mut prompt_open, |ui| {
-                    ui.label(aurora_i18n::tr!("ui-inventory-dialogs-this-document-has-unsaved-changes"));
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled_ui(e.can_save(), |ui| flat_button(ui, p, aurora_i18n::tr!("common-save")))
-                            .inner
-                            .clicked()
-                        {
-                            let action = e.save();
-                            if e.saving.is_some() {
-                                e.close_after_save = true;
-                                e.close_prompt = false;
-                                actions.extend(action);
+                e.recompile_allowed = settings.preprocessor && settings.recompile;
+                if e.processor_settings != *settings {
+                    e.processor_settings.clone_from(settings);
+                }
+                e.processor_environment.agent = self.agent;
+                e.lua_scripts = self.lua_scripts;
+                if e.processor_environment.agent_name != self.agent_name {
+                    e.processor_environment.agent_name.clone_from(&self.agent_name);
+                }
+                // a file job (an external editor's save, an export) answers
+                // its own document, even in a tab that is not in front
+                let body_id = egui::Id::unique((&format!("script_editor_{}_{}", e.target.object, e.target.item), "source_text"));
+                view::poll_files(ctx, e, body_id, settings, &mut actions);
+                if let Some(job) = e.processing.as_ref() {
+                    for request in job.includes.try_iter() {
+                        self.includes.insert(
+                            request.id,
+                            PendingInclude {
+                                owner: e.target,
+                                asset: Uuid::nil(),
+                                reply: request.reply,
+                            },
+                        );
+                        actions.push(Action::Include {
+                            request: request.id,
+                            name: request.name,
+                        });
+                    }
+                }
+                if let Some(result) = e.processing.as_ref().and_then(|job| job.done.try_recv().ok()) {
+                    e.processing = None;
+                    self.includes.retain(|_, include| include.owner != e.target);
+                    match result {
+                        Ok(output) => {
+                            e.tools.has_processed = true;
+                            e.tools.diagnostics_processed = true;
+                            e.tools.processed_source = output.uploaded.clone();
+                            // LLPreviewLSL::saveIfNeeded: //mono and //lsl2 only choose between the LSL VMs
+                            if let Some(mono) = output.mono
+                                && matches!(e.compile, CompileTarget::Mono | CompileTarget::Lsl2)
+                            {
+                                e.compile = if mono { CompileTarget::Mono } else { CompileTarget::Lsl2 };
+                                if let Some(pending) = e.saving.as_mut() {
+                                    pending.compile = e.compile;
+                                }
+                            }
+                            e.errors = output.warnings;
+                            if let Some(pending) = e.saving.as_ref() {
+                                actions.push(Action::Save {
+                                    request: pending.request,
+                                    target: e.target,
+                                    options: ScriptOptions {
+                                        compile: pending.compile,
+                                        running: pending.running,
+                                        experience: pending.experience.unwrap_or_default(),
+                                    },
+                                    source: output.uploaded,
+                                });
                             }
                         }
-                        if ui
-                            .add_enabled_ui(e.saving.is_none(), |ui| flat_button(ui, p, aurora_i18n::tr!("script-discard")))
-                            .inner
-                            .clicked()
-                        {
-                            e.closed = true;
-                        }
-                        if flat_button(ui, p, aurora_i18n::tr!("common-cancel")).clicked() {
-                            e.close_prompt = false;
+                        Err(reason) => {
+                            e.saving = None;
                             e.close_after_save = false;
+                            e.compile_failed = true;
+                            e.errors = vec![reason];
+                            e.status = aurora_i18n::tr!("script-preproc-failed").into();
                         }
-                    });
-                });
-                if !prompt_open {
-                    e.close_prompt = false;
-                    e.close_after_save = false;
+                    }
+                }
+                // the scripts of a linkset are drawn by their shared window
+                if !e.linkset.is_nil() {
+                    continue;
+                }
+                if std::mem::take(&mut e.raise) {
+                    super::widgets::expand_floater(ctx, &Self::window_of(e));
                 }
             }
+            self.show_document(ctx, p, index, settings, color_prefs, &mut actions);
         }
         self.documents.retain(|e| {
             if e.closed
@@ -971,7 +923,7 @@ impl Editors {
         let search = &mut self.panels.search;
         let mut bound = false;
         for e in &mut self.documents {
-            let window = format!("script_editor_{}_{}", e.target.object, e.target.item);
+            let window = Self::window_of(e);
             let id = egui::Id::unique((&window, "source_text"));
             if search.owns(id) {
                 bound = true;
@@ -1004,6 +956,303 @@ impl Editors {
             actions.push(Action::SettingsChanged);
         }
         actions
+    }
+
+    /// One script in its own window: an inventory script, or one whose object
+    /// is not linked to others through the editor's own panel.
+    fn show_document(
+        &mut self,
+        ctx: &egui::Context,
+        p: &Palette,
+        index: usize,
+        settings: &mut settings::ScriptSettings,
+        color_prefs: &mut super::color_picker::Preferences,
+        actions: &mut Vec<Action>,
+    ) {
+        let id = Self::window_of(&self.documents[index]);
+        let mut open = true;
+        {
+            let e = &mut self.documents[index];
+            focus::claim(
+                ctx,
+                egui::LayerId::new(egui::Order::Middle, egui::Id::unique(&id)),
+                egui::Id::unique((&id, "source_text")),
+            );
+            let title = format!("{}{}", e.name, if e.dirty() { " *" } else { "" });
+            let body_id = egui::Id::unique((&id, "source_text"));
+            let panels = &mut self.panels;
+            Floater::new(
+                &id,
+                title,
+                ctx.content_rect().center() - Vec2::new(330.0, 260.0),
+                Vec2::new(660.0, 520.0),
+            )
+            .cascade(super::widgets::CascadeGroup::Script)
+            .allow_partial_outside()
+            .rename_title(e.name.clone(), e.can_edit && e.loaded && e.saving.is_none() && e.loading.is_none())
+            .show(ctx, p, &mut open, |ui| {
+                view::body(ui, p, e, body_id, settings, panels, actions);
+            });
+        }
+        if let Some(name) = super::widgets::take_title_rename(ctx, &id)
+            && self.documents[index].can_edit
+            && self.documents[index].loaded
+            && self.documents[index].saving.is_none()
+            && self.documents[index].loading.is_none()
+            && name != self.documents[index].name
+        {
+            let target = self.documents[index].target;
+            self.documents[index].name = name.clone();
+            actions.push(Action::Rename { target, name });
+        }
+        self.document_parts(ctx, p, index, settings, color_prefs, actions, !open);
+    }
+
+    /// The dialogs, the colour picker and the close prompt of one document,
+    /// and its closing (`close`: its window's X was pressed).
+    fn document_parts(
+        &mut self,
+        ctx: &egui::Context,
+        p: &Palette,
+        index: usize,
+        settings: &mut settings::ScriptSettings,
+        color_prefs: &mut super::color_picker::Preferences,
+        actions: &mut Vec<Action>,
+        close: bool,
+    ) {
+        let id = Self::window_of(&self.documents[index]);
+        let source_id = egui::Id::unique((&id, "source_text"));
+        {
+            let e = &mut self.documents[index];
+            view::dialogs(ctx, p, e, source_id, settings, &mut self.panels, actions);
+            if let Some(literal) = e.colors.clicked.take() {
+                e.colors.open(&mut e.source, ctx, source_id, egui::Id::unique(&id), literal);
+            }
+            let editable = e.can_edit && e.loaded && e.saving.is_none() && e.loading.is_none() && !e.tools.processed;
+            e.colors.show(ctx, p, color_prefs, &mut e.source, editable);
+            if close {
+                e.colors.cancel(&mut e.source);
+                if e.dirty() || e.saving.is_some() {
+                    e.close_prompt = true;
+                } else {
+                    e.closed = true;
+                }
+            }
+        }
+        if !self.documents[index].close_prompt {
+            return;
+        }
+        let e = &mut self.documents[index];
+        let mut prompt_open = true;
+        Floater::new(
+            &format!("{id}_close"),
+            aurora_i18n::tr!("ui-inventory-dialogs-save-changes"),
+            ctx.content_rect().center() - Vec2::new(220.0, 90.0),
+            Vec2::new(440.0, 180.0),
+        )
+        .fixed()
+        .show(ctx, p, &mut prompt_open, |ui| {
+            ui.label(aurora_i18n::tr!("ui-inventory-dialogs-this-document-has-unsaved-changes"));
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled_ui(e.can_save(), |ui| flat_button(ui, p, aurora_i18n::tr!("common-save")))
+                    .inner
+                    .clicked()
+                {
+                    let action = e.save();
+                    if e.saving.is_some() {
+                        e.close_after_save = true;
+                        e.close_prompt = false;
+                        actions.extend(action);
+                    }
+                }
+                if ui
+                    .add_enabled_ui(e.saving.is_none(), |ui| flat_button(ui, p, aurora_i18n::tr!("script-discard")))
+                    .inner
+                    .clicked()
+                {
+                    e.closed = true;
+                }
+                if flat_button(ui, p, aurora_i18n::tr!("common-cancel")).clicked() {
+                    e.close_prompt = false;
+                    e.close_after_save = false;
+                }
+            });
+        });
+        if !prompt_open {
+            e.close_prompt = false;
+            e.close_after_save = false;
+        }
+    }
+
+    /// The window of one linkset: the tree of its prims' scripts beside the
+    /// source, and a tab per script it has open. Switching tabs keeps every
+    /// document, its selection and its unsaved text.
+    fn show_linkset(
+        &mut self,
+        ctx: &egui::Context,
+        p: &Palette,
+        root: Uuid,
+        settings: &mut settings::ScriptSettings,
+        color_prefs: &mut super::color_picker::Preferences,
+        linksets: &[Linkset],
+        actions: &mut Vec<Action>,
+    ) {
+        let window = format!("script_linkset_{root}");
+        let members: Vec<ScriptTarget> = self
+            .documents
+            .iter()
+            .filter(|e| !e.closed && e.linkset == root)
+            .map(|e| e.target)
+            .collect();
+        if members.is_empty() {
+            self.active.remove(&root);
+            return;
+        }
+        // a script opened or raised from anywhere comes to its tab's front
+        let raised = self
+            .documents
+            .iter()
+            .rev()
+            .find(|e| !e.closed && e.linkset == root && e.raise)
+            .map(|e| e.target);
+        if raised.is_some() {
+            for e in &mut self.documents {
+                if e.linkset == root {
+                    e.raise = false;
+                }
+            }
+            super::widgets::expand_floater(ctx, &window);
+        }
+        // a tab being closed asks about its unsaved text before the others
+        let prompting = self
+            .documents
+            .iter()
+            .find(|e| !e.closed && e.linkset == root && e.close_prompt)
+            .map(|e| e.target);
+        let chosen = self.active.get(&root).copied().filter(|target| members.contains(target));
+        let active = prompting.or(raised).or(chosen).unwrap_or(members[0]);
+        self.active.insert(root, active);
+        let linkset = linksets.iter().find(|l| l.root == root);
+        let title = linkset
+            .map(|l| l.name.clone())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| aurora_i18n::tr!("common-object-contents").into());
+        let source_id = egui::Id::unique((&format!("script_editor_{}_{}", active.object, active.item), "source_text"));
+        let mut open = true;
+        let mut select = None;
+        let mut close = None;
+        let mut window_ui = Floater::new(
+            &window,
+            title,
+            ctx.content_rect().center() - Vec2::new(480.0, 330.0),
+            Vec2::new(960.0, 660.0),
+        )
+        .cascade(super::widgets::CascadeGroup::Script)
+        .allow_partial_outside();
+        // the tree and a readable source side by side
+        window_ui.min_size = Vec2::new(600.0, 380.0);
+        window_ui.show(ctx, p, &mut open, |ui| {
+            let height = ui.available_height();
+            let gap = ui.spacing().item_spacing.x;
+            let tree_width = linkset::TREE_WIDTH.min((ui.available_width() - gap).max(160.0) * 0.45);
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui_with_layout(Vec2::new(tree_width, height), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    if let Some(target) = linkset::tree(ui, p, linkset, Some(active)) {
+                        select = Some(target);
+                    }
+                });
+                ui.add_space(gap);
+                let width = ui.available_width();
+                ui.allocate_ui_with_layout(Vec2::new(width, height), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    let tabs: Vec<linkset::Tab> = self
+                        .documents
+                        .iter()
+                        .filter(|e| !e.closed && e.linkset == root)
+                        .map(|e| linkset::Tab {
+                            target: e.target,
+                            name: &e.name,
+                            lua: e.lua(),
+                            dirty: e.dirty(),
+                        })
+                        .collect();
+                    match linkset::tabs(ui, p, &tabs, Some(active)) {
+                        linkset::Tabs::Select(target) => select = Some(target),
+                        linkset::Tabs::Close(target) => close = Some(target),
+                        linkset::Tabs::None => {}
+                    }
+                    if let Some(index) = self.documents.iter().position(|e| e.target == active && !e.closed) {
+                        // Ctrl+F belongs to the tab in front
+                        focus::claim(ctx, egui::LayerId::new(egui::Order::Middle, egui::Id::unique(&window)), source_id);
+                        let e = &mut self.documents[index];
+                        view::body(ui, p, e, source_id, settings, &mut self.panels, actions);
+                    }
+                });
+            });
+        });
+        if let Some(target) = select {
+            match self.documents.iter().position(|e| e.target == target && !e.closed) {
+                Some(index) => self.select_tab(ctx, root, index),
+                // the tab of that script does not exist yet: the app gives it
+                // one, with the rights and the source of its item
+                None => actions.push(Action::OpenScript(target)),
+            }
+        }
+        if let Some(target) = close
+            && let Some(index) = self.documents.iter().position(|e| e.target == target && !e.closed)
+        {
+            let e = &mut self.documents[index];
+            e.colors.cancel(&mut e.source);
+            if e.dirty() || e.saving.is_some() {
+                e.close_prompt = true;
+            } else {
+                e.closed = true;
+            }
+        }
+        // the window's X closes every script of the linkset, asking about
+        // each one that has unsaved text
+        if !open {
+            for e in &mut self.documents {
+                if e.linkset != root || e.closed {
+                    continue;
+                }
+                e.colors.cancel(&mut e.source);
+                if e.dirty() || e.saving.is_some() {
+                    e.close_prompt = true;
+                } else {
+                    e.closed = true;
+                }
+            }
+        }
+        let active = self.active.get(&root).copied().unwrap_or(active);
+        if let Some(index) = self.documents.iter().position(|e| e.target == active && !e.closed) {
+            self.document_parts(ctx, p, index, settings, color_prefs, actions, false);
+        }
+    }
+
+    /// A tab of a linkset window chosen: the keyboard goes to its source, at
+    /// the cursor it kept, and the colour picker and Find of the former tab
+    /// close.
+    fn select_tab(&mut self, ctx: &egui::Context, root: Uuid, index: usize) {
+        let target = self.documents[index].target;
+        if let Some(previous) = self.active.insert(root, target)
+            && previous != target
+        {
+            if let Some(e) = self.documents.iter_mut().find(|e| e.target == previous) {
+                e.colors.cancel(&mut e.source);
+            }
+            // Find belongs to the document it was opened in: it would search
+            // the text of a tab the user is no longer looking at
+            self.panels.search.close();
+        }
+        let e = &mut self.documents[index];
+        if e.loaded {
+            e.tools.focus_start = false;
+            let id = format!("script_editor_{}_{}", e.target.object, e.target.item);
+            focus::text(ctx, egui::Id::unique((&id, "source_text")));
+        } else {
+            e.tools.focus_start = true;
+        }
     }
 }
 
@@ -1055,6 +1304,7 @@ mod tests {
                     &theme.palette(),
                     settings,
                     &mut super::super::color_picker::Preferences::default(),
+                    &[],
                 );
                 extra(ui.ctx(), &theme.palette());
             },
@@ -1062,6 +1312,48 @@ mod tests {
         // These headless frames inspect shapes and responses without a renderer.
         output.textures_delta.clear();
         output
+    }
+
+    fn frame_linksets(
+        ctx: &egui::Context,
+        editors: &mut Editors,
+        settings: &mut settings::ScriptSettings,
+        events: Vec<egui::Event>,
+        linksets: &[Linkset],
+    ) -> egui::FullOutput {
+        frame_linksets_actions(ctx, editors, settings, events, linksets).0
+    }
+
+    fn frame_linksets_actions(
+        ctx: &egui::Context,
+        editors: &mut Editors,
+        settings: &mut settings::ScriptSettings,
+        events: Vec<egui::Event>,
+        linksets: &[Linkset],
+    ) -> (egui::FullOutput, Vec<Action>) {
+        let theme = crate::theme::Theme::default();
+        theme.apply(ctx, 1.0);
+        let mut actions = Vec::new();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1600.0, 1000.0))),
+                focused: true,
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                super::super::layout::frame(ui.ctx(), &theme.palette(), false);
+                actions = editors.show(
+                    ui.ctx(),
+                    &theme.palette(),
+                    settings,
+                    &mut super::super::color_picker::Preferences::default(),
+                    linksets,
+                );
+            },
+        );
+        output.textures_delta.clear();
+        (output, actions)
     }
 
     fn settle(ctx: &egui::Context, editors: &mut Editors) {
@@ -1768,7 +2060,13 @@ print(\"bye\")"
         while std::time::Instant::now() < until && uploaded.is_none() {
             let mut actions = Vec::new();
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-                actions = editors.show(ui.ctx(), &p, &mut settings, &mut crate::ui::color_picker::Preferences::default())
+                actions = editors.show(
+                    ui.ctx(),
+                    &p,
+                    &mut settings,
+                    &mut crate::ui::color_picker::Preferences::default(),
+                    &[],
+                )
             });
             // No renderer consumes texture updates in this headless test.
             output.textures_delta.clear();
@@ -1827,7 +2125,13 @@ print(\"bye\")"
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
                 assert!(
                     !editors
-                        .show(ui.ctx(), &p, &mut settings, &mut crate::ui::color_picker::Preferences::default())
+                        .show(
+                            ui.ctx(),
+                            &p,
+                            &mut settings,
+                            &mut crate::ui::color_picker::Preferences::default(),
+                            &[],
+                        )
                         .iter()
                         .any(|a| matches!(a, Action::Save { .. }))
                 )
@@ -1997,7 +2301,7 @@ print(\"bye\")"
                         ..Default::default()
                     },
                     |ui| {
-                        editors.show(ui.ctx(), &crate::theme::Theme::default().palette(), &mut settings, &mut colors);
+                        editors.show(ui.ctx(), &crate::theme::Theme::default().palette(), &mut settings, &mut colors, &[]);
                     },
                 );
                 output.textures_delta.clear();
@@ -2139,7 +2443,13 @@ print(\"bye\")"
         while std::time::Instant::now() < until && saved.is_none() {
             let mut actions = Vec::new();
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-                actions = editors.show(ui.ctx(), &p, &mut settings, &mut crate::ui::color_picker::Preferences::default())
+                actions = editors.show(
+                    ui.ctx(),
+                    &p,
+                    &mut settings,
+                    &mut crate::ui::color_picker::Preferences::default(),
+                    &[],
+                )
             });
             output.textures_delta.clear();
             saved = actions.into_iter().find_map(|action| match action {
@@ -2187,6 +2497,194 @@ print(\"bye\")"
         assert!(!editors.documents[0].dirty());
         assert!(editors.documents[1].dirty());
         assert_eq!(editors.documents[1].compile, CompileTarget::Lsl2);
+    }
+
+    /// The scripts of one linkset: a root prim and a child, one script each,
+    /// as the app builds the tree.
+    fn linkset_fixture() -> (Linkset, ScriptTarget, ScriptTarget) {
+        let panel = ScriptTarget {
+            object: Uuid::from_u128(501),
+            item: Uuid::from_u128(1),
+        };
+        let door = ScriptTarget {
+            object: Uuid::from_u128(502),
+            item: Uuid::from_u128(2),
+        };
+        let script = |target: ScriptTarget, name: &str| LinksetScript {
+            item: target.item,
+            name: name.into(),
+            flags: 0,
+            running: Some(true),
+        };
+        let linkset = Linkset {
+            root: Uuid::from_u128(500),
+            name: "Control Panel".into(),
+            prims: vec![
+                LinksetPrim {
+                    object: panel.object,
+                    name: "Control Panel".into(),
+                    loading: false,
+                    scripts: vec![script(panel, "Panel Script")],
+                },
+                LinksetPrim {
+                    object: door.object,
+                    name: "Door".into(),
+                    loading: false,
+                    scripts: vec![script(door, "Door Script")],
+                },
+            ],
+        };
+        (linkset, panel, door)
+    }
+
+    /// Both scripts sit in one window, with the linkset's tree beside them and
+    /// a tab each; switching tabs keeps every document and its text.
+    #[test]
+    fn the_scripts_of_a_linkset_share_one_window_with_its_tree_and_tabs() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let (linkset, panel, door) = linkset_fixture();
+        let mut settings = settings::ScriptSettings::default();
+        for (target, name, source) in [(panel, "Panel Script", "panel source"), (door, "Door Script", "door source")] {
+            let load = editors.open(target, name.into(), true, true, 0).unwrap();
+            editors.loaded(load, target, Ok(source.into()));
+            editors.documents.iter_mut().find(|e| e.target == target).unwrap().linkset = linkset.root;
+        }
+        let linksets = std::slice::from_ref(&linkset);
+        for _ in 0..3 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        let container_id = format!("script_linkset_{}", linkset.root);
+        let container = ctx
+            .memory(|m| m.area_rect(egui::Id::unique(&container_id)))
+            .expect("the linkset's window");
+        assert!(container.width() > 700.0, "wide enough for the tree and the source");
+        // no script opened a window of its own
+        assert!(ctx.memory(|m| m.area_rect(egui::Id::unique(window(panel)))).is_none());
+        assert!(ctx.memory(|m| m.area_rect(egui::Id::unique(window(door)))).is_none());
+        assert_eq!(editors.active.get(&linkset.root), Some(&door), "the last opened is in front");
+        assert!(
+            editors
+                .documents
+                .iter()
+                .all(|e| e.source == "panel source" || e.source == "door source")
+        );
+
+        // a click on the tab of the first script brings its source to the front
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        let at = output
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.job.text == "Panel Script" => Some(t.pos + t.galley.size() * 0.5),
+                _ => None,
+            })
+            .expect("the tab of the first script");
+        for pressed in [true, false] {
+            frame_linksets(
+                &ctx,
+                &mut editors,
+                &mut settings,
+                vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                linksets,
+            );
+        }
+        assert_eq!(editors.active.get(&linkset.root), Some(&panel));
+        assert!(ctx.memory(|m| m.has_focus(source_id(panel))));
+        // both documents kept their text: nothing was lost in the switch
+        assert_eq!(editors.documents[0].source, "panel source");
+        assert_eq!(editors.documents[1].source, "door source");
+
+        // the tree lists the linkset, a group per prim, even shut
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        for name in ["Scripts", "Control Panel", "Door", "Panel Script", "Door Script"] {
+            assert!(
+                output
+                    .shapes
+                    .iter()
+                    .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text == name)),
+                "{name} is drawn"
+            );
+        }
+        // closing the tab in front keeps the other one open
+        editors.documents[0].closed = true;
+        frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        assert_eq!(editors.documents.len(), 1);
+        assert!(editors.documents[0].is_open());
+        assert_eq!(editors.active.get(&linkset.root), Some(&door));
+    }
+
+    /// A script of the tree with no tab: the click asks the app for an editor
+    /// of its own, with the rights and the source the app reads.
+    #[test]
+    fn a_tree_row_without_a_tab_asks_the_app_to_open_its_script() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let (mut linkset, panel, _door) = linkset_fixture();
+        let spare = ScriptTarget {
+            object: panel.object,
+            item: Uuid::from_u128(9),
+        };
+        linkset.prims[0].scripts.push(LinksetScript {
+            item: spare.item,
+            name: "Spare Script".into(),
+            flags: 0,
+            running: None,
+        });
+        let mut settings = settings::ScriptSettings::default();
+        let load = editors.open(panel, "Panel Script".into(), true, true, 0).unwrap();
+        editors.loaded(load, panel, Ok("panel source".into()));
+        editors.documents[0].linkset = linkset.root;
+        let linksets = std::slice::from_ref(&linkset);
+        for _ in 0..3 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        let at = output
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.job.text == "Spare Script" => Some(t.pos + t.galley.size() * 0.5),
+                _ => None,
+            })
+            .expect("the row of the script that has no tab");
+        let mut opened = Vec::new();
+        for pressed in [true, false] {
+            let (_, actions) = frame_linksets_actions(
+                &ctx,
+                &mut editors,
+                &mut settings,
+                vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                linksets,
+            );
+            opened.extend(actions);
+        }
+        assert!(
+            opened
+                .iter()
+                .any(|action| matches!(action, Action::OpenScript(target) if *target == spare)),
+            "the app opens the script of the tree row"
+        );
+        // the click did not replace the document already open
+        assert_eq!(editors.documents.len(), 1);
+        assert_eq!(editors.active.get(&linkset.root), Some(&panel));
     }
 
     #[test]

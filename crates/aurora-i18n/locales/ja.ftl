@@ -9999,6 +9999,21 @@ script-help-wiki = ＬＳＬのドキュメントを開く
 script-help-select = キーワードを選択するとヘルプが表示されます。
 script-tab-source = ソース
 script-tab-processed = プリプロセス済み
+script-linkset-scripts = スクリプト
+script-linkset-close = このスクリプトを閉じる
+script-linkset-loading = { $name }：スクリプトを読み込み中…
+script-linkset-count = { $count ->
+    [0] { $name }：スクリプトなし
+    [one] { $name }：{ $count } 個のスクリプト
+   *[other] { $name }：{ $count } 個のスクリプト
+    }
+script-demo-panel = 制御パネル
+script-demo-panel-script = パネルのスクリプト
+script-demo-door = ドア
+script-demo-door-script = ドアのスクリプト
+script-demo-lamp = ランプ
+script-demo-lamp-script = ランプの明滅
+script-demo-lamp-sparkle = ランプのきらめき
 script-revert-question = 最後に保存したバージョンに戻しますか？この操作は元に戻せます。
 script-file-error = ファイルを処理できませんでした：{ $reason }
 script-file-utf8 = ファイルはUTF-8でエンコードされている必要があります。

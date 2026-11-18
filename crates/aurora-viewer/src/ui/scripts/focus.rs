@@ -66,14 +66,20 @@ pub fn editor_focused(ctx: &egui::Context) -> bool {
     state.frame + 1 >= ctx.cumulative_frame_nr() && resolve(ctx, &state).is_some()
 }
 
+/// The keyboard goes to a document's source, at the cursor it kept (a tab
+/// chosen in a linkset window).
+pub(super) fn text(ctx: &egui::Context, id: Id) {
+    ctx.memory_mut(|m| m.request_focus(id));
+}
+
 /// Run once after all editors handled clicks, before drawing the shared find.
 pub(super) fn find(ctx: &egui::Context, editors: &mut [Editor], search: &mut Search) {
     let frame = ctx.cumulative_frame_nr();
     let windows: Vec<_> = editors
         .iter()
         .map(|e| {
-            let window = format!("script_editor_{}_{}", e.target.object, e.target.item);
-            let owner = Id::unique((&window, "source_text"));
+            let window = super::Editors::window_of(e);
+            let owner = Id::unique((&format!("script_editor_{}_{}", e.target.object, e.target.item), "source_text"));
             (window, owner)
         })
         .collect();

@@ -77,6 +77,40 @@ end
 greet("Avatar")
 "#;
 
+/// `AURORA_DEMO_SCRIPTS=linkset`: the scripts of the demo linkset.
+const PANEL_DEMO_SOURCE: &str = r#"// The control panel of the demo linkset
+default
+{
+    state_entry()
+    {
+        llSetText("Control Panel", <1, 1, 1>, 1.0);
+    }
+
+    touch_start(integer total)
+    {
+        llSay(PUBLIC_CHANNEL, "Panel pressed");
+    }
+}
+"#;
+
+const LAMP_DEMO_SOURCE: &str = r#"// A second script of the same linkset: its own tab, its own text
+float BRIGHTNESS = 0.6;
+
+default
+{
+    state_entry()
+    {
+        llSetTimerEvent(2.0);
+    }
+
+    timer()
+    {
+        llSetLinkPrimitiveParamsFast(LINK_THIS,
+            [PRIM_POINT_LIGHT, TRUE, <1.0, 0.8, 0.4>, BRIGHTNESS, 6.0, 0.75]);
+    }
+}
+"#;
+
 struct ScriptInfo {
     name: String,
     handle: u64,
@@ -222,6 +256,73 @@ impl App {
         }
     }
 
+    /// `AURORA_DEMO_SCRIPTS=linkset`: three linked prims beside the plaza,
+    /// their scripts named as the tree groups them, two of them open in the
+    /// window's tabs.
+    fn demo_script_linkset(&mut self) {
+        for event in crate::demo::script_linkset_events() {
+            self.world.apply(event);
+        }
+        let Some(idx) = self
+            .world
+            .objects
+            .iter()
+            .find(|(_, o)| o.key.local_id == 96_100 && Some(o.key.region) == self.world.main_region)
+            .map(|(i, _)| i)
+        else {
+            return;
+        };
+        self.build.click_select(&mut self.world, &self.settings.build, Some(idx), false);
+        let mut opened: Vec<(ScriptTarget, String)> = Vec::new();
+        for (order, prim) in crate::build::family(&self.world, idx).into_iter().enumerate() {
+            let Some(object) = self.world.objects.get(prim).map(|o| o.full_id) else {
+                continue;
+            };
+            self.build.request_contents(&self.world, prim, true);
+            self.flush_build();
+            let Some(listing) = self.build.contents.objects.get_mut(&object) else {
+                continue;
+            };
+            let Some(script) = listing.items.iter_mut().find(|item| item.asset_type == 10) else {
+                continue;
+            };
+            let name = match order {
+                0 => aurora_i18n::tr!("script-demo-panel-script"),
+                1 => aurora_i18n::tr!("script-demo-door-script"),
+                _ => aurora_i18n::tr!("script-demo-lamp-script"),
+            };
+            script.name = name.to_owned();
+            // the demo's own listing keeps them, should it be asked again
+            self.build_demo.name_script(object, Some(script.item_id), name);
+            let target = ScriptTarget {
+                object,
+                item: script.item_id,
+            };
+            opened.push((target, if order == 0 { PANEL_DEMO_SOURCE } else { LAMP_DEMO_SOURCE }.to_owned()));
+            // one group holds two scripts, as a prim often does
+            if order == 2
+                && let Some(item) = self
+                    .build_demo
+                    .name_script(object, None, aurora_i18n::tr!("script-demo-lamp-sparkle"))
+            {
+                let mut second = script.clone();
+                second.item_id = item;
+                second.name = aurora_i18n::tr!("script-demo-lamp-sparkle").into();
+                opened.push((ScriptTarget { object, item }, LAMP_DEMO_SOURCE.replace("BRIGHTNESS", "SPARKLE")));
+                listing.items.push(second);
+            }
+        }
+        let mut targets = Vec::new();
+        for (target, source) in opened {
+            targets.push(target);
+            self.demo_script_sources.insert(target, source);
+        }
+        // the panel's script and the lamp's second one: two tabs to switch
+        for target in [targets.first(), targets.last()].into_iter().flatten() {
+            self.open_script(*target);
+        }
+    }
+
     pub(super) fn demo_script_steps(&mut self) {
         let Ok(mode) = std::env::var("AURORA_DEMO_SCRIPTS") else { return };
         let syntax_demo = matches!(
@@ -257,6 +358,9 @@ impl App {
         );
         if self.frame_count == 280 {
             self.panels.perf = false;
+            if mode == "linkset" {
+                self.demo_script_linkset();
+            }
             if matches!(mode.as_str(), "word-wrap" | "no-word-wrap" | "word-wrap-preferences") {
                 self.settings.script_editor.word_wrap = mode != "no-word-wrap";
             }
@@ -277,6 +381,7 @@ impl App {
                     | "experience-save"
                     | "object-workbench"
                     | "object-preprocessor"
+                    | "linkset"
             ) {
                 crate::world::inventory::demo::seed(&mut self.world.inventory, self.world.agent_id);
                 let item = Uuid::from_u128(8102);
@@ -569,6 +674,17 @@ impl App {
         self.open_script_from(target, None);
     }
 
+    /// The root of the linkset an object's script is in: the scripts of one
+    /// linkset share a window, its tree and its tabs. Nil for an inventory
+    /// script, and for an object that is gone.
+    fn script_linkset(&self, object: Uuid) -> Uuid {
+        let Some(idx) = self.world.objects.index_of_uuid(&object) else {
+            return Uuid::nil();
+        };
+        let root = crate::build::root_of(&self.world, idx);
+        self.world.objects.get(root).map_or(Uuid::nil(), |o| o.full_id)
+    }
+
     pub(super) fn open_script_from(&mut self, target: ScriptTarget, owner: Option<egui::Id>) {
         if self.world.rlva.has("viewscript") {
             return;
@@ -591,11 +707,13 @@ impl App {
             return;
         }
         let Some(info) = self.script_info(target) else { return };
+        let linkset = self.script_linkset(target.object);
         let request = self
             .script_editors
             .open(target, info.name, info.can_read, info.can_edit, info.flags);
         if let Some(editor) = self.script_editors.documents.iter_mut().find(|e| e.target == target) {
             editor.inventory_owner = owner;
+            editor.linkset = linkset;
         }
         if let Some(request) = request {
             // an SLua script, or one that may become one: its keywords are
@@ -623,6 +741,70 @@ impl App {
         }
     }
 
+    /// The scripts of every linkset a window shows, grouped by prim: the tree
+    /// beside the source. Asks for the contents of each prim it has no
+    /// listing of yet.
+    fn script_linkset_views(&mut self) -> Vec<crate::ui::scripts::Linkset> {
+        use crate::build::contents::AT_LSL_TEXT;
+        use crate::ui::scripts::{Linkset, LinksetPrim, LinksetScript};
+        let mut roots: Vec<Uuid> = Vec::new();
+        for e in &self.script_editors.documents {
+            if e.is_open() && !e.linkset.is_nil() && !roots.contains(&e.linkset) {
+                roots.push(e.linkset);
+            }
+        }
+        let mut views = Vec::new();
+        for root in roots {
+            let mut view = Linkset {
+                root,
+                name: crate::build::replace::object_name(&self.build, &self.world, root),
+                prims: Vec::new(),
+            };
+            // an object gone from the region keeps its window open, with the
+            // text its scripts still hold, and an empty tree
+            let Some(idx) = self.world.objects.index_of_uuid(&root) else {
+                views.push(view);
+                continue;
+            };
+            for prim in crate::build::family(&self.world, idx) {
+                let Some(object) = self.world.objects.get(prim).map(|o| o.full_id) else {
+                    continue;
+                };
+                // RequestTaskInventory, unless a listing is current or on its
+                // way: the tree says what the linkset holds, not only what the
+                // last Open window asked for.
+                self.build.request_contents(&self.world, prim, false);
+                let listing = self.build.contents.objects.get(&object);
+                let mut entry = LinksetPrim {
+                    object,
+                    name: crate::build::replace::object_name(&self.build, &self.world, object),
+                    loading: listing.is_none_or(|listing| listing.loading),
+                    scripts: Vec::new(),
+                };
+                for item in listing
+                    .iter()
+                    .flat_map(|listing| listing.items.iter())
+                    .filter(|item| item.asset_type == AT_LSL_TEXT)
+                {
+                    entry.scripts.push(LinksetScript {
+                        item: item.item_id,
+                        name: item.name.clone(),
+                        flags: item.flags,
+                        running: self
+                            .build
+                            .contents
+                            .running
+                            .get(&(object, item.item_id))
+                            .map(|(running, _)| *running),
+                    });
+                }
+                view.prims.push(entry);
+            }
+            views.push(view);
+        }
+        views
+    }
+
     pub(super) fn show_scripts(&mut self, ctx: &egui::Context, p: &Palette) {
         self.script_editors.agent = self.world.agent_id;
         self.script_editors.agent_name = self.world.social.name_of(&self.world.agent_id);
@@ -645,10 +827,14 @@ impl App {
                 }
             }
         }
-        for action in self
-            .script_editors
-            .show(ctx, p, &mut self.settings.script_editor, &mut self.settings.build.color_picker)
-        {
+        let linksets = self.script_linkset_views();
+        for action in self.script_editors.show(
+            ctx,
+            p,
+            &mut self.settings.script_editor,
+            &mut self.settings.build.color_picker,
+            &linksets,
+        ) {
             self.apply_script_action(action);
         }
         // the copies of the unsaved scripts (ui/scripts/backup.rs)
@@ -830,6 +1016,7 @@ impl App {
                     }));
                 }
             }
+            Action::OpenScript(target) => self.open_script(target),
         }
     }
 

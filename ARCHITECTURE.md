@@ -2905,6 +2905,17 @@ When accounts exceed the central capacity, neighbours remain visible at reduced 
 
 The derez transition emits one login request after 0.1 seconds while centering the chosen card in 0.62 seconds and finishing fragments by 0.7 seconds. Its action-area snapshot anchors live server progress, preserving the Aurora background until authentication returns. Fragment preparation never delays the connection request. Login success/failure clears this presentation before region loading or a credential challenge; first/Add forms display the same progress helper and disable editing while pending.
 
+`ui/scripts/linkset.rs` draws the panel of an object's script editor: the
+tree of every script of the linkset, grouped by the prim that holds it
+(the rows of the inventory's contents), and a tab per script the window has
+open. All the scripts of one linkset share a floater, whose tree is built
+each frame by `app/scripts.rs` from `BuildTool::contents` after
+RequestTaskInventory for each prim; `Editor::linkset` names the root
+(nil for an inventory script, which keeps a floater of its own). Choosing a
+tab or a tree row keeps every document: its text, cursor, folds and Find
+belong to the document, and only the one in front is drawn. The Legacy
+Viewer opens one floater per script: this is Aurora's own layout.
+
 `ui/scripts/indent.rs` handles the four-column stops for Tab and Backspace
 and keeps the indentation on Enter in both editors, with egui's native cursor
 and undo history. Pasting stays exact. `ui/scripts/experiences.rs` tracks the

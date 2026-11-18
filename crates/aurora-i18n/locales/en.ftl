@@ -10065,6 +10065,21 @@ script-help-wiki = Open LSL documentation
 script-help-select = Select a keyword to see its help.
 script-tab-source = Source
 script-tab-processed = Preprocessed
+script-linkset-scripts = Scripts
+script-linkset-close = Close this script
+script-linkset-loading = { $name }: loading its scripts…
+script-linkset-count = { $count ->
+    [0] { $name }: no script
+    [one] { $name }: { $count } script
+   *[other] { $name }: { $count } scripts
+    }
+script-demo-panel = Control Panel
+script-demo-panel-script = Panel Script
+script-demo-door = Door
+script-demo-door-script = Door Script
+script-demo-lamp = Lamp
+script-demo-lamp-script = Lamp Flicker
+script-demo-lamp-sparkle = Lamp Sparkle
 script-revert-question = Revert to the last saved version? You can undo this action.
 script-file-error = Could not process the file: { $reason }
 script-file-utf8 = The file must be encoded as UTF-8.

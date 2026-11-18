@@ -786,6 +786,46 @@ pub fn outfit_attachment(item: &aurora_net::AttachRequest) -> ObjectUpdate {
     o
 }
 
+/// Three linked prims beside the plaza for the script editor's tree: a root
+/// and two children, each holding a script (DemoSim lists one named "Door
+/// Script" per prim; the demo renames them), so that the tree, the tabs and
+/// switching between the scripts of one linkset can be tried offline.
+pub fn script_linkset_events() -> Vec<NetEvent> {
+    let (cx, cy) = (140.0, 130.0);
+    let volume = shape(LL_PCODE_PATH_LINE, LL_PCODE_PROFILE_SQUARE, 100, 0, 0);
+    let root_id = 96_100;
+    let root = prim(
+        root_id,
+        Vec3::new(cx + 14.0, cy - 12.0, height(cx + 14.0, cy - 12.0) + 1.5),
+        Quat::IDENTITY,
+        Vec3::new(1.4, 0.2, 2.4),
+        volume,
+        te([0.24, 0.28, 0.62, 1.0], 2, false, 0.0),
+        ExtraParams::default(),
+        aurora_i18n::tr!("script-demo-panel"),
+    );
+    let mut objects = vec![root];
+    for (k, name) in [aurora_i18n::tr!("script-demo-door"), aurora_i18n::tr!("script-demo-lamp")]
+        .iter()
+        .enumerate()
+    {
+        let x = cx + 16.5 + k as f32 * 2.5;
+        let mut child = prim(
+            root_id + 1 + k as u32,
+            Vec3::new(x, cy - 12.0, height(x, cy - 12.0) + 1.0),
+            Quat::IDENTITY,
+            Vec3::new(1.0, 0.2, 1.6),
+            volume,
+            te([0.3 + 0.25 * k as f32, 0.3, 0.5, 1.0], 1, false, 0.0),
+            ExtraParams::default(),
+            name,
+        );
+        child.parent_id = root_id;
+        objects.push(child);
+    }
+    vec![NetEvent::ObjectUpdates { handle: HANDLE, objects }]
+}
+
 /// Own chest and facial attachments, including a linked skull child, for
 /// the first-person visibility scenarios. No grid assets are requested.
 pub fn first_person_visibility_events() -> Vec<NetEvent> {

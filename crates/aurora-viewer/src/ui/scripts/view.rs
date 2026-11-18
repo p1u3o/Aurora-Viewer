@@ -805,7 +805,6 @@ pub(super) fn dialogs(
     prefs: &mut Panels,
     actions: &mut Vec<Action>,
 ) {
-    poll_files(ctx, e, id, settings, actions);
     if let Some(command) = ctx.data_mut(|d| d.remove_temp::<Command>(Id::unique((id, "command")))) {
         run(command, e, ctx, id, settings, prefs, actions);
     }
@@ -1007,7 +1006,10 @@ pub(super) fn search(
     e.tools.scroll_to_cursor |= cursor != editing::cursor(ctx, id);
 }
 
-fn poll_files(ctx: &egui::Context, e: &mut Editor, id: Id, settings: &ScriptSettings, actions: &mut Vec<Action>) {
+/// The file job of one document (opened, exported, sent to the external
+/// editor): its result reaches the document even while its tab is not the one
+/// in front.
+pub(super) fn poll_files(ctx: &egui::Context, e: &mut Editor, id: Id, settings: &ScriptSettings, actions: &mut Vec<Action>) {
     if let Some(done) = e.tools.file_job.as_ref().and_then(|j| j.0.try_recv().ok()) {
         e.tools.file_job = None;
         e.tools.external_starting = false;

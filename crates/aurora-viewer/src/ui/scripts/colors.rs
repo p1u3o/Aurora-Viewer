@@ -284,7 +284,7 @@ mod tests {
                 ..Default::default()
             },
             |ui| {
-                editors.show(ui.ctx(), &Theme::default().palette(), &mut ScriptSettings::default(), prefs);
+                editors.show(ui.ctx(), &Theme::default().palette(), &mut ScriptSettings::default(), prefs, &[]);
             },
         );
         output.textures_delta.clear();

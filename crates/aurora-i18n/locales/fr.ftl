@@ -10061,6 +10061,21 @@ script-help-wiki = Ouvrir la documentation LSL
 script-help-select = Sélectionne un mot-clé pour consulter son aide.
 script-tab-source = Source
 script-tab-processed = Prétraité
+script-linkset-scripts = Scripts
+script-linkset-close = Fermer ce script
+script-linkset-loading = { $name } : chargement de ses scripts…
+script-linkset-count = { $count ->
+    [0] { $name } : aucun script
+    [one] { $name } : { $count } script
+   *[other] { $name } : { $count } scripts
+    }
+script-demo-panel = Panneau de contrôle
+script-demo-panel-script = Script du panneau
+script-demo-door = Porte
+script-demo-door-script = Script de la porte
+script-demo-lamp = Lampe
+script-demo-lamp-script = Scintillement de la lampe
+script-demo-lamp-sparkle = Étincelle de la lampe
 script-revert-question = Revenir à la dernière version enregistrée ? Cette action peut être annulée.
 script-file-error = Impossible de traiter le fichier : { $reason }
 script-file-utf8 = Le fichier doit être encodé en UTF-8.

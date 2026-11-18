@@ -330,6 +330,7 @@ mod tests {
                             &Theme::default().palette(),
                             &mut ScriptSettings::default(),
                             &mut Preferences::default(),
+                            &[],
                         );
                     },
                 );
