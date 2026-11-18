@@ -16,6 +16,19 @@ use aurora_net::scripts::{CompileTarget, MAX_SOURCE, ScriptOptions, ScriptSaved,
 use egui::{RichText, Sense, Vec2};
 use uuid::Uuid;
 
+/// Two documents of the list, mutably, in the order given: the two panes of a
+/// split window.
+fn two_mut(documents: &mut [Editor], a: usize, b: usize) -> (&mut Editor, &mut Editor) {
+    debug_assert_ne!(a, b);
+    if a < b {
+        let (left, right) = documents.split_at_mut(b);
+        (&mut left[a], &mut right[0])
+    } else {
+        let (left, right) = documents.split_at_mut(a);
+        (&mut right[0], &mut left[b])
+    }
+}
+
 pub mod backup;
 mod colors;
 mod debug;
@@ -151,6 +164,9 @@ pub struct Editor {
     compile_failed: bool,
     close_prompt: bool,
     close_after_save: bool,
+    /// The lines a reader marked in the gutter (0-based, as the text is), for
+    /// F2 and Shift+F2.
+    bookmarks: std::collections::BTreeSet<usize>,
     closed: bool,
     raise: bool,
     tools: view::Tools,
@@ -257,6 +273,8 @@ pub struct Editors {
     dock_tabs: std::collections::HashMap<Uuid, view::DockTab>,
     /// The word each window's dock searches its scripts for, by its root.
     dock_search: std::collections::HashMap<Uuid, String>,
+    /// The script a window shows beside the one in front, by its root.
+    splits: std::collections::HashMap<Uuid, ScriptTarget>,
     /// The quick open (Ctrl+P) of a window, while it is up.
     quick_open: Option<QuickOpen>,
     panels: dialogs::Panels,
@@ -711,6 +729,7 @@ impl Editors {
             compile_failed: false,
             close_prompt: false,
             close_after_save: false,
+            bookmarks: std::collections::BTreeSet::new(),
             closed: false,
             raise: true,
             tools: view::Tools::opening(),
@@ -1546,6 +1565,13 @@ impl Editors {
         let chosen = self.active.get(&root).copied().filter(|target| members.contains(target));
         let active = prompting.or(raised).or(chosen).unwrap_or(members[0]);
         self.active.insert(root, active);
+        // a split whose script closed, or which shows the one in front twice,
+        // is back to one pane
+        if let Some(split) = self.splits.get(&root).copied()
+            && (split == active || !members.contains(&split))
+        {
+            self.splits.remove(&root);
+        }
         let linkset = linksets.iter().find(|l| l.root == root);
         let title = linkset
             .map(|l| l.name.clone())
@@ -1613,6 +1639,8 @@ impl Editors {
         let mut close_one = None;
         let mut close_others = None;
         let mut close_all = false;
+        let mut split_open_at = None;
+        let mut unsplit = false;
         let mut clicked_problem = None;
         let mut window_ui = Floater::new(
             &window,
@@ -1676,11 +1704,21 @@ impl Editors {
                                 dirty: e.dirty(),
                             })
                             .collect();
-                        match linkset::tabs(ui, p, &tabs, Some(active), settings.color(settings::ColorRole::Background, p)) {
+                        let split_open = self.splits.contains_key(&root);
+                        match linkset::tabs(
+                            ui,
+                            p,
+                            &tabs,
+                            Some(active),
+                            settings.color(settings::ColorRole::Background, p),
+                            split_open,
+                        ) {
                             linkset::Tabs::Select(target) => select = Some(target),
                             linkset::Tabs::Close(target) => close_one = Some(target),
                             linkset::Tabs::CloseOthers(target) => close_others = Some(target),
                             linkset::Tabs::CloseAll => close_all = true,
+                            linkset::Tabs::Split(target) => split_open_at = Some(target),
+                            linkset::Tabs::Unsplit => unsplit = true,
                             linkset::Tabs::None => {}
                         }
                     });
@@ -1710,25 +1748,54 @@ impl Editors {
                         if let Some(index) = self.documents.iter().position(|e| e.target == active && !e.closed) {
                             // Ctrl+F belongs to the script in front
                             focus::claim(ctx, egui::LayerId::new(egui::Order::Middle, egui::Id::unique(&window)), source_id);
-                            let e = &mut self.documents[index];
-                            clicked_problem = view::body(
-                                ui,
-                                p,
-                                e,
-                                source_id,
-                                settings,
-                                &mut self.panels,
-                                actions,
-                                false,
-                                &problems,
-                                scope,
-                                folded,
-                                dock_tab,
-                                Some(view::SearchDock {
-                                    query: dock_search,
-                                    hits: &hits,
-                                }),
-                            );
+                            // a script opened beside this one, if it is still open
+                            let split = self
+                                .splits
+                                .get(&root)
+                                .copied()
+                                .filter(|target| *target != active)
+                                .and_then(|target| self.documents.iter().position(|e| e.target == target && !e.closed));
+                            let search = Some(view::SearchDock {
+                                query: dock_search,
+                                hits: &hits,
+                            });
+                            if let Some(other) = split {
+                                let other_id = egui::Id::unique((&Self::document_id(&self.documents[other]), "source_text"));
+                                let (left, right) = two_mut(&mut self.documents, index, other);
+                                clicked_problem = view::split_body(
+                                    ui,
+                                    p,
+                                    left,
+                                    source_id,
+                                    right,
+                                    other_id,
+                                    settings,
+                                    &mut self.panels,
+                                    actions,
+                                    &problems,
+                                    scope,
+                                    folded,
+                                    dock_tab,
+                                    search,
+                                );
+                            } else {
+                                let e = &mut self.documents[index];
+                                clicked_problem = view::body(
+                                    ui,
+                                    p,
+                                    e,
+                                    source_id,
+                                    settings,
+                                    &mut self.panels,
+                                    actions,
+                                    false,
+                                    &problems,
+                                    scope,
+                                    folded,
+                                    dock_tab,
+                                    search,
+                                );
+                            }
                         }
                     });
                 });
@@ -1825,6 +1892,11 @@ impl Editors {
             }
         }
         if let Some(target) = select {
+            // the script chosen comes to the front; the one that was beside it
+            // takes its place there
+            if self.splits.get(&root) == Some(&target) {
+                self.splits.insert(root, active);
+            }
             match self.documents.iter().position(|e| e.target == target && !e.closed) {
                 Some(index) => self.select_script(root, index),
                 // that script has no editor yet: the app gives it one, with
@@ -1842,6 +1914,13 @@ impl Editors {
             } else {
                 e.closed = true;
             }
+        }
+        // the tab's menu: another script beside this window's, or one at a time
+        if let Some(target) = split_open_at {
+            self.splits.insert(root, target);
+        }
+        if unsplit {
+            self.splits.remove(&root);
         }
         // the tab's menu: the others, or every script of the window
         if let Some(target) = close_others {
@@ -3876,6 +3955,149 @@ print(\"bye\")"
             0,
             "the caret is on the declaration"
         );
+    }
+
+    /// The sticky line above the source names the state and the event the top
+    /// of the viewport is in.
+    #[test]
+    fn the_sticky_line_names_the_event_holding_the_top() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let target = ScriptTarget {
+            object: Uuid::from_u128(19),
+            item: Uuid::from_u128(20),
+        };
+        let source = "default\n{\n    state_entry()\n    {\n        llSay(0, \"hi\");\n    }\n}\n";
+        let load = editors.open(target, "Sticky".into(), true, true, 0).unwrap();
+        editors.loaded(load, target, Ok(source.into()));
+        settle(&ctx, &mut editors);
+        // the top of the viewport inside the event
+        editors.documents[0].tools.first_visible = 3;
+        let output = frame(&ctx, &mut editors, vec![]);
+        assert!(
+            output
+                .shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "default \u{203a} state_entry")),
+            "the state and the event above the text"
+        );
+        // at the very top of the state, the state alone
+        editors.documents[0].tools.first_visible = 0;
+        let output = frame(&ctx, &mut editors, vec![]);
+        assert!(
+            output
+                .shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "default")),
+            "the state alone"
+        );
+    }
+
+    /// F2 and Shift+F2 walk the reader's bookmarks, wrapping at either end.
+    #[test]
+    fn the_bookmarks_walk_in_both_directions() {
+        let lines: std::collections::BTreeSet<usize> = [3, 10].into_iter().collect();
+        assert_eq!(view::bookmark_step(&lines, 0, true), Some(3));
+        assert_eq!(view::bookmark_step(&lines, 3, true), Some(10));
+        assert_eq!(view::bookmark_step(&lines, 10, true), Some(3), "wraps to the first");
+        assert_eq!(view::bookmark_step(&lines, 0, false), Some(10), "wraps to the last");
+        assert_eq!(view::bookmark_step(&lines, 10, false), Some(3));
+        assert_eq!(view::bookmark_step(&lines, 5, true), Some(10));
+        assert_eq!(view::bookmark_step(&std::collections::BTreeSet::new(), 0, true), None);
+    }
+
+    /// Ctrl+F2 marks the caret's line (or unmarks it), the gutter shows a mark,
+    /// and F2 walks to it.
+    #[test]
+    fn ctrl_f2_marks_the_line_and_f2_goes_to_it() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let target = ScriptTarget {
+            object: Uuid::from_u128(17),
+            item: Uuid::from_u128(18),
+        };
+        let source: String = (0..6).map(|line| format!("line {line}\n")).collect();
+        let load = editors.open(target, "Marked".into(), true, true, 0).unwrap();
+        editors.loaded(load, target, Ok(source));
+        settle(&ctx, &mut editors);
+        // the caret on the fourth line
+        editing::select(&ctx, source_id(target), 0..0, true);
+        for _ in 0..2 {
+            frame(&ctx, &mut editors, vec![]);
+        }
+        editors.documents[0].tools.position = (3, 0);
+        frame(&ctx, &mut editors, vec![key(egui::Key::F2, egui::Modifiers::CTRL)]);
+        assert!(editors.documents[0].bookmarks.contains(&3), "the caret's line is marked");
+        // a mark in the gutter, and one in the overview strip
+        let output = frame(&ctx, &mut editors, vec![]);
+        let indigo = crate::theme::Theme::default().palette().indigo_light;
+        let mut shapes = Vec::new();
+        flatten_shapes(&output.shapes, &mut shapes);
+        assert!(
+            shapes
+                .iter()
+                .any(|shape| matches!(shape, egui::Shape::Rect(rect) if rect.fill == indigo)),
+            "the bookmark's mark"
+        );
+        // the caret goes back to the start, then F2 finds the mark
+        editing::select(&ctx, source_id(target), 0..0, true);
+        for _ in 0..2 {
+            frame(&ctx, &mut editors, vec![]);
+        }
+        frame(&ctx, &mut editors, vec![key(egui::Key::F2, egui::Modifiers::NONE)]);
+        frame(&ctx, &mut editors, vec![]);
+        assert_eq!(editors.documents[0].tools.position.0, 3, "F2 goes to the bookmark");
+        // and Ctrl+F2 takes the mark off
+        frame(&ctx, &mut editors, vec![key(egui::Key::F2, egui::Modifiers::CTRL)]);
+        assert!(!editors.documents[0].bookmarks.contains(&3));
+    }
+
+    /// A script opened beside another is drawn in a second pane, and choosing
+    /// it from the strip brings it to the front, the other taking its place.
+    #[test]
+    fn a_script_opened_beside_another_is_drawn_in_its_own_pane() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let (linkset, panel, door) = linkset_fixture();
+        let mut settings = settings::ScriptSettings::default();
+        for (target, name, source) in [(panel, "Panel Script", "panel source"), (door, "Door Script", "door source")] {
+            let load = editors.open(target, name.into(), true, true, 0).unwrap();
+            editors.loaded(load, target, Ok(source.into()));
+            editors.documents.iter_mut().find(|e| e.target == target).unwrap().linkset = linkset.root;
+        }
+        let linksets = std::slice::from_ref(&linkset);
+        for _ in 0..3 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        assert_eq!(editors.active.get(&linkset.root), Some(&door), "the door's script in front");
+        editors.splits.insert(linkset.root, panel);
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        let text_pos = |label: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == label => Some(text.pos),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{label} on screen"))
+        };
+        let left = text_pos("door source");
+        let right = text_pos("panel source");
+        assert!(right.x > left.x + 100.0, "a pane each, side by side: {left:?} {right:?}");
+        assert!((right.y - left.y).abs() < 4.0, "their tops are level");
+        // and opening it does not widen the window
+        let window = ctx
+            .memory(|m| m.area_rect(egui::Id::unique(format!("script_linkset_{}", linkset.root))))
+            .expect("the window");
+        assert!(window.width() <= 1000.0, "the split keeps the window's width: {window:?}");
+        // choosing the script shown beside brings it to the front, the other
+        // taking its place beside
+        let tab = text_at(&output, "Panel Script");
+        click_at(&ctx, &mut editors, &mut settings, linksets, tab, egui::PointerButton::Primary);
+        frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        assert_eq!(editors.active.get(&linkset.root), Some(&panel));
+        assert_eq!(editors.splits.get(&linkset.root), Some(&door));
     }
 
     /// The overview strip maps the whole script: a click near its bottom puts

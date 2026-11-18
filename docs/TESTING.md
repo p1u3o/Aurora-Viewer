@@ -2868,7 +2868,13 @@ script the window has open, with its script, line and text, and a click opens
 that script on the hit. In the source, Ctrl+click on a name (or the context
 menu's Go to the definition) takes the window to where the name is declared,
 in this script or another one of the linkset, and Find references fills the
-Search tab with it. The
+Search tab with it. The top of the source carries a sticky line, the state and
+the event or function holding it, and the source's gutter takes the reader's
+bookmarks: a click on a line's place in the gutter, or Ctrl+F2 on the caret's
+line, marks or unmarks it, and F2 / Shift+F2 walk the marks, which the
+overview strip shows too. A tab's menu opens its script beside the one in
+front (Open to the side): the two panes scroll and edit apart, while the dock
+and the status bar stay the window's, for the script in front. The
 tree's filter and the tab strip share their row, so the tree's list and the
 source start on the same line, with the tree's bottom on the source's status
 bar; each tab's tooltip names the prim the script is in, and its menu closes

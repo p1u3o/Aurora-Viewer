@@ -303,13 +303,24 @@ pub(super) enum Tabs {
     Close(ScriptTarget),
     CloseOthers(ScriptTarget),
     CloseAll,
+    /// Show that script beside the one in front.
+    Split(ScriptTarget),
+    /// Back to one script at a time.
+    Unsplit,
 }
 
 /// The strip of open scripts, flush above the source: the tab in front takes
 /// the editor's own background, so it sits on its top edge. A tab marks its
 /// unsaved text with a star, as the tree does, and its cross closes it (the
 /// middle button too); its menu closes the others or all of them.
-pub(super) fn tabs(ui: &mut egui::Ui, p: &Palette, tabs: &[Tab<'_>], active: Option<ScriptTarget>, background: egui::Color32) -> Tabs {
+pub(super) fn tabs(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    tabs: &[Tab<'_>],
+    active: Option<ScriptTarget>,
+    background: egui::Color32,
+    split_open: bool,
+) -> Tabs {
     let mut answer = Tabs::None;
     let font = widgets::control_font(ui, 12.0);
     // as tall as the tree's filter field, which shares its row
@@ -381,6 +392,13 @@ pub(super) fn tabs(ui: &mut egui::Ui, p: &Palette, tabs: &[Tab<'_>], active: Opt
                         }
                         if menu::item(ui, p, "circle-x", aurora_i18n::tr!("script-linkset-close-all")) {
                             answer = Tabs::CloseAll;
+                        }
+                        menu::separator(ui, p);
+                        if menu::item_if(ui, p, "arrows-split", aurora_i18n::tr!("script-linkset-split"), tabs.len() > 1) {
+                            answer = Tabs::Split(tab.target);
+                        }
+                        if split_open && menu::item(ui, p, "layout-sidebar-right-filled", aurora_i18n::tr!("script-linkset-unsplit")) {
+                            answer = Tabs::Unsplit;
                         }
                     });
                     response.on_hover_text(format!("{} › {}", tab.prim, tab.name));

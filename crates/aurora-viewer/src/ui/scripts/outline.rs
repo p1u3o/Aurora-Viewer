@@ -23,6 +23,9 @@ pub(super) struct Item {
     pub name: String,
     /// The line it starts on, counted from 0 as the source is.
     pub line: usize,
+    /// The line of the brace that closes it, or the source's last line when
+    /// it is not closed.
+    pub end: usize,
 }
 
 /// The kinds of block the scan follows: a state's body holds events, a
@@ -48,10 +51,10 @@ pub(super) fn outline(source: &str, lua: bool) -> Vec<Item> {
         text.push(if *is_code || *ch == '\n' { *ch } else { ' ' });
     }
     let mut items = Vec::new();
-    let mut stack: Vec<Block> = Vec::new();
-    let mut pending: Option<Block> = None;
+    let mut stack: Vec<(Block, Option<usize>)> = Vec::new();
+    let mut pending: Option<(Block, Option<usize>)> = None;
     for (index, line) in text.lines().enumerate() {
-        let block = stack.last().copied();
+        let block = stack.last().map(|(block, _)| *block);
         let trimmed = line.trim_start();
         let found = match block {
             // SLua's blocks end with `end`, not a brace: its top level is what
@@ -62,29 +65,54 @@ pub(super) fn outline(source: &str, lua: bool) -> Vec<Item> {
             Some(Block::Function | Block::Other) => None,
         };
         if let Some((kind, name)) = found {
+            let item = items.len();
             items.push(Item {
                 kind,
                 name: name.to_owned(),
                 line: index,
+                end: index,
             });
             // a brace opening on a later line belongs to it
-            pending = Some(match kind {
-                Kind::State => Block::State,
-                Kind::Function => Block::Function,
-                _ => Block::Other,
-            });
+            pending = match kind {
+                Kind::State => Some((Block::State, Some(item))),
+                Kind::Event => Some((Block::Other, Some(item))),
+                Kind::Function => Some((Block::Function, Some(item))),
+                Kind::Global => None,
+            };
         }
         for ch in line.chars() {
             match ch {
-                '{' => stack.push(pending.take().unwrap_or(Block::Other)),
+                '{' => stack.push(pending.take().unwrap_or((Block::Other, None))),
                 '}' => {
-                    stack.pop();
+                    if let Some((_, Some(item))) = stack.pop() {
+                        items[item].end = index;
+                    }
                 }
                 _ => {}
             }
         }
     }
+    // a block the source leaves open reaches its last line
+    let last = text.lines().count().saturating_sub(1);
+    for (_, item) in stack {
+        if let Some(item) = item {
+            items[item].end = last;
+        }
+    }
     items
+}
+
+/// The state (if any) and the item whose block holds line: the deepest one,
+/// which is what a sticky scroll shows above the source (default › event).
+pub(super) fn enclosing(items: &[Item], line: usize) -> Option<(Option<&Item>, &Item)> {
+    let holds = |item: &Item| item.kind != Kind::Global && item.line <= line && line <= item.end;
+    let inner = items.iter().filter(|item| holds(item)).max_by_key(|item| item.line)?;
+    let state = items
+        .iter()
+        .filter(|item| item.kind == Kind::State && holds(item))
+        .max_by_key(|item| item.line)
+        .filter(|state| !std::ptr::eq(*state, inner));
+    Some((state, inner))
 }
 
 fn is_ident(ch: char) -> bool {
@@ -156,6 +184,37 @@ mod tests {
 
     fn named(items: &[Item]) -> Vec<(Kind, &str, usize)> {
         items.iter().map(|item| (item.kind, item.name.as_str(), item.line)).collect()
+    }
+
+    #[test]
+    fn an_items_block_reaches_the_brace_that_closes_it() {
+        let source = "\
+default
+{
+    state_entry()
+    {
+    }
+    // between the events
+    touch_start(integer n)
+    {
+    }
+}
+";
+        let items = outline(source, false);
+        assert_eq!((items[0].line, items[0].end), (0, 9), "default closes on line 10");
+        assert_eq!((items[1].line, items[1].end), (2, 4), "state_entry closes on line 4");
+        assert_eq!((items[2].line, items[2].end), (6, 8), "touch_start closes on line 9");
+        // the sticky chain: the state and the event holding a line
+        let (state, inner) = enclosing(&items, 3).expect("inside state_entry");
+        assert_eq!(
+            (state.map(|item| item.name.as_str()), inner.name.as_str()),
+            (Some("default"), "state_entry")
+        );
+        let (state, inner) = enclosing(&items, 5).expect("inside the state, between its events");
+        assert_eq!((state.map(|item| item.name.as_str()), inner.name.as_str()), (None, "default"));
+        assert!(enclosing(&items, 0).is_some(), "the state holds its own line");
+        // and a line outside every block has none
+        assert!(enclosing(&items, 11).is_none(), "a line after every block");
     }
 
     #[test]

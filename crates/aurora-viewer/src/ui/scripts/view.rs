@@ -41,6 +41,9 @@ pub(super) struct Tools {
     pub overview: Option<egui::Rect>,
     pub position: (usize, usize),
     pub scroll_to_cursor: bool,
+    /// The line at the top of the source's viewport, 0-based, as the last
+    /// frame showed it: what the sticky line above the text names.
+    pub first_visible: usize,
     /// The name Ctrl+click (or the context menu) asked the window to take the
     /// caret to the declaration of.
     pub goto_word: Option<String>,
@@ -257,6 +260,22 @@ pub(super) struct Problem {
     pub message: String,
 }
 
+/// The rows a pane shows above its source, its own: the read-only note and,
+/// when the preprocessor runs, the source / processed tabs.
+fn pane_rows(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, settings: &ScriptSettings) {
+    if e.loaded && !e.can_edit {
+        ui.label(RichText::new(aurora_i18n::tr!("script-read-only")).color(p.warn));
+    }
+    if settings.preprocessor || e.tools.has_processed || e.tools.processed {
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut e.tools.processed, false, aurora_i18n::tr!("script-tab-source"));
+            ui.selectable_value(&mut e.tools.processed, true, aurora_i18n::tr!("script-tab-processed"));
+        });
+    } else {
+        e.tools.processed = false;
+    }
+}
+
 pub(super) fn body(
     ui: &mut egui::Ui,
     p: &Palette,
@@ -311,17 +330,7 @@ pub(super) fn body(
         let header = ui.scope(|ui| header(ui, p, e, id, settings, prefs, actions, own_menus));
         e.tools.header_height = header.response.rect.height();
     }
-    if e.loaded && !e.can_edit {
-        ui.label(RichText::new(aurora_i18n::tr!("script-read-only")).color(p.warn));
-    }
-    if settings.preprocessor || e.tools.has_processed || e.tools.processed {
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut e.tools.processed, false, aurora_i18n::tr!("script-tab-source"));
-            ui.selectable_value(&mut e.tools.processed, true, aurora_i18n::tr!("script-tab-processed"));
-        });
-    } else {
-        e.tools.processed = false;
-    }
+    pane_rows(ui, p, e, settings);
     // Measure the actual controls, including object-only rows and diagnostics.
     // Repaint after a width/status change, without replaying asynchronous actions.
     let footer_height = if e.tools.footer_height > 0.0 {
@@ -354,6 +363,96 @@ pub(super) fn body(
     if (e.tools.footer_height - footer.response.rect.height()).abs() > 0.5 {
         e.tools.footer_height = footer.response.rect.height();
         ctx.request_repaint();
+    }
+    clicked
+}
+
+/// Two scripts side by side in one window: the rows above each pane's source
+/// on one line (so both sources start level), then both sources, then the
+/// window's dock and the status bar of the script in front. `left` is the
+/// script in front: its outline, its readout and its search are the window's.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn split_body(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    left: &mut Editor,
+    left_id: Id,
+    right: &mut Editor,
+    right_id: Id,
+    settings: &ScriptSettings,
+    prefs: &mut Panels,
+    actions: &mut Vec<Action>,
+    problems: &[Problem],
+    all_sources: Option<&mut bool>,
+    folded: &mut bool,
+    tab: &mut DockTab,
+    search: Option<SearchDock<'_>>,
+) -> Option<DockClick> {
+    // The window's first layout pass measures the content with the width it
+    // had before the split: measuring one pane keeps it from growing.
+    if ui.is_sizing_pass() {
+        return body(
+            ui,
+            p,
+            left,
+            left_id,
+            settings,
+            prefs,
+            actions,
+            false,
+            problems,
+            all_sources,
+            folded,
+            tab,
+            None,
+        );
+    }
+    let gap = ui.spacing().item_spacing.x;
+    let half = ((ui.available_width() - gap) / 2.0).max(120.0);
+    ui.horizontal_top(|ui| {
+        ui.allocate_ui_with_layout(Vec2::new(half, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+            pane_rows(ui, p, left, settings);
+        });
+        ui.add_space(gap);
+        ui.allocate_ui_with_layout(Vec2::new(half, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+            pane_rows(ui, p, right, settings);
+        });
+    });
+    let room = ui.available_height();
+    let gap_y = ui.spacing().item_spacing.y;
+    let footer_height = if left.tools.footer_height > 0.0 {
+        left.tools.footer_height
+    } else {
+        155.0
+    };
+    let dock_room = if *folded { DOCK_HEADER } else { DOCK_HEIGHT };
+    let dock_height = if room >= footer_height + dock_room + SOURCE_MIN + gap_y * 2.0 + 8.0 {
+        dock_room
+    } else {
+        0.0
+    };
+    let gaps = if dock_height > 0.0 { 2.0 } else { 1.0 };
+    let height = (room - footer_height - dock_height - gap_y * gaps - 8.0).max(SOURCE_MIN);
+    ui.horizontal_top(|ui| {
+        ui.allocate_ui_with_layout(Vec2::new(half, height), egui::Layout::top_down(egui::Align::Min), |ui| {
+            left.tools.body_top = ui.cursor().top();
+            source(ui, p, left, left_id, settings, height, &prefs.search, problems);
+        });
+        ui.add_space(gap);
+        ui.allocate_ui_with_layout(Vec2::new(half, height), egui::Layout::top_down(egui::Align::Min), |ui| {
+            right.tools.body_top = ui.cursor().top();
+            source(ui, p, right, right_id, settings, height, &prefs.search, problems);
+        });
+    });
+    let clicked = if dock_height > 0.0 {
+        dock(ui, p, left, problems, all_sources, folded, tab, search)
+    } else {
+        None
+    };
+    let footer = ui.scope(|ui| footer(ui, p, left, actions));
+    if (left.tools.footer_height - footer.response.rect.height()).abs() > 0.5 {
+        left.tools.footer_height = footer.response.rect.height();
+        ui.ctx().request_repaint();
     }
     clicked
 }
@@ -399,6 +498,19 @@ pub(super) struct SearchDock<'a> {
 pub(super) fn outline_items(e: &Editor) -> Vec<super::outline::Item> {
     let text = if e.tools.processed { &e.tools.processed_source } else { &e.source };
     super::outline::outline(text, e.lua())
+}
+
+/// The bookmark F2 (next) or Shift+F2 (previous) goes to from the caret's
+/// line, wrapping at either end.
+pub(super) fn bookmark_step(lines: &std::collections::BTreeSet<usize>, at: usize, next: bool) -> Option<usize> {
+    if lines.is_empty() {
+        return None;
+    }
+    if next {
+        lines.range(at + 1..).next().copied().or_else(|| lines.iter().next().copied())
+    } else {
+        lines.range(..at).next_back().copied().or_else(|| lines.iter().next_back().copied())
+    }
 }
 
 /// Puts the cursor on a line of the text on screen (the outline's rows).
@@ -909,6 +1021,26 @@ pub(super) fn toolbar(
         run(command, e, &ctx, id, settings, prefs, actions);
     }
     if ctx.memory(|m| m.has_focus(visible_id(id, e.tools.processed))) {
+        // F2 and Shift+F2 walk the reader's bookmarks; Ctrl+F2 marks the
+        // caret's line (or unmarks it)
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::F2)) {
+            if !e.bookmarks.remove(&e.tools.position.0) {
+                e.bookmarks.insert(e.tools.position.0);
+            }
+        } else {
+            let step = if ctx.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::F2)) {
+                Some(false)
+            } else if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F2)) {
+                Some(true)
+            } else {
+                None
+            };
+            if let Some(next) = step
+                && let Some(line) = bookmark_step(&e.bookmarks, e.tools.position.0, next)
+            {
+                go_to_line(&ctx, e, id, line, 0);
+            }
+        }
         // Ctrl+Shift+S saves the window's scripts (Save All, as its button)
         if save_all == Some(true) && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::S)) {
             run(Command::SaveAll, e, &ctx, id, settings, prefs, actions);
@@ -1067,6 +1199,9 @@ fn footer(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, actions: &mut Vec<Acti
 /// The width of the overview strip at the right of the source.
 const OVERVIEW_WIDTH: f32 = 9.0;
 
+/// The row the sticky state/event line takes above the source.
+const STICKY_HEIGHT: f32 = 18.0;
+
 /// The overview strip at the right of the source: the whole script in the
 /// height of the window, with the part on screen (a thumb), the lines whose
 /// text differs from the saved script (amber) and the diagnostics (the danger
@@ -1117,6 +1252,9 @@ fn overview(
             }
             if problems.iter().any(|problem| problem.line == line && problem.source == e.name) {
                 painter.rect_filled(tick.expand2(egui::Vec2::new(1.0, 0.0)), 0.0, p.danger);
+            }
+            if e.bookmarks.contains(&index) {
+                painter.rect_filled(tick.expand2(egui::Vec2::new(1.0, 0.0)), 0.0, p.indigo_light);
             }
         }
         if row.ends_with_newline {
@@ -1304,6 +1442,39 @@ fn source(
     e.folding
         .sync(if e.tools.processed { &e.tools.processed_source } else { &e.source });
     e.folding.reveal(editing::cursor(ui.ctx(), id).primary);
+    // The sticky line above the text: the state and the event or function the
+    // top of the source is in, from the outline (an IDE's sticky scroll). It
+    // takes a row of its own, so the text starts under it; the line is the
+    // last frame's, one frame behind the scroll.
+    let text_now = if e.tools.processed { &e.tools.processed_source } else { &e.source };
+    // (a window too short for its row keeps its whole source instead)
+    let sticky = if e.loaded && height > STICKY_HEIGHT + SOURCE_MIN {
+        super::outline::enclosing(&super::outline::outline(text_now, e.lua()), e.tools.first_visible).map(|(state, inner)| match state {
+            Some(state) => format!("{} › {}", state.name, inner.name),
+            None => inner.name.clone(),
+        })
+    } else {
+        None
+    };
+    let mut drop = 0.0;
+    if let Some(label) = &sticky {
+        // on the editor's own background, as the source below it
+        let band = egui::Frame::new()
+            .fill(settings.color(ColorRole::Background, p))
+            .inner_margin(egui::Margin {
+                left: 6,
+                right: 4,
+                top: 2,
+                bottom: 0,
+            })
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.add(egui::Label::new(RichText::new(label).size(11.0).color(p.muted)).truncate());
+            });
+        // its row and the spacing under it come out of the source's room
+        drop = band.response.rect.height() + ui.spacing().item_spacing.y;
+    }
+    let height = (height - drop).max(60.0);
     egui::Frame::new()
         .fill(settings.color(ColorRole::Background, p))
         .inner_margin(4.0)
@@ -1608,6 +1779,27 @@ fn source(
                                     if problems.iter().any(|problem| problem.line == line && problem.source == e.name) {
                                         painter.circle_filled(egui::pos2(left + 4.0, y + row.height() / 2.0), 2.5, p.danger);
                                     }
+                                    // a reader's bookmark: a mark in the gutter, and a
+                                    // click on the line's place in it toggles it
+                                    let index = line.saturating_sub(e.first_line());
+                                    if e.bookmarks.contains(&index) {
+                                        painter.rect_filled(
+                                            egui::Rect::from_min_max(
+                                                egui::pos2(left + 8.0, y + 3.0),
+                                                egui::pos2(left + 12.0, y + row.height() - 3.0),
+                                            ),
+                                            0.0,
+                                            p.indigo_light,
+                                        );
+                                    }
+                                    let hit = ui.interact(
+                                        egui::Rect::from_min_max(egui::pos2(left, y), egui::pos2(left + 16.0, y + row.height())),
+                                        egui::Id::unique((id, "gutter", index)),
+                                        egui::Sense::click(),
+                                    );
+                                    if hit.clicked() && !e.bookmarks.remove(&index) {
+                                        e.bookmarks.insert(index);
+                                    }
                                 }
                                 if row.ends_with_newline {
                                     line += 1;
@@ -1671,6 +1863,21 @@ fn source(
                                     e.tools.goto_word = Some(word);
                                 }
                             }
+                            // the line at the top of the viewport: the sticky
+                            // line of the next frame names what holds it
+                            let top = output.text_clip_rect.top();
+                            let mut index = 0;
+                            let mut first = 0;
+                            for row in &output.galley.rows {
+                                if output.galley_pos.y + row.pos.y + row.height() > top {
+                                    first = index;
+                                    break;
+                                }
+                                if row.ends_with_newline {
+                                    index += 1;
+                                }
+                            }
+                            e.tools.first_visible = first;
                             // The overview strip at the right of the source: the
                             // whole script in the height of the window, with
                             // what is visible, the changed lines and the
