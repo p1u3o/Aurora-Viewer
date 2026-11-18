@@ -239,15 +239,19 @@ pub(super) fn body(
 ) {
     let ctx = ui.ctx().clone();
     e.tools.body_top = ui.cursor().top();
-    e.tools.search_slot = None;
+    if own_menus {
+        // a window of its own: its menus and toolbar are the body's first rows
+        e.tools.search_slot = None;
+    }
     let gap = ui.spacing().item_spacing.x;
     let search_width = Search::inline_width(ui);
-    let inline = settings.search_inline
+    let inline = own_menus
+        && settings.search_inline
         && prefs.search.owns(id)
         && e.tools.header_width > 0.0
         && e.tools.header_height >= Search::inline_min_height(ui)
         && ui.available_width() >= e.tools.header_width + gap + search_width;
-    if inline {
+    if own_menus && inline {
         let left = ui.available_width() - gap - search_width;
         ui.horizontal_top(|ui| {
             let header = ui.allocate_ui_with_layout(Vec2::new(left, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
@@ -268,7 +272,7 @@ pub(super) fn body(
                 );
             }
         });
-    } else {
+    } else if own_menus {
         let header = ui.scope(|ui| header(ui, p, e, id, settings, prefs, actions, own_menus));
         e.tools.header_height = header.response.rect.height();
     }
@@ -340,7 +344,10 @@ pub(super) fn menus(ui: &mut egui::Ui, p: &Palette, e: &Editor, id: Id, chosen: 
     });
 }
 
-fn header(
+/// The toolbar of the editor: Save, Open, the clipboard, Undo / Redo, Find,
+/// its preferences, and the state of the script. A window of the linkset's
+/// scripts draws it once, under the menus, for the script in front.
+pub(super) fn toolbar(
     ui: &mut egui::Ui,
     p: &Palette,
     e: &mut Editor,
@@ -348,14 +355,11 @@ fn header(
     settings: &ScriptSettings,
     prefs: &mut Panels,
     actions: &mut Vec<Action>,
-    own_menus: bool,
+    with_search: bool,
 ) {
     let ctx = ui.ctx().clone();
     let mut chosen = None;
-    if own_menus {
-        menus(ui, p, e, id, &mut chosen);
-    }
-    ui.horizontal(|ui| {
+    let row = ui.horizontal(|ui| {
         let left = ui.cursor().left();
         for (command, icon, label) in [
             (Command::Save, "device-floppy-filled", aurora_i18n::tr!("common-save")),
@@ -389,7 +393,25 @@ fn header(
             );
         }
         e.tools.header_width = ui.cursor().left() - left;
+        // an inline Find sits at the right of this row, in the window of a
+        // linkset's scripts (a window of its own puts it beside the body's
+        // header instead)
+        if with_search {
+            let width = Search::inline_width(ui);
+            if settings.search_inline && prefs.search.owns(id) && !ui.is_sizing_pass() && ui.available_width() >= width {
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 24.0), egui::Sense::hover());
+                e.tools.search_slot = Some(
+                    ui.new_child(
+                        egui::UiBuilder::new()
+                            .id_salt("inline_search")
+                            .max_rect(rect)
+                            .layout(egui::Layout::top_down(egui::Align::Min)),
+                    ),
+                );
+            }
+        }
     });
+    e.tools.header_height = row.response.rect.height();
     if let Some(command) = chosen {
         run(command, e, &ctx, id, settings, prefs, actions);
     }
@@ -404,6 +426,27 @@ fn header(
             }
         }
     }
+}
+
+fn header(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    e: &mut Editor,
+    id: Id,
+    settings: &ScriptSettings,
+    prefs: &mut Panels,
+    actions: &mut Vec<Action>,
+    own_menus: bool,
+) {
+    let ctx = ui.ctx().clone();
+    let mut chosen = None;
+    if own_menus {
+        menus(ui, p, e, id, &mut chosen);
+    }
+    if let Some(command) = chosen {
+        run(command, e, &ctx, id, settings, prefs, actions);
+    }
+    toolbar(ui, p, e, id, settings, prefs, actions, false);
 }
 
 /// The compile target picker (panel_script_ed.xml `compile_target`, in its
@@ -447,15 +490,6 @@ fn footer(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, actions: &mut 
             .small()
             .color(p.muted),
         );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .add_enabled_ui(e.can_save(), |ui| flat_button(ui, p, aurora_i18n::tr!("common-save")))
-                .inner
-                .clicked()
-            {
-                actions.extend(e.save());
-            }
-        });
     });
     ui.horizontal(|ui| {
         if !e.target.object.is_nil() {
@@ -473,12 +507,6 @@ fn footer(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, actions: &mut 
                 }
             });
         }
-        ui.add_enabled_ui(
-            e.can_edit && e.loaded && e.saving.is_none() && (e.target.object.is_nil() || e.running.is_some()),
-            |ui| {
-                compile_target(ui, e);
-            },
-        );
     });
     if !e.target.object.is_nil()
         && e.experience.show(ui, p, e.can_edit && e.loaded && e.saving.is_none())
@@ -518,6 +546,23 @@ fn footer(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, actions: &mut 
                 }
             }
         });
+    // The compile target and Save, at the bottom right of the window (the
+    // target on Save's left, the Legacy Viewer's order of the two).
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if ui
+            .add_enabled_ui(e.can_save(), |ui| flat_button(ui, p, aurora_i18n::tr!("common-save")))
+            .inner
+            .clicked()
+        {
+            actions.extend(e.save());
+        }
+        ui.add_enabled_ui(
+            e.can_edit && e.loaded && e.saving.is_none() && (e.target.object.is_nil() || e.running.is_some()),
+            |ui| {
+                compile_target(ui, e);
+            },
+        );
+    });
 }
 
 fn edit_menu(ui: &mut egui::Ui, p: &Palette, e: &Editor, id: Id, chosen: &mut Option<Command>) {

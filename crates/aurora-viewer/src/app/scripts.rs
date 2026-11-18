@@ -537,6 +537,20 @@ impl App {
         if self.frame_count == 430 && mode == "processed" {
             self.script_editors.demo_processed(&self.egui_ctx);
         }
+        if self.frame_count == 330
+            && mode == "linkset"
+            && let Some(target) = self
+                .script_editors
+                .documents
+                .iter()
+                .find(|e| e.is_open() && !e.linkset.is_nil())
+                .map(|e| e.target)
+            && let Some(mut source) = self.demo_script_sources.get(&target).cloned()
+        {
+            // one script holds unsaved text: its row of the tree shows the star
+            source.push_str("// an edit that is not saved yet\n");
+            self.script_editors.demo_edit(target, source, false);
+        }
         if self.frame_count == 320
             && matches!(
                 mode.as_str(),
@@ -801,6 +815,11 @@ impl App {
                             .running
                             .get(&(object, item.item_id))
                             .map(|(running, _)| *running),
+                        dirty: self
+                            .script_editors
+                            .documents
+                            .iter()
+                            .any(|e| e.is_open() && e.target.object == object && e.target.item == item.item_id && e.unsaved()),
                         menu: LinksetScriptMenu {
                             moves: matches!(transfer, Ok(kind) if kind != TransferKind::Copy),
                             refused: transfer.err(),

@@ -4,8 +4,9 @@
 //! saved snapshot, so late replies cannot replace another editor's text.
 //!
 //! The scripts of one linkset share a window: the tree of the linkset beside
-//! the source and a tab per open script (`linkset.rs`), Aurora's own layout
-//! where the Legacy Viewer opens one floater per script.
+//! the source, a star on the row of a script with unsaved text, and the menus
+//! and toolbar above both (`linkset.rs`), Aurora's own layout where the Legacy
+//! Viewer opens one floater per script.
 
 use super::widgets::{Floater, flat_button};
 use crate::theme::Palette;
@@ -73,7 +74,7 @@ pub enum Action {
     Reset(ScriptTarget),
     QueryRunning(ScriptTarget),
     /// A script of the linkset's tree that is not open yet: the app gives it
-    /// an editor of its own tab.
+    /// an editor.
     OpenScript(ScriptTarget),
     /// "Copy to inventory" of a script's contents menu, the same action as in
     /// the contents window.
@@ -101,8 +102,8 @@ struct PendingSave {
 pub struct Editor {
     pub target: ScriptTarget,
     /// The linkset this script belongs to, when it is inside an object: the
-    /// scripts of one linkset share a window, its tree and its tabs. Nil for
-    /// an agent inventory script.
+    /// scripts of one linkset share a window and its tree. Nil for an agent
+    /// inventory script.
     pub linkset: Uuid,
     /// Inventory list that opened this editor, if any.
     pub(crate) inventory_owner: Option<egui::Id>,
@@ -138,9 +139,14 @@ pub struct Editor {
 }
 
 impl Editor {
-    /// Whether the window (or tab) still shows this script.
+    /// Whether the window still shows this script.
     pub(crate) fn is_open(&self) -> bool {
         !self.closed
+    }
+
+    /// Its text has changes the item does not have yet.
+    pub(crate) fn unsaved(&self) -> bool {
+        self.dirty()
     }
 
     /// SLua source: Lua colors, words and help.
@@ -214,7 +220,7 @@ pub struct Editors {
     pub rlva_hidden: bool,
     pub documents: Vec<Editor>,
     /// The script shown in each linkset window, by the linkset's root: the
-    /// tab the user chose, or the last one opened.
+    /// one the user chose in the tree, or the last one opened.
     active: std::collections::HashMap<Uuid, ScriptTarget>,
     panels: dialogs::Panels,
     debug: debug::Debug,
@@ -807,7 +813,7 @@ impl Editors {
     }
 
     /// The floater a document is drawn in: its own, or the one its linkset's
-    /// scripts share (the tree of the linkset and a tab per open script).
+    /// scripts share (the tree of the linkset).
     pub(super) fn window_of(e: &Editor) -> String {
         if e.linkset.is_nil() {
             Self::document_id(e)
@@ -832,8 +838,8 @@ impl Editors {
         if self.panels.preferences.show(ctx, p, settings) {
             actions.push(Action::SettingsChanged);
         }
-        // One window per linkset, with its tree and tabs, over the scripts
-        // whose own windows follow.
+        // One window per linkset, with its tree, over the scripts whose own
+        // windows follow.
         let mut roots: Vec<Uuid> = Vec::new();
         for e in &self.documents {
             if !e.closed && !e.linkset.is_nil() && !roots.contains(&e.linkset) {
@@ -859,7 +865,7 @@ impl Editors {
                     e.processor_environment.agent_name.clone_from(&self.agent_name);
                 }
                 // a file job (an external editor's save, an export) answers
-                // its own document, even in a tab that is not in front
+                // its own document, even when it is not the one in front
                 let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
                 view::poll_files(ctx, e, body_id, settings, &mut actions);
                 if let Some(job) = e.processing.as_ref() {
@@ -1105,8 +1111,8 @@ impl Editors {
     }
 
     /// The window of one linkset: the tree of its prims' scripts beside the
-    /// source, and a tab per script it has open. Switching tabs keeps every
-    /// document, its selection and its unsaved text.
+    /// source. Choosing another script keeps every document, its selection and
+    /// its unsaved text.
     fn show_linkset(
         &mut self,
         ctx: &egui::Context,
@@ -1128,7 +1134,7 @@ impl Editors {
             self.active.remove(&root);
             return;
         }
-        // a script opened or raised from anywhere comes to its tab's front
+        // a script opened or raised from anywhere comes to the front
         let raised = self
             .documents
             .iter()
@@ -1143,7 +1149,7 @@ impl Editors {
             }
             super::widgets::expand_floater(ctx, &window);
         }
-        // a tab being closed asks about its unsaved text before the others
+        // a script being closed asks about its unsaved text before the others
         let prompting = self
             .documents
             .iter()
@@ -1169,12 +1175,14 @@ impl Editors {
             Vec2::new(960.0, 660.0),
         )
         .cascade(super::widgets::CascadeGroup::Script)
-        .allow_partial_outside();
+        .allow_partial_outside()
+        // the menus come right under the title, as a toolbar does
+        .compact_header();
         // the tree and a readable source side by side
         window_ui.min_size = Vec2::new(600.0, 380.0);
         window_ui.show(ctx, p, &mut open, |ui| {
-            // File, Edit and Help once for the window, above the tree and the
-            // tabs, for the script in front
+            // File, Edit and Help, then the toolbar, once for the window and
+            // for the script in front
             let mut chosen = None;
             if let Some(e) = self.documents.get(active_index) {
                 view::menus(ui, p, e, source_id, &mut chosen);
@@ -1183,6 +1191,9 @@ impl Editors {
                 && let Some(e) = self.documents.get_mut(active_index)
             {
                 view::run(command, e, ctx, source_id, settings, &mut self.panels, actions);
+            }
+            if let Some(e) = self.documents.get_mut(active_index) {
+                view::toolbar(ui, p, e, source_id, settings, &mut self.panels, actions, true);
             }
             let height = ui.available_height();
             let gap = ui.spacing().item_spacing.x;
@@ -1193,6 +1204,7 @@ impl Editors {
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| match linkset::tree(ui, p, linkset, Some(active)) {
                         Some(linkset::TreeAction::Open(target)) => select = Some(target),
+                        Some(linkset::TreeAction::Close(target)) => close = Some(target),
                         Some(linkset::TreeAction::Take(target)) => actions.push(Action::TakeScript {
                             object: target.object,
                             item: target.item,
@@ -1208,24 +1220,8 @@ impl Editors {
                 ui.add_space(gap);
                 let width = ui.available_width();
                 ui.allocate_ui_with_layout(Vec2::new(width, height), egui::Layout::top_down(egui::Align::Min), |ui| {
-                    let tabs: Vec<linkset::Tab> = self
-                        .documents
-                        .iter()
-                        .filter(|e| !e.closed && e.linkset == root)
-                        .map(|e| linkset::Tab {
-                            target: e.target,
-                            name: &e.name,
-                            lua: e.lua(),
-                            dirty: e.dirty(),
-                        })
-                        .collect();
-                    match linkset::tabs(ui, p, &tabs, Some(active)) {
-                        linkset::Tabs::Select(target) => select = Some(target),
-                        linkset::Tabs::Close(target) => close = Some(target),
-                        linkset::Tabs::None => {}
-                    }
                     if let Some(index) = self.documents.iter().position(|e| e.target == active && !e.closed) {
-                        // Ctrl+F belongs to the tab in front
+                        // Ctrl+F belongs to the script in front
                         focus::claim(ctx, egui::LayerId::new(egui::Order::Middle, egui::Id::unique(&window)), source_id);
                         let e = &mut self.documents[index];
                         view::body(ui, p, e, source_id, settings, &mut self.panels, actions, false);
@@ -1235,9 +1231,9 @@ impl Editors {
         });
         if let Some(target) = select {
             match self.documents.iter().position(|e| e.target == target && !e.closed) {
-                Some(index) => self.select_tab(ctx, root, index),
-                // the tab of that script does not exist yet: the app gives it
-                // one, with the rights and the source of its item
+                Some(index) => self.select_script(ctx, root, index),
+                // that script has no editor yet: the app gives it one, with
+                // the rights and the source of its item
                 None => actions.push(Action::OpenScript(target)),
             }
         }
@@ -1273,10 +1269,10 @@ impl Editors {
         }
     }
 
-    /// A tab of a linkset window chosen: the keyboard goes to its source, at
-    /// the cursor it kept, and the colour picker and Find of the former tab
+    /// A script chosen in the tree: the keyboard goes to its source, at the
+    /// cursor it kept, and the colour picker and Find of the former script
     /// close.
-    fn select_tab(&mut self, ctx: &egui::Context, root: Uuid, index: usize) {
+    fn select_script(&mut self, ctx: &egui::Context, root: Uuid, index: usize) {
         let target = self.documents[index].target;
         if let Some(previous) = self.active.insert(root, target)
             && previous != target
@@ -1285,7 +1281,7 @@ impl Editors {
                 e.colors.cancel(&mut e.source);
             }
             // Find belongs to the document it was opened in: it would search
-            // the text of a tab the user is no longer looking at
+            // the text of a script the user is no longer looking at
             self.panels.search.close();
         }
         let e = &mut self.documents[index];
@@ -2557,6 +2553,7 @@ print(\"bye\")"
             name: name.into(),
             flags: 0,
             running: Some(true),
+            dirty: false,
             menu: LinksetScriptMenu {
                 moves: false,
                 refused: None,
@@ -2587,10 +2584,11 @@ print(\"bye\")"
         (linkset, panel, door)
     }
 
-    /// Both scripts sit in one window, with the linkset's tree beside them and
-    /// a tab each; switching tabs keeps every document and its text.
+    /// Both scripts sit in one window, with the linkset's tree beside them;
+    /// choosing a row keeps every document and its text, and a row marks the
+    /// script whose text is unsaved.
     #[test]
-    fn the_scripts_of_a_linkset_share_one_window_with_its_tree_and_tabs() {
+    fn the_scripts_of_a_linkset_share_one_window_with_its_tree() {
         let ctx = egui::Context::default();
         let mut editors = Editors::default();
         let (linkset, panel, door) = linkset_fixture();
@@ -2620,16 +2618,9 @@ print(\"bye\")"
                 .all(|e| e.source == "panel source" || e.source == "door source")
         );
 
-        // a click on the tab of the first script brings its source to the front
+        // a click on the row of the first script brings its source to the front
         let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
-        let at = output
-            .shapes
-            .iter()
-            .find_map(|s| match &s.shape {
-                egui::Shape::Text(t) if t.galley.job.text == "Panel Script" => Some(t.pos + t.galley.size() * 0.5),
-                _ => None,
-            })
-            .expect("the tab of the first script");
+        let at = text_at(&output, "Panel Script");
         for pressed in [true, false] {
             frame_linksets(
                 &ctx,
@@ -2689,6 +2680,7 @@ print(\"bye\")"
             name: "Spare Script".into(),
             flags: 0,
             running: None,
+            dirty: false,
             menu: LinksetScriptMenu {
                 moves: false,
                 refused: None,

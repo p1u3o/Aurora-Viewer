@@ -1,10 +1,9 @@
 //! The linkset panel of an object's script editor: every script of the
-//! linkset beside the source, grouped by the prim that holds it, and the tabs
-//! of the scripts the window has open. Aurora's own layout (the Legacy Viewer
-//! opens one floater per script, LLPreviewLSL / LLLiveLSLEditor,
-//! indra/newview/llpreviewscript.cpp): the tree takes the rows of the
-//! inventory's contents (`ui/inventory/tree.rs`), the tabs the look of
-//! `widgets::tabs`.
+//! linkset beside the source, grouped by the prim that holds it and marked
+//! with a star while its open document has unsaved text. Aurora's own layout
+//! (the Legacy Viewer opens one floater per script, LLPreviewLSL /
+//! LLLiveLSLEditor, indra/newview/llpreviewscript.cpp): the tree takes the
+//! rows of the inventory's contents (`ui/inventory/tree.rs`).
 
 use super::super::widgets;
 use super::super::{icons, inventory, menu};
@@ -40,6 +39,9 @@ pub struct Script {
     pub flags: u32,
     /// Whether it runs, once the simulator answered.
     pub running: Option<bool>,
+    /// Its open document has unsaved text: the row marks it with a star, in
+    /// place of a tab strip's dot.
+    pub dirty: bool,
     pub menu: ScriptMenu,
 }
 
@@ -85,8 +87,10 @@ fn icon(ui: &mut egui::Ui, name: &str, tint: egui::Color32) {
 
 /// What a row of the tree asked for, from a click or its context menu.
 pub(super) enum TreeAction {
-    /// Open the script in a tab, or bring its tab to the front.
+    /// Open the script in the editor, or bring it to the front.
     Open(ScriptTarget),
+    /// Close its document (middle click, or the menu's Close).
+    Close(ScriptTarget),
     Take(ScriptTarget),
     Delete(ScriptTarget),
     /// A new script in that prim's contents.
@@ -150,11 +154,19 @@ pub(super) fn tree(ui: &mut egui::Ui, p: &Palette, linkset: Option<&Linkset>, ac
                         ui.add_space(ui.spacing().indent - 4.0);
                         let tint = if script.running == Some(true) { p.teal } else { p.muted };
                         icon(ui, inventory::item_icon(10, 10, script.flags), tint);
-                        let name = inventory::tree::name(&script.name, p);
+                        // the star of unsaved text, in place of a tab strip's dot
+                        let name = if script.dirty {
+                            widgets::name_with_suffix(&script.name, " *", inventory::tree::font(), p.ink)
+                        } else {
+                            inventory::tree::name(&script.name, p)
+                        };
                         let selected = active == Some(target);
                         let response = inventory::tree::label(ui, name, selected, Sense::click(), None);
                         if response.clicked() {
                             chosen = Some(TreeAction::Open(target));
+                        }
+                        if response.middle_clicked() {
+                            chosen = Some(TreeAction::Close(target));
                         }
                         let response = response.on_hover_text(if script.running == Some(true) {
                             format!("{}\n{}", script.name, aurora_i18n::tr!("script-running"))
@@ -179,6 +191,10 @@ pub(super) fn tree(ui: &mut egui::Ui, p: &Palette, linkset: Option<&Linkset>, ac
                             if menu::item_if(ui, p, "trash-filled", aurora_i18n::tr!("common-delete"), script.menu.can_delete) {
                                 chosen = Some(TreeAction::Delete(target));
                             }
+                            menu::separator(ui, p);
+                            if menu::item(ui, p, "x", aurora_i18n::tr!("common-close")) {
+                                chosen = Some(TreeAction::Close(target));
+                            }
                         });
                     });
                 }
@@ -189,89 +205,4 @@ pub(super) fn tree(ui: &mut egui::Ui, p: &Palette, linkset: Option<&Linkset>, ac
         });
     });
     chosen
-}
-
-/// A tab of the strip: one open script.
-pub(super) struct Tab<'a> {
-    pub target: ScriptTarget,
-    pub name: &'a str,
-    pub lua: bool,
-    pub dirty: bool,
-}
-
-/// What a click of the strip asked for.
-pub(super) enum Tabs {
-    None,
-    Select(ScriptTarget),
-    Close(ScriptTarget),
-}
-
-/// The strip of open scripts above the source: a click selects a tab, its
-/// cross closes it (the middle button too, as in an editor's document strip).
-pub(super) fn tabs(ui: &mut egui::Ui, p: &Palette, tabs: &[Tab<'_>], active: Option<ScriptTarget>) -> Tabs {
-    let mut answer = Tabs::None;
-    let font = widgets::control_font(ui, 12.0);
-    let height = ui.spacing().interact_size.y.max(26.0);
-    egui::ScrollArea::horizontal()
-        .id_salt("script_linkset_tabs")
-        .auto_shrink([false, true])
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                for tab in tabs {
-                    let lua = u32::from(tab.lua);
-                    let name = ui.painter().layout_no_wrap(tab.name.to_owned(), font.clone(), p.muted);
-                    let width = 44.0 + name.size().x + if tab.dirty { 10.0 } else { 0.0 };
-                    let selected = active == Some(tab.target);
-                    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
-                    if selected || response.hovered() {
-                        let fill = if selected {
-                            p.violet.gamma_multiply(0.18)
-                        } else {
-                            p.raised.gamma_multiply(0.25)
-                        };
-                        ui.painter().rect_filled(rect, ui.visuals().window_corner_radius, fill);
-                    }
-                    let center = rect.center().y;
-                    let mut left = rect.left() + 8.0;
-                    if let Some(t) = icons::global(inventory::item_icon(10, 10, lua)) {
-                        ui.painter().image(
-                            t.id(),
-                            egui::Rect::from_center_size(egui::pos2(left + 7.0, center), Vec2::splat(14.0)),
-                            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                            inventory::item_icon_color(10, 10, p),
-                        );
-                    }
-                    left += 18.0;
-                    ui.painter().galley(
-                        egui::pos2(left, center - name.size().y / 2.0),
-                        name.clone(),
-                        if selected { p.ink } else { p.muted },
-                    );
-                    left += name.size().x;
-                    if tab.dirty {
-                        ui.painter().circle_filled(egui::pos2(left + 4.0, center), 2.0, p.amber);
-                    }
-                    let close = egui::Rect::from_center_size(egui::pos2(rect.right() - 10.0, center), Vec2::splat(16.0));
-                    let cross = ui.interact(close, response.id.with("close"), Sense::click());
-                    if let Some(t) = icons::global("x") {
-                        ui.painter().image(
-                            t.id(),
-                            egui::Rect::from_center_size(close.center(), Vec2::splat(11.0)),
-                            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                            if cross.hovered() { p.ink } else { p.muted },
-                        );
-                    }
-                    let cross = cross.on_hover_text(aurora_i18n::tr!("script-linkset-close"));
-                    // a press of the cross must not also select the tab
-                    if cross.clicked() || response.middle_clicked() {
-                        answer = Tabs::Close(tab.target);
-                    } else if response.clicked() && !selected {
-                        answer = Tabs::Select(tab.target);
-                    }
-                    response.on_hover_text(tab.name);
-                }
-            });
-        });
-    answer
 }
