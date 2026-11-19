@@ -4258,6 +4258,55 @@ print(\"bye\")"
         );
     }
 
+    /// A snippet writes its body with its placeholders, the first selected, and
+    /// Tab walks them until the last, which ends the filling.
+    #[test]
+    fn a_snippet_writes_its_body_and_tab_walks_its_placeholders() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let target = target(23);
+        let source = "default\n{\n    state_entry()\n    {\n    }\n}\n";
+        let load = editors.open(target, "Snippet".into(), true, true, 0).unwrap();
+        editors.loaded(load, target, Ok(source.into()));
+        settle(&ctx, &mut editors);
+        // the caret at the start of the empty line of the event's body
+        let at = editing::line_cursor(source, 4, 0);
+        editing::select(&ctx, source_id(target), at..at, true);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![egui::Event::Text("if".into())]);
+        let output = frame(&ctx, &mut editors, vec![]);
+        assert!(
+            output
+                .shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "if")),
+            "the list offers the snippet by its name"
+        );
+        frame(&ctx, &mut editors, vec![key(egui::Key::Enter, egui::Modifiers::NONE)]);
+        frame(&ctx, &mut editors, vec![]);
+        let written = &editors.documents[0].source;
+        assert!(written.contains("if (condition)"), "{written}");
+        assert!(written.contains("{\n    \n}"), "its body, at its own indentation: {written}");
+        // the first placeholder is selected, ready to be replaced
+        let range = editing::bytes(written, editing::cursor(&ctx, source_id(target)));
+        assert_eq!(&written[range], "condition");
+        // Tab takes the empty one inside the braces
+        frame(&ctx, &mut editors, vec![key(egui::Key::Tab, egui::Modifiers::NONE)]);
+        frame(&ctx, &mut editors, vec![]);
+        let written = &editors.documents[0].source;
+        let caret = editing::cursor(&ctx, source_id(target)).primary.index.0;
+        assert!(editing::cursor(&ctx, source_id(target)).is_empty(), "an empty placeholder");
+        let (line, _) = editing::position(written, caret);
+        let lines: Vec<&str> = written.lines().collect();
+        assert_eq!(lines[line].trim(), "", "inside the body: {written}");
+        assert_eq!(lines[line - 1].trim(), "{", "under the brace: {written}");
+        assert!(editors.documents[0].tools.snippet.is_some(), "still filling it");
+        // past the last placeholder, the filling is done
+        frame(&ctx, &mut editors, vec![key(egui::Key::Tab, egui::Modifiers::NONE)]);
+        frame(&ctx, &mut editors, vec![]);
+        assert!(editors.documents[0].tools.snippet.is_none(), "the filling ends");
+    }
+
     /// Escape closes the list until the name changes, and a name inside a
     /// comment is not completed at all.
     #[test]

@@ -2897,13 +2897,22 @@ name of the keywords in use -- a native function, an event, a constant, a type
 or a string; a region with its own LSL syntax brings its own help.
 Typing two letters of a name in the source opens the list of the names that
 start with them, under the caret: the words of the keywords in use (the
-region's own syntax included) and the words the script itself writes, the
-typed case first and the script's own names before the catalog's
-(`ui/scripts/complete.rs`). The arrows walk it, Tab or Enter takes the name and
-a click takes one too: a function comes with its bracket and the caret inside
-it, any other name as it is. Under the rows, the signature and the help of the
-one chosen read as the hover does. Escape closes the list until the letters
-change; a name in a comment or a string is not completed.
+region's own syntax included) and the script's own -- its parameters and
+locals where they hold, its globals and functions everywhere, its states left
+out -- the typed case first and the script's declarations before the
+catalog's (`ui/scripts/complete.rs`). The arrows walk it, Tab or Enter takes
+the name and a click takes one too: a function comes with its bracket and the
+caret inside it, any other name as it is. Under the rows, the signature and
+the help of the one chosen read as the hover does. Escape closes the list until
+the letters change; a name in a comment or a string is not completed, and one
+the script declares is never offered where it does not hold.
+`if`, `for`, `while`, `do` and `state` offer their snippet by name: taking it
+writes its body with the indentation of the line, its first placeholder
+selected, and Tab then walks the placeholders (Shift+Tab back, Escape ends the
+filling; what is typed in one moves the ones after it). The source or what the
+preprocessor made of it is chosen at the right end of the bar under the
+editor, the view shown in ink and the other dimmed, so the text starts directly
+under the tab strip.
 A diagnostic is also drawn in the code: a squiggle under the word its place
 points at, red for an error and amber for a warning. The other places the word
 under the caret appears are boxed behind the text, dimmed, and the tree's

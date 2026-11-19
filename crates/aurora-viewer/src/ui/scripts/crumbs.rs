@@ -15,6 +15,18 @@ pub(super) struct Step {
     pub line: usize,
 }
 
+/// A block of the source: where its header starts and ends, and the braces that
+/// open and close it, in char indices. The completion reads the header for a
+/// block's parameters and the range for the names a block holds.
+pub(super) struct Block {
+    /// The text of the header that opens it (from its first word to the `{`).
+    pub header: std::ops::Range<usize>,
+    /// The index of the `{` that opens it.
+    pub open: usize,
+    /// The index of the `}` that closes it (the source's end when it is open).
+    pub close: usize,
+}
+
 /// The path of the block that holds `line`.
 pub(super) fn path(source: &str, lua: bool, line: usize) -> Vec<Step> {
     if lua { lua_path(source, line) } else { block_path(source, line) }
@@ -25,36 +37,62 @@ fn block_path(source: &str, line: usize) -> Vec<Step> {
     let chars: Vec<char> = source.chars().collect();
     let code = editing::code_mask(&chars);
     let starts = line_starts(&chars);
-    // the caret's line is the walk's end: what opens after it does not hold it
+    // the line's first character is the walk's end: what opens after it does
+    // not hold the line
     let end = starts.get(line).copied().unwrap_or(chars.len());
-    let mut open: Vec<usize> = Vec::new();
-    for at in 0..end.min(chars.len()) {
-        if !code[at] {
-            continue;
-        }
-        match chars[at] {
-            '{' => open.push(header_start(&chars, &code, at)),
-            '}' => {
-                open.pop();
-            }
-            _ => {}
-        }
-    }
-    open.into_iter()
-        .filter_map(|start| {
-            // the first word of the header, not the blank before it: that is
-            // the line the step goes to
-            let mut first = start;
-            while first < chars.len() && chars[first].is_whitespace() {
-                first += 1;
-            }
-            let text = header_text(&chars, first, &code);
+    blocks(&chars, &code)
+        .into_iter()
+        .filter(|block| block.open < end && end <= block.close)
+        .filter_map(|block| {
+            let text = header_text(&chars, block.header.start, &code);
             (!text.is_empty()).then(|| Step {
-                line: line_of(&starts, first),
+                line: line_of(&starts, block.header.start),
                 text,
             })
         })
         .collect()
+}
+
+/// Every block of the source, outermost first, with the header that opens it.
+pub(super) fn blocks(chars: &[char], code: &[bool]) -> Vec<Block> {
+    let mut open: Vec<(usize, usize)> = Vec::new();
+    let mut found = Vec::new();
+    for at in 0..chars.len() {
+        if !code[at] {
+            continue;
+        }
+        match chars[at] {
+            '{' => {
+                // the header starts at its first word, not at the blank before
+                // it: that is the line it is on
+                let mut first = header_start(chars, code, at);
+                while first < at && chars[first].is_whitespace() {
+                    first += 1;
+                }
+                open.push((first, at));
+            }
+            '}' => {
+                if let Some((header, brace)) = open.pop() {
+                    found.push(Block {
+                        header: header..brace,
+                        open: brace,
+                        close: at,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    // a block the source leaves open reaches its end
+    for (header, brace) in open {
+        found.push(Block {
+            header: header..chars.len(),
+            open: brace,
+            close: chars.len(),
+        });
+    }
+    found.sort_by_key(|block| block.open);
+    found
 }
 
 /// SLua's path: the outline items whose block holds the line, outermost

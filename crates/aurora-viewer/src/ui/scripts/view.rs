@@ -69,6 +69,8 @@ pub(super) struct Tools {
     /// The notice over this source the reader has put away: it comes back when
     /// another one takes its place.
     pub(super) notice_hidden: Option<Notice>,
+    /// The snippet the reader is filling, its placeholders walked with Tab.
+    pub(super) snippet: Option<complete::Snippet>,
     footer_height: f32,
     can_undo: bool,
     can_redo: bool,
@@ -267,19 +269,6 @@ pub(super) struct Problem {
     pub message: String,
 }
 
-/// The rows a pane shows above its source, its own: the source / processed
-/// tabs, when the preprocessor runs.
-fn pane_rows(ui: &mut egui::Ui, e: &mut Editor, settings: &ScriptSettings) {
-    if settings.preprocessor || e.tools.has_processed || e.tools.processed {
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut e.tools.processed, false, aurora_i18n::tr!("script-tab-source"));
-            ui.selectable_value(&mut e.tools.processed, true, aurora_i18n::tr!("script-tab-processed"));
-        });
-    } else {
-        e.tools.processed = false;
-    }
-}
-
 /// What a script has to reckon with, as the notice over its source says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Notice {
@@ -447,7 +436,6 @@ pub(super) fn body(
         let header = ui.scope(|ui| header(ui, p, e, id, settings, prefs, actions, own_menus));
         e.tools.header_height = header.response.rect.height();
     }
-    pane_rows(ui, e, settings);
     // Measure the actual controls, including object-only rows and diagnostics.
     // Repaint after a width/status change, without replaying asynchronous actions.
     let footer_height = if e.tools.footer_height > 0.0 {
@@ -476,7 +464,7 @@ pub(super) fn body(
     let height = if crumbs { height - CRUMBS_HEIGHT - gap } else { height };
     source(ui, p, e, id, settings, height, &prefs.search, problems);
     if crumbs {
-        crumbs_row(ui, p, e, id, problems, tab, true);
+        crumbs_row(ui, p, e, id, settings, problems, tab, true);
     }
     let clicked = if dock_height > 0.0 {
         dock(ui, p, e, problems, all_sources, folded, tab, search)
@@ -523,10 +511,6 @@ pub(super) fn split_body(
 ) -> (Option<DockClick>, Option<ScriptTarget>) {
     // Two equal columns: egui splits the width exactly, and each column's own
     // layout keeps the two sources at the same height.
-    ui.columns(2, |columns| {
-        pane_rows(&mut columns[0], left, settings);
-        pane_rows(&mut columns[1], right, settings);
-    });
     let room = ui.available_height();
     let gap_y = ui.spacing().item_spacing.y;
     let footer_height = if left.tools.footer_height > 0.0 {
@@ -554,8 +538,8 @@ pub(super) fn split_body(
     if crumbs {
         ui.columns(2, |columns| {
             let left_front = focused == Side::Left;
-            crumbs_row(&mut columns[0], p, left, left_id, problems, tab, left_front);
-            crumbs_row(&mut columns[1], p, right, right_id, problems, tab, !left_front);
+            crumbs_row(&mut columns[0], p, left, left_id, settings, problems, tab, left_front);
+            crumbs_row(&mut columns[1], p, right, right_id, settings, problems, tab, !left_front);
         });
     }
     // a click in the pane that is not in front brings its script to the front
@@ -1610,9 +1594,15 @@ fn source(
                 let whole_words = search.whole_words;
                 let color_editable = e.loaded && e.can_edit && e.saving.is_none() && e.loading.is_none() && !e.tools.processed;
                 let editable = color_editable && !e.colors.active();
-                // the completion list's keys, taken before the text sees them
+                // the completion list's keys, taken before the text sees them,
+                // then a snippet's, which only walk while it is being filled
                 let nav = if editable && !ui.is_sizing_pass() {
                     complete::keys(ui, id)
+                } else {
+                    None
+                };
+                let step = if editable && nav.is_none() && e.tools.snippet.is_some() && !ui.is_sizing_pass() {
+                    complete::snippet_keys(ui)
                 } else {
                     None
                 };
@@ -1669,9 +1659,13 @@ fn source(
                                 };
                                 show(ui, &mut text)
                             };
-                            // the name being typed, completed under the caret
+                            // the name being typed, completed under the caret,
+                            // and the snippet's next placeholder
                             if editable && !ui.is_sizing_pass() {
-                                complete::after(ui, p, lua, id, &mut e.source, &mut output, nav);
+                                if let Some(step) = step {
+                                    complete::snippet_step(ui, id, e, step);
+                                }
+                                complete::after(ui, p, lua, id, e, &mut output, nav);
                             }
                             let mut chosen = None;
                             // the word the pointer is on, for the window's
@@ -2038,7 +2032,23 @@ fn source(
 /// away from its line, and at the right what the script counts and whether it
 /// can be changed. Alchemy's Script Studio puts the same bar under its editor
 /// (ALScriptCrumbsBar), with a longer trailer.
-pub(super) fn crumbs_row(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, problems: &[Problem], tab: &mut DockTab, trailer: bool) {
+#[allow(clippy::too_many_arguments)]
+pub(super) fn crumbs_row(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    e: &mut Editor,
+    id: Id,
+    settings: &ScriptSettings,
+    problems: &[Problem],
+    tab: &mut DockTab,
+    trailer: bool,
+) {
+    // the source or what the preprocessor made of it, when it runs: the choice
+    // is the pane's, so it sits in the pane's own bar under the source
+    let either = settings.preprocessor || e.tools.has_processed || e.tools.processed;
+    if !either {
+        e.tools.processed = false;
+    }
     let text = if e.tools.processed { &e.tools.processed_source } else { &e.source };
     let path = crumbs::path(text, e.lua(), e.tools.position.0);
     let name = e.name.clone();
@@ -2055,6 +2065,17 @@ pub(super) fn crumbs_row(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id,
                 let label = aurora_i18n::tr!("script-problems-count", count = counted as i64);
                 if flat_button(ui, p, &label).clicked() {
                     *tab = DockTab::Problems;
+                }
+            }
+            if either {
+                // the two views, as words: the one shown in ink, the other
+                // dimmed (the bar is too thin for the pills of a tab strip)
+                let processed = e.tools.processed;
+                if switch_word(ui, p, aurora_i18n::tr!("script-tab-processed"), processed) {
+                    e.tools.processed = true;
+                }
+                if switch_word(ui, p, aurora_i18n::tr!("script-tab-source"), !processed) {
+                    e.tools.processed = false;
                 }
             }
             if trailer
@@ -2088,6 +2109,21 @@ pub(super) fn crumbs_row(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id,
     if let Some(line) = jump {
         go_to_line(ui.ctx(), e, id, line, 0);
     }
+}
+
+/// One word of the source / preprocessed switch: in ink when it is the view
+/// shown, dimmed otherwise.
+fn switch_word(ui: &mut egui::Ui, p: &Palette, text: &str, on: bool) -> bool {
+    let color = if on { p.ink } else { p.muted };
+    let response = ui.add(
+        egui::Label::new(RichText::new(text).size(11.0).color(color))
+            .truncate()
+            .sense(egui::Sense::click()),
+    );
+    if on {
+        return false;
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
 
 /// One step of the crumbs: its words, a click away from its line.
