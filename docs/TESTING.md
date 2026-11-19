@@ -2879,7 +2879,9 @@ tree's filter and the tab strip share their row, so the tree's list and the
 source start on the same line, with the tree's bottom on the source's status
 bar; the tree's edge drags its width (the inventory sidebar's gesture, a
 double click for the default) and its foot holds Settings, which opens the
-script editor's preferences. Each tab's tooltip names the prim the script is
+script editor's preferences. A script chosen or brought to the front (a tab, a
+row, the quick open, a pane of a split) shows in the tree: the prim that holds
+it opens if the reader had shut it. Each tab's tooltip names the prim the script is
 in, and its menu closes the other scripts or all of them. At the right of the source, the minimap
 shows the whole script as one bar per line, from its indentation to its last
 character, in the colour of what the line starts with, the part on screen

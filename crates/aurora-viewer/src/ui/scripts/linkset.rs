@@ -95,7 +95,7 @@ impl Linkset {
     }
 }
 
-fn collapsed_id(root: Uuid) -> Id {
+pub(super) fn collapsed_id(root: Uuid) -> Id {
     Id::unique(("script_linkset_collapsed", root))
 }
 
@@ -103,6 +103,16 @@ fn collapsed_id(root: Uuid) -> Id {
 fn collapsed(ctx: &egui::Context, root: Uuid) -> Vec<Uuid> {
     ctx.data_mut(|d| d.get_persisted::<Vec<Uuid>>(collapsed_id(root)))
         .unwrap_or_default()
+}
+
+/// Opens the group of `prim` in the tree of `root`: a script chosen or
+/// brought to the front shows there, even inside a group the reader had shut.
+pub(super) fn reveal(ctx: &egui::Context, root: Uuid, prim: Uuid) {
+    let mut closed = collapsed(ctx, root);
+    if closed.contains(&prim) {
+        closed.retain(|id| *id != prim);
+        ctx.data_mut(|d| d.insert_persisted(collapsed_id(root), closed));
+    }
 }
 
 /// The row icon of a name of the skin's set (Tabler and inventory icons

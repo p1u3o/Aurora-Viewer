@@ -279,6 +279,9 @@ pub struct Editors {
     /// The two scripts a window shows side by side, left then right, by its
     /// root. The one in front is one of them.
     splits: std::collections::HashMap<Uuid, (ScriptTarget, ScriptTarget)>,
+    /// The prim each window's tree is to open because the script in it was
+    /// just chosen: a script brought to the front shows in the tree.
+    reveal: std::collections::HashMap<Uuid, Uuid>,
     /// The quick open (Ctrl+P) of a window, while it is up.
     quick_open: Option<QuickOpen>,
     panels: dialogs::Panels,
@@ -1569,6 +1572,13 @@ impl Editors {
         let chosen = self.active.get(&root).copied().filter(|target| members.contains(target));
         let active = prompting.or(raised).or(chosen).unwrap_or(members[0]);
         self.active.insert(root, active);
+        // a script opened or raised shows in the tree, even inside a shut group
+        if raised.is_some() {
+            linkset::reveal(ctx, root, active.object);
+        }
+        if let Some(prim) = self.reveal.remove(&root) {
+            linkset::reveal(ctx, root, prim);
+        }
         // a split lasts while both its scripts are open and one of them is the
         // one in front: choosing another script gives a single pane again
         if let Some((left, right)) = self.splits.get(&root).copied()
@@ -1806,6 +1816,7 @@ impl Editors {
                                 clicked_problem = dock;
                                 if let Some(target) = focus {
                                     self.active.insert(root, target);
+                                    self.reveal.insert(root, target.object);
                                 }
                             } else {
                                 let e = &mut self.documents[index];
@@ -1991,6 +2002,8 @@ impl Editors {
     /// close.
     fn select_script(&mut self, root: Uuid, index: usize) {
         let target = self.documents[index].target;
+        // the chosen script's prim opens in the tree, so the list shows it
+        self.reveal.insert(root, target.object);
         // a script that is not one of the split's two panes gives a single
         // pane again, now rather than at the next frame's check
         if let Some((left, right)) = self.splits.get(&root).copied()
@@ -4816,6 +4829,52 @@ print(\"bye\")"
         click_at(&ctx, &mut editors, &mut settings, linksets, row, egui::PointerButton::Primary);
         frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
         assert!(editors.panels.preferences.open, "the preferences open");
+    }
+
+    /// A script chosen from its tab shows in the tree too: the prim that holds
+    /// it opens, where the reader had shut it.
+    #[test]
+    fn choosing_a_script_opens_the_prim_that_holds_it() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let (linkset, panel, door) = linkset_fixture();
+        let mut settings = settings::ScriptSettings::default();
+        for (target, name) in [(panel, "Panel Script"), (door, "Door Script")] {
+            let load = editors.open(target, name.into(), true, true, 0).unwrap();
+            editors.loaded(load, target, Ok("source".into()));
+            editors.documents.iter_mut().find(|e| e.target == target).unwrap().linkset = linkset.root;
+        }
+        let linksets = std::slice::from_ref(&linkset);
+        for _ in 0..3 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        // the panel's script in front, then the door's prim shut by the reader
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        let tab = text_at(&output, "Panel Script");
+        click_at(&ctx, &mut editors, &mut settings, linksets, tab, egui::PointerButton::Primary);
+        ctx.data_mut(|data| {
+            data.insert_persisted(linkset::collapsed_id(linkset.root), vec![door.object]);
+        });
+        for _ in 0..2 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        let row_drawn = |output: &egui::FullOutput| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text)
+                    if text.galley.job.text.starts_with("Door Script") && text.galley.job.text.ends_with("CMT"))
+            })
+        };
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        assert!(!row_drawn(&output), "the shut prim keeps its scripts to itself");
+        // its script, from the tab
+        let tab = text_at(&output, "Door Script");
+        click_at(&ctx, &mut editors, &mut settings, linksets, tab, egui::PointerButton::Primary);
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        assert_eq!(editors.active.get(&linkset.root), Some(&door));
+        assert!(row_drawn(&output), "the prim opened to show the script chosen");
+        // and stays opened afterwards
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        assert!(row_drawn(&output), "the reader's shut group is open now");
     }
 
     /// A script of the tree with no tab: the click asks the app for an editor
