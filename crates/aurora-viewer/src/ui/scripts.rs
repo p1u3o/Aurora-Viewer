@@ -31,6 +31,7 @@ fn two_mut(documents: &mut [Editor], a: usize, b: usize) -> (&mut Editor, &mut E
 
 pub mod backup;
 mod colors;
+mod crumbs;
 mod debug;
 mod dialogs;
 mod editing;
@@ -1723,6 +1724,11 @@ impl Editors {
                         }
                     });
                 });
+                // the notice of the script in front, over the window's body:
+                // the tree and the sources start level under it
+                if let Some(e) = self.documents.get_mut(active_index) {
+                    view::notice_bar(ui, p, e, actions, dock_tab);
+                }
                 let needle = filter.trim().to_lowercase();
                 let height = ui.available_height();
                 ui.horizontal_top(|ui| {
@@ -4068,9 +4074,11 @@ print(\"bye\")"
         }
         let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
         assert_eq!(editors.active.get(&linkset.root), Some(&panel), "the right pane in front");
-        // each name once, in the panes' order, the one in front in ink
+        // each name once, in the panes' order, the one in front in ink; the
+        // strip is the topmost row that names a script (the crumb bar under
+        // the source names it too)
         let palette = crate::theme::Theme::default().palette();
-        let names: Vec<(String, egui::Pos2, Option<egui::Color32>)> = output
+        let mut names: Vec<(String, egui::Pos2, Option<egui::Color32>)> = output
             .shapes
             .iter()
             .filter_map(|shape| match &shape.shape {
@@ -4082,6 +4090,8 @@ print(\"bye\")"
                 _ => None,
             })
             .collect();
+        let top = names.iter().map(|name| name.1.y).fold(f32::MAX, f32::min);
+        names.retain(|name| (name.1.y - top).abs() < 1.0);
         assert_eq!(names.len(), 2, "the two names of the split, once each: {names:?}");
         let door_name = names.iter().find(|(label, ..)| label == "Door Script").unwrap();
         let panel_name = names.iter().find(|(label, ..)| label == "Panel Script").unwrap();
@@ -4097,6 +4107,94 @@ print(\"bye\")"
         assert!(
             text_at(&output, "Door Script").x < text_at(&output, "Panel Script").x,
             "and so does their order in the strip"
+        );
+    }
+
+    /// The notice over a script's source says what it cannot do, and the
+    /// reader can put it away; another one comes back on its own.
+    #[test]
+    fn the_notice_over_the_source_says_what_the_script_cannot_do() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let target = target(7);
+        let load = editors.open(target, "Locked".into(), true, false, 0).unwrap();
+        editors.loaded(load, target, Ok("default\n{\n}\n".into()));
+        let drawn = |output: &egui::FullOutput, text: &str| {
+            output
+                .shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape, egui::Shape::Text(t) if t.galley.job.text == text))
+        };
+        let read_only = aurora_i18n::tr!("script-read-only");
+        settle(&ctx, &mut editors);
+        let output = frame(&ctx, &mut editors, vec![]);
+        assert!(drawn(&output, read_only), "a read-only script says so over its source");
+        // put away, it stays away
+        editors.documents[0].tools.notice_hidden = Some(view::Notice::ReadOnly);
+        frame(&ctx, &mut editors, vec![]);
+        let output = frame(&ctx, &mut editors, vec![]);
+        assert!(!drawn(&output, read_only), "the reader hid it");
+        // a different one is not hidden with it
+        editors.documents[0].can_edit = true;
+        editors.documents[0].compile_failed = true;
+        editors.documents[0].status = "Source saved, but compilation failed.".into();
+        let failed = aurora_i18n::tr!("script-compile-failed");
+        frame(&ctx, &mut editors, vec![]);
+        let output = frame(&ctx, &mut editors, vec![]);
+        assert!(drawn(&output, failed), "the failure takes the notice's place");
+        assert!(!drawn(&output, read_only));
+    }
+
+    /// The bar under the source names the blocks the caret is in, and each
+    /// step goes back to its line.
+    #[test]
+    fn the_crumbs_under_the_source_name_the_blocks_and_go_to_them() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let (linkset, panel, door) = linkset_fixture();
+        let _ = panel;
+        let mut settings = settings::ScriptSettings::default();
+        let source = "default\n{\n    state_entry()\n    {\n        llSay(0, \"hi\");\n    }\n}\n";
+        let load = editors.open(door, "Door Script".into(), true, true, 0).unwrap();
+        editors.loaded(load, door, Ok(source.into()));
+        editors.documents.iter_mut().find(|e| e.target == door).unwrap().linkset = linkset.root;
+        let linksets = std::slice::from_ref(&linkset);
+        for _ in 0..3 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        // the caret inside the event's body
+        let at = editing::line_cursor(source, 4, 8);
+        editing::select(&ctx, source_id(door), at..at, true);
+        for _ in 0..2 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        let drawn = |text: &str| {
+            output
+                .shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape, egui::Shape::Text(t) if t.galley.job.text == text))
+        };
+        assert!(drawn("Door Script"), "the script the bar belongs to");
+        assert!(drawn("default"), "the state");
+        assert!(drawn("state_entry()"), "the event");
+        // a step goes to its line: the lowest `state_entry()` is the bar's (the
+        // source has one of its own, above it)
+        let at = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(t) if t.galley.job.text == "state_entry()" => Some(t.pos + t.galley.size() * 0.5),
+                _ => None,
+            })
+            .max_by(|a, b| a.y.total_cmp(&b.y))
+            .expect("the step");
+        click_at(&ctx, &mut editors, &mut settings, linksets, at, egui::PointerButton::Primary);
+        frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        assert_eq!(
+            editors.documents.iter().find(|e| e.target == door).unwrap().tools.position.0,
+            2,
+            "the caret is on the event's line"
         );
     }
 

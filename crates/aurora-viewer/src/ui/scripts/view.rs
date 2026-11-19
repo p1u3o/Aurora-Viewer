@@ -2,7 +2,7 @@
 //! LGPL 2.1). Aurora keeps its flat widgets and always-visible experience list.
 
 use super::{
-    Action, Editor,
+    Action, Editor, crumbs,
     dialogs::{Help, Panels, Search},
     editing, files, indent, reference,
     settings::{ColorRole, ScriptSettings},
@@ -66,6 +66,9 @@ pub(super) struct Tools {
     incoming_external: bool,
     pub diagnostics_processed: bool,
     pub reset_history: bool,
+    /// The notice over this source the reader has put away: it comes back when
+    /// another one takes its place.
+    pub(super) notice_hidden: Option<Notice>,
     footer_height: f32,
     can_undo: bool,
     can_redo: bool,
@@ -264,12 +267,9 @@ pub(super) struct Problem {
     pub message: String,
 }
 
-/// The rows a pane shows above its source, its own: the read-only note and,
-/// when the preprocessor runs, the source / processed tabs.
-fn pane_rows(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, settings: &ScriptSettings) {
-    if e.loaded && !e.can_edit {
-        ui.label(RichText::new(aurora_i18n::tr!("script-read-only")).color(p.warn));
-    }
+/// The rows a pane shows above its source, its own: the source / processed
+/// tabs, when the preprocessor runs.
+fn pane_rows(ui: &mut egui::Ui, e: &mut Editor, settings: &ScriptSettings) {
     if settings.preprocessor || e.tools.has_processed || e.tools.processed {
         ui.horizontal(|ui| {
             ui.selectable_value(&mut e.tools.processed, false, aurora_i18n::tr!("script-tab-source"));
@@ -278,6 +278,113 @@ fn pane_rows(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, settings: &ScriptSe
     } else {
         e.tools.processed = false;
     }
+}
+
+/// What a script has to reckon with, as the notice over its source says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Notice {
+    /// Its item could not be read: the viewer's reason is in the status.
+    Failed,
+    /// Saved, but the compiler refused the source.
+    CompileFailed,
+    /// Longer than the viewer can save.
+    TooLarge,
+    /// Readable, but the item gives no modify right.
+    ReadOnly,
+    /// The simulator has not said whether the script runs.
+    NotRunning,
+}
+
+/// The notice a script asks for, the most urgent first.
+fn notice(e: &Editor) -> Option<Notice> {
+    if !e.loaded && e.loading.is_none() && !e.status.is_empty() {
+        Some(Notice::Failed)
+    } else if e.compile_failed && !e.status.is_empty() {
+        Some(Notice::CompileFailed)
+    } else if e.source.len() > aurora_net::scripts::MAX_SOURCE {
+        Some(Notice::TooLarge)
+    } else if e.loaded && !e.can_edit {
+        Some(Notice::ReadOnly)
+    } else if !e.target.object.is_nil() && e.loaded && e.can_read && e.running.is_none() {
+        Some(Notice::NotRunning)
+    } else {
+        None
+    }
+}
+
+/// The notice over the editor: what the script in front has to reckon with,
+/// what can be done about it, and a cross that keeps it out of the way until
+/// another one comes up (Alchemy's Script Studio notice bar,
+/// ALScriptNoticeBar; Aurora says the same in one row of its own).
+pub(super) fn notice_bar(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, actions: &mut Vec<Action>, tab: &mut DockTab) {
+    let Some(kind) = notice(e) else {
+        e.tools.notice_hidden = None;
+        return;
+    };
+    if e.tools.notice_hidden == Some(kind) {
+        return;
+    }
+    let (icon, tint, text) = match kind {
+        Notice::Failed => ("alert-triangle-filled", p.danger, e.status.clone()),
+        Notice::CompileFailed => (
+            "alert-triangle-filled",
+            p.danger,
+            aurora_i18n::tr!("script-compile-failed").to_string(),
+        ),
+        Notice::TooLarge => (
+            "alert-triangle-filled",
+            p.danger,
+            aurora_i18n::tr!("script-source-too-large").to_string(),
+        ),
+        Notice::ReadOnly => ("lock-filled", p.warn, aurora_i18n::tr!("script-read-only").to_string()),
+        Notice::NotRunning => ("hourglass-filled", p.warn, aurora_i18n::tr!("script-waiting-running").to_string()),
+    };
+    let height = ui.spacing().interact_size.y.max(24.0);
+    egui::Frame::new()
+        .fill(p.bar.lerp_to_gamma(tint, 0.18))
+        .corner_radius(ui.visuals().window_corner_radius)
+        .inner_margin(egui::Margin::symmetric(8, 3))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                super::linkset::icon(ui, icon, tint);
+                ui.allocate_ui_with_layout(
+                    Vec2::new(ui.available_width(), height),
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        if widgets::icon_button(ui, p, "x", aurora_i18n::tr!("script-notice-hide"), true) {
+                            e.tools.notice_hidden = Some(kind);
+                        }
+                        match kind {
+                            Notice::CompileFailed => {
+                                let clicked = flat_button(ui, p, aurora_i18n::tr!("script-notice-problems")).clicked();
+                                if clicked {
+                                    *tab = DockTab::Problems;
+                                }
+                            }
+                            Notice::NotRunning => {
+                                let clicked = flat_button(ui, p, aurora_i18n::tr!("script-retry")).clicked();
+                                if clicked {
+                                    actions.push(Action::QueryRunning(e.target));
+                                }
+                            }
+                            _ => {}
+                        }
+                        // the words take the room left, on the left
+                        let width = ui.available_width();
+                        ui.allocate_ui_with_layout(Vec2::new(width, height), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.add(
+                                egui::Label::new(RichText::new(&text).size(11.0).color(p.ink))
+                                    .truncate()
+                                    .halign(egui::Align::LEFT),
+                            )
+                            .on_hover_text(&text);
+                        });
+                    },
+                );
+            });
+        });
 }
 
 pub(super) fn body(
@@ -300,6 +407,12 @@ pub(super) fn body(
     if own_menus {
         // a window of its own: its menus and toolbar are the body's first rows
         e.tools.search_slot = None;
+    }
+    // the notice of what the script has to reckon with: a window of its own
+    // puts it under its menus; a linkset window puts it over its tree and its
+    // sources (`show_linkset`), so that both start level
+    if own_menus {
+        notice_bar(ui, p, e, actions, tab);
     }
     let gap = ui.spacing().item_spacing.x;
     let search_width = Search::inline_width(ui);
@@ -334,7 +447,7 @@ pub(super) fn body(
         let header = ui.scope(|ui| header(ui, p, e, id, settings, prefs, actions, own_menus));
         e.tools.header_height = header.response.rect.height();
     }
-    pane_rows(ui, p, e, settings);
+    pane_rows(ui, e, settings);
     // Measure the actual controls, including object-only rows and diagnostics.
     // Repaint after a width/status change, without replaying asynchronous actions.
     let footer_height = if e.tools.footer_height > 0.0 {
@@ -357,7 +470,14 @@ pub(super) fn body(
     };
     let gaps = if dock_height > 0.0 { 2.0 } else { 1.0 };
     let height = (room - footer_height - dock_height - gap * gaps - 8.0).max(SOURCE_MIN);
+    // the path of the caret, under the source: a row of its own, taken from the
+    // source's room (a window too short keeps its text instead)
+    let crumbs = height > CRUMBS_HEIGHT + SOURCE_MIN + gap;
+    let height = if crumbs { height - CRUMBS_HEIGHT - gap } else { height };
     source(ui, p, e, id, settings, height, &prefs.search, problems);
+    if crumbs {
+        crumbs_row(ui, p, e, id, problems, tab, true);
+    }
     let clicked = if dock_height > 0.0 {
         dock(ui, p, e, problems, all_sources, folded, tab, search)
     } else {
@@ -404,8 +524,8 @@ pub(super) fn split_body(
     // Two equal columns: egui splits the width exactly, and each column's own
     // layout keeps the two sources at the same height.
     ui.columns(2, |columns| {
-        pane_rows(&mut columns[0], p, left, settings);
-        pane_rows(&mut columns[1], p, right, settings);
+        pane_rows(&mut columns[0], left, settings);
+        pane_rows(&mut columns[1], right, settings);
     });
     let room = ui.available_height();
     let gap_y = ui.spacing().item_spacing.y;
@@ -422,12 +542,22 @@ pub(super) fn split_body(
     };
     let gaps = if dock_height > 0.0 { 2.0 } else { 1.0 };
     let height = (room - footer_height - dock_height - gap_y * gaps - 8.0).max(SOURCE_MIN);
+    // the path of the caret of each pane, on one row under the two sources
+    let crumbs = height > CRUMBS_HEIGHT + SOURCE_MIN + gap_y;
+    let height = if crumbs { height - CRUMBS_HEIGHT - gap_y } else { height };
     ui.columns(2, |columns| {
         left.tools.body_top = columns[0].cursor().top();
         source(&mut columns[0], p, left, left_id, settings, height, &prefs.search, problems);
         right.tools.body_top = columns[1].cursor().top();
         source(&mut columns[1], p, right, right_id, settings, height, &prefs.search, problems);
     });
+    if crumbs {
+        ui.columns(2, |columns| {
+            let left_front = focused == Side::Left;
+            crumbs_row(&mut columns[0], p, left, left_id, problems, tab, left_front);
+            crumbs_row(&mut columns[1], p, right, right_id, problems, tab, !left_front);
+        });
+    }
     // a click in the pane that is not in front brings its script to the front
     let focus = match focused {
         Side::Left if right.tools.clicked => Some(right.target),
@@ -1101,19 +1231,10 @@ fn compile_target(ui: &mut egui::Ui, e: &mut Editor) {
 }
 
 fn footer(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, actions: &mut Vec<Action>) {
-    // The lines that only come up when they have something to say.
-    if !e.target.object.is_nil() && e.loaded && e.can_read && e.running.is_none() {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(aurora_i18n::tr!("script-waiting-running")).color(p.warn));
-            if flat_button(ui, p, aurora_i18n::tr!("script-retry")).clicked() {
-                actions.push(Action::QueryRunning(e.target));
-            }
-        });
-    }
-    if e.source.len() > aurora_net::scripts::MAX_SOURCE {
-        ui.label(RichText::new(aurora_i18n::tr!("script-source-too-large")).color(p.danger));
-    }
-    if !e.status.is_empty() {
+    // The reason a script failed, when the notice over the source does not
+    // say it already (it does unless the reader has put it away).
+    let covered = notice(e).is_some_and(|kind| e.tools.notice_hidden != Some(kind));
+    if !e.status.is_empty() && !covered {
         ui.label(RichText::new(&e.status).color(if e.compile_failed { p.danger } else { p.muted }));
     }
     // The status bar under the source: where the cursor is on the left, the
@@ -1195,6 +1316,9 @@ const OVERVIEW_WIDTH: f32 = 9.0;
 
 /// The row the sticky state/event line takes above the source.
 const STICKY_HEIGHT: f32 = 18.0;
+
+/// The row the path of the caret takes under the source.
+const CRUMBS_HEIGHT: f32 = 22.0;
 
 /// The overview strip at the right of the source: the whole script in the
 /// height of the window, with the part on screen (a thumb), the lines whose
@@ -1837,12 +1961,13 @@ fn source(
                                 ui.ctx().request_repaint();
                             }
                             e.folding.draw(ui, p, id, &output, left);
+                            // the help of the word under the pointer, over code
+                            // only: a name in a comment or a string is not the
+                            // keyword (LLScriptEdCore::updateDynamicHelp)
                             if let Some(pos) = output.response.hover_pos() {
                                 let at = output.galley.cursor_from_pos(pos - output.galley_pos).index.0;
-                                if let Some(entry) = reference::get(editing::word(text, at, lua), lua) {
-                                    (*output.response)
-                                        .clone()
-                                        .on_hover_text(format!("{}\n{}", entry.signature, entry.tooltip));
+                                if let Some(entry) = reference::hover(text, at, lua) {
+                                    (*output.response).clone().on_hover_ui(|ui| hover_docs(ui, p, entry));
                                 }
                             }
                             // a click on the text brings this pane to the front
@@ -1896,6 +2021,90 @@ fn source(
                     });
             });
         });
+}
+
+/// The bar under the source: the path of the caret -- the script, then the
+/// text that opens each block it is in, outermost first -- each step a click
+/// away from its line, and at the right what the script counts and whether it
+/// can be changed. Alchemy's Script Studio puts the same bar under its editor
+/// (ALScriptCrumbsBar), with a longer trailer.
+pub(super) fn crumbs_row(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, problems: &[Problem], tab: &mut DockTab, trailer: bool) {
+    let text = if e.tools.processed { &e.tools.processed_source } else { &e.source };
+    let path = crumbs::path(text, e.lua(), e.tools.position.0);
+    let name = e.name.clone();
+    let read_only = e.loaded && !e.can_edit;
+    let counted = problems.len();
+    let mut jump = None;
+    ui.allocate_ui_with_layout(
+        Vec2::new(ui.available_width(), CRUMBS_HEIGHT),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            // the trailer: what the script counts, then whether it can be
+            // changed (the pane in front alone says the count of the dock)
+            if trailer && counted > 0 {
+                let label = aurora_i18n::tr!("script-problems-count", count = counted as i64);
+                if flat_button(ui, p, &label).clicked() {
+                    *tab = DockTab::Problems;
+                }
+            }
+            if trailer
+                && read_only
+                && let Some(t) = crate::ui::icons::global("lock-filled")
+            {
+                ui.add(egui::Image::new(&t).fit_to_exact_size(Vec2::splat(14.0)).tint(p.warn))
+                    .on_hover_text(aurora_i18n::tr!("script-read-only"));
+            }
+            // the path, on the left, in the panes' order as the source is
+            let width = ui.available_width();
+            ui.allocate_ui_with_layout(
+                Vec2::new(width, CRUMBS_HEIGHT),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    crumb(ui, &name, p.muted_dim, false);
+                    for (index, step) in path.iter().enumerate() {
+                        if let Some(t) = crate::ui::icons::global("chevron-right") {
+                            ui.add(egui::Image::new(&t).fit_to_exact_size(Vec2::splat(11.0)).tint(p.muted_dim));
+                        }
+                        let last = index + 1 == path.len();
+                        if crumb(ui, &step.text, if last { p.ink } else { p.muted }, true).clicked() {
+                            jump = Some(step.line);
+                        }
+                    }
+                },
+            );
+        },
+    );
+    if let Some(line) = jump {
+        go_to_line(ui.ctx(), e, id, line, 0);
+    }
+}
+
+/// One step of the crumbs: its words, a click away from its line.
+fn crumb(ui: &mut egui::Ui, text: &str, color: egui::Color32, jumps: bool) -> egui::Response {
+    let response = ui.add(
+        egui::Label::new(RichText::new(text).size(11.0).color(color))
+            .truncate()
+            .sense(egui::Sense::click()),
+    );
+    if jumps {
+        response
+            .on_hover_text(aurora_i18n::tr!("script-crumbs-jump"))
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+    } else {
+        response
+    }
+}
+
+/// The help of a word, over its name: the signature as the catalog writes it,
+/// then what it does (LLScriptEdCore::updateDynamicHelp).
+fn hover_docs(ui: &mut egui::Ui, p: &Palette, entry: &reference::Entry) {
+    ui.set_max_width(360.0);
+    ui.spacing_mut().item_spacing.y = 3.0;
+    ui.label(RichText::new(&entry.signature).font(egui::FontId::monospace(12.0)).color(p.ink));
+    if !entry.tooltip.is_empty() {
+        ui.add(egui::Label::new(RichText::new(&entry.tooltip).size(11.0).color(p.muted)).wrap());
+    }
 }
 
 pub(super) fn dialogs(

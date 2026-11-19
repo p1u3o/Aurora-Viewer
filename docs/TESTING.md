@@ -2883,6 +2883,18 @@ strip maps the whole script (the part on screen, the changed lines and the
 diagnostics), and a click in it puts the caret on the line there. The bracket
 at the caret and its match are lit behind the text. Each tree row shows the
 contents window's C/M/T letters after the script's name.
+Under the source, a bar gives the path of the caret: the script, then the text
+that opens each block it is in (`default › touch_start(integer n) › if (…)`),
+each step a click away from its line, with the number of problems at the right,
+which opens the Problems dock (`ui/scripts/crumbs.rs`); each pane of a split
+has its own. A script with something to reckon with says it once over the
+source, above the tree and the panes: read-only (no Modify right), larger than
+the source the viewer can save, a failed read or compile with the problems a
+click away, or the simulator's running state not known yet (with Retry). The
+cross puts that notice away and another one comes back on its own. Hovering a
+name of the keywords in use -- a native function, an event, a constant, a type
+-- shows its signature and what it does, and nothing over a name in a comment
+or a string; a region with its own LSL syntax brings its own help.
 A diagnostic is also drawn in the code: a squiggle under the word its place
 points at, red for an error and amber for a warning. The other places the word
 under the caret appears are boxed behind the text, dimmed, and the tree's
