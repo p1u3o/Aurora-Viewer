@@ -10002,6 +10002,7 @@ script-tab-processed = プリプロセス済み
 script-linkset-scripts = スクリプト
 script-linkset-close = このスクリプトを閉じる
 script-linkset-split = 横に並べて開く
+script-linkset-side-by-side = 横に並べて表示
 script-linkset-unsplit = 並べた表示を閉じる
 script-linkset-close-others = 他のスクリプトを閉じる
 script-linkset-close-all = すべてのスクリプトを閉じる

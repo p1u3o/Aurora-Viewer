@@ -1704,14 +1704,13 @@ impl Editors {
                                 dirty: e.dirty(),
                             })
                             .collect();
-                        let split_open = self.splits.contains_key(&root);
                         match linkset::tabs(
                             ui,
                             p,
                             &tabs,
                             Some(active),
                             settings.color(settings::ColorRole::Background, p),
-                            split_open,
+                            self.splits.get(&root).copied(),
                         ) {
                             linkset::Tabs::Select(target) => select = Some(target),
                             linkset::Tabs::Close(target) => close_one = Some(target),
@@ -4101,6 +4100,28 @@ print(\"bye\")"
         let right = text_pos("panel source");
         assert!(right.x > left.x + 100.0, "a pane each, side by side: {left:?} {right:?}");
         assert!((right.y - left.y).abs() < 4.0, "their tops are level");
+        // the two scripts shown come first in the strip, the split mark between
+        // them (documents order would put the panel's script first)
+        let tab = |label: &str| -> (f32, f32) {
+            let text = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == label => Some(text),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("the {label} tab"));
+            let left = text.pos.x - 21.0;
+            (left, left + 26.0 + text.galley.size().x + 20.0)
+        };
+        let (front_left, front_right) = tab("Door Script");
+        let (beside_left, _) = tab("Panel Script");
+        assert!(front_left < beside_left, "the front script's tab comes first");
+        assert!(
+            beside_left - front_right >= 18.0,
+            "the split mark takes its room between them: {}",
+            beside_left - front_right
+        );
         // and opening it does not widen the window
         let window = ctx
             .memory(|m| m.area_rect(egui::Id::unique(format!("script_linkset_{}", linkset.root))))

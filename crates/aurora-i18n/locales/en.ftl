@@ -10068,6 +10068,7 @@ script-tab-processed = Preprocessed
 script-linkset-scripts = Scripts
 script-linkset-close = Close this script
 script-linkset-split = Open to the side
+script-linkset-side-by-side = Side by side
 script-linkset-unsplit = Close the split
 script-linkset-close-others = Close the other scripts
 script-linkset-close-all = Close every script

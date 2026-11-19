@@ -312,27 +312,57 @@ pub(super) enum Tabs {
 /// The strip of open scripts, flush above the source: the tab in front takes
 /// the editor's own background, so it sits on its top edge. A tab marks its
 /// unsaved text with a star, as the tree does, and its cross closes it (the
-/// middle button too); its menu closes the others or all of them.
+/// middle button too); its menu closes the others or all of them. In a split
+/// window the two scripts it shows come first — the one in front, the split
+/// mark, the one beside it — and the others follow.
 pub(super) fn tabs(
     ui: &mut egui::Ui,
     p: &Palette,
     tabs: &[Tab<'_>],
     active: Option<ScriptTarget>,
     background: egui::Color32,
-    split_open: bool,
+    split: Option<ScriptTarget>,
 ) -> Tabs {
     let mut answer = Tabs::None;
     let font = widgets::control_font(ui, 12.0);
     // as tall as the tree's filter field, which shares its row
     let height = ui.spacing().interact_size.y.max(24.0);
     let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0));
+    let front = tabs.iter().find(|tab| Some(tab.target) == active);
+    let beside = split.and_then(|split| tabs.iter().find(|tab| tab.target == split));
+    let mut order: Vec<(&Tab<'_>, bool)> = Vec::new();
+    if let (Some(front), Some(beside)) = (front, beside) {
+        order.push((front, false));
+        order.push((beside, true));
+        order.extend(
+            tabs.iter()
+                .filter(|tab| Some(tab.target) != active && Some(tab.target) != split)
+                .map(|tab| (tab, false)),
+        );
+    } else {
+        order.extend(tabs.iter().map(|tab| (tab, false)));
+    }
+    let split_open = split.is_some();
     egui::ScrollArea::horizontal()
         .id_salt("script_linkset_tabs")
         .auto_shrink([false, true])
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                for tab in tabs {
+                for (index, (tab, beside)) in order.iter().enumerate() {
+                    if index == 1 && split_open {
+                        // the two panes' tabs, joined by the split mark
+                        let (rect, response) = ui.allocate_exact_size(Vec2::new(18.0, height), Sense::hover());
+                        if let Some(icon) = icons::global("arrows-split") {
+                            ui.painter().image(
+                                icon.id(),
+                                egui::Rect::from_center_size(rect.center(), Vec2::splat(13.0)),
+                                uv,
+                                p.muted,
+                            );
+                        }
+                        response.on_hover_text(aurora_i18n::tr!("script-linkset-side-by-side"));
+                    }
                     let label = if tab.dirty {
                         format!("{} *", tab.name)
                     } else {
@@ -346,6 +376,9 @@ pub(super) fn tabs(
                         background
                     } else if response.hovered() {
                         p.raised.gamma_multiply(0.30)
+                    } else if *beside {
+                        // shown beside the script in front
+                        p.raised.gamma_multiply(0.18)
                     } else {
                         egui::Color32::TRANSPARENT
                     };
@@ -367,7 +400,7 @@ pub(super) fn tabs(
                         if selected { p.ink } else { p.muted },
                     );
                     let close = egui::Rect::from_center_size(egui::pos2(rect.right() - 9.0, center), Vec2::splat(15.0));
-                    let cross = ui.interact(close, response.id.with("close"), Sense::click());
+                    let cross = ui.interact(close, response.id.with("close"), egui::Sense::click());
                     if let Some(t) = icons::global("x") {
                         ui.painter().image(
                             t.id(),
@@ -401,7 +434,12 @@ pub(super) fn tabs(
                             answer = Tabs::Unsplit;
                         }
                     });
-                    response.on_hover_text(format!("{} › {}", tab.prim, tab.name));
+                    let tip = if *beside {
+                        format!("{} › {}\n{}", tab.prim, tab.name, aurora_i18n::tr!("script-linkset-side-by-side"))
+                    } else {
+                        format!("{} › {}", tab.prim, tab.name)
+                    };
+                    response.on_hover_text(tip);
                 }
             });
         });

@@ -10064,6 +10064,7 @@ script-tab-processed = Prétraité
 script-linkset-scripts = Scripts
 script-linkset-close = Fermer ce script
 script-linkset-split = Ouvrir sur le côté
+script-linkset-side-by-side = Côte à côte
 script-linkset-unsplit = Fermer la vue partagée
 script-linkset-close-others = Fermer les autres scripts
 script-linkset-close-all = Fermer tous les scripts
