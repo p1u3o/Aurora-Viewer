@@ -2878,9 +2878,13 @@ and the status bar stay the window's, for the script in front. The
 tree's filter and the tab strip share their row, so the tree's list and the
 source start on the same line, with the tree's bottom on the source's status
 bar; each tab's tooltip names the prim the script is in, and its menu closes
-the other scripts or all of them. At the right of the source, a thin overview
-strip maps the whole script (the part on screen, the changed lines and the
-diagnostics), and a click in it puts the caret on the line there. The bracket
+the other scripts or all of them. At the right of the source, the minimap
+shows the whole script as one bar per line, from its indentation to its last
+character, in the colour of what the line starts with, the part on screen
+framed and the changed lines, the diagnostics and the bookmarks on its right
+edge (`ui/scripts/minimap.rs`); a click or a drag in it puts the caret on the
+line there. Preferences › Script editor turns it off, and the thin overview
+strip (the part on screen and the marks) takes its place. The bracket
 at the caret and its match are lit behind the text. Each tree row shows the
 contents window's C/M/T letters after the script's name.
 Under the source, a bar gives the path of the caret: the script, then the text

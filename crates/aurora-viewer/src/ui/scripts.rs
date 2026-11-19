@@ -43,6 +43,7 @@ mod focus;
 mod folding;
 mod indent;
 mod linkset;
+mod minimap;
 mod navigate;
 mod outline;
 mod preprocessor;
@@ -4626,6 +4627,57 @@ print(\"bye\")"
         frame(&ctx, &mut editors, vec![]);
         let line = editors.documents[0].tools.position.0;
         assert!(line >= 70, "the caret is near the end, not on line {line}");
+    }
+
+    /// The minimap takes the strip's place: a column wide enough for the
+    /// script's bars, a click on it near the end goes there, a drag moves the
+    /// view without moving the caret, and the setting gives the thin strip back.
+    #[test]
+    fn the_minimap_shows_the_script_and_the_setting_gives_the_strip_back() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let target = target(31);
+        let source: String = (0..80).map(|line| format!("    llSay(0, \"line {line}\");\n")).collect();
+        let load = editors.open(target, "Map".into(), true, true, 0).unwrap();
+        editors.loaded(load, target, Ok(source));
+        settle(&ctx, &mut editors);
+        let map = editors.documents[0].tools.overview.expect("the rail");
+        assert!(map.width() > 40.0 && map.height() > 40.0, "the minimap: {map:?}");
+        // a drag through the map goes where the pointer is
+        let start = egui::pos2(map.center().x, map.top() + map.height() * 0.1);
+        let end = egui::pos2(map.center().x, map.top() + map.height() * 0.9);
+        for events in [
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            vec![egui::Event::PointerMoved(end)],
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        ] {
+            frame(&ctx, &mut editors, events);
+        }
+        frame(&ctx, &mut editors, vec![]);
+        let line = editors.documents[0].tools.position.0;
+        assert!(line > 60, "the caret went where the pointer did: line {line}");
+        // off, the thin overview strip comes back to the rail
+        let mut settings = settings::ScriptSettings {
+            minimap: false,
+            ..Default::default()
+        };
+        settle(&ctx, &mut editors);
+        frame_settings(&ctx, &mut editors, &mut settings, vec![]);
+        let strip = editors.documents[0].tools.overview.expect("the rail");
+        assert!(strip.width() < 12.0, "the overview strip: {strip:?}");
     }
 
     /// A script of the tree with no tab: the click asks the app for an editor

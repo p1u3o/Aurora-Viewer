@@ -59,7 +59,7 @@ impl Block {
     }
 
     pub(super) fn finish(self, source: &str, rendered: &mut Rendered) {
-        let tokens = scripts::highlight_lsl(&rendered.text[self.start..]);
+        let tokens = scripts::highlight_lsl(&rendered.text[self.start..], false);
         rendered.spans.truncate(self.span);
         for (bytes, role) in &tokens {
             rendered.spans.push(Span {

@@ -10063,6 +10063,7 @@ script-preferences-colors = エディタの色
 script-preferences-reset-colors = テーマの色
 script-preferences-font-size = フォントサイズ
 script-preferences-word-wrap = 長い行を折り返す
+script-preferences-minimap = ミニマップ
 script-preferences-search-left = 検索を左側に表示
 script-preferences-search-inline = エディタが十分に広いときは検索を埋め込む
 script-preferences-convert-tabs = ファイルのタブをスペースに変換

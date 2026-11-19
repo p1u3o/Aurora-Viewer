@@ -97,6 +97,9 @@ pub struct ScriptSettings {
     pub colors: BTreeMap<ColorRole, [u8; 4]>,
     pub font_size: f32,
     pub word_wrap: bool,
+    /// The minimap at the right of the source, in place of the thin overview
+    /// strip (Aurora's own; on, as an IDE's is).
+    pub minimap: bool,
     pub search_prefer_left: bool,
     pub search_inline: bool,
     pub convert_tabs: bool,
@@ -131,6 +134,7 @@ impl Default for ScriptSettings {
             colors: BTreeMap::new(),
             font_size: 13.0,
             word_wrap: true,
+            minimap: true,
             search_prefer_left: false,
             search_inline: false,
             convert_tabs: true,
@@ -167,7 +171,7 @@ mod tests {
     fn missing_preferences_keep_firestorm_defaults_and_colors_roundtrip() {
         let mut settings: ScriptSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(settings, ScriptSettings::default());
-        assert!(settings.word_wrap);
+        assert!(settings.word_wrap && settings.minimap);
         assert!(!settings.search_prefer_left && !settings.search_inline);
         assert!(settings.convert_tabs && settings.optimize && settings.switches && settings.lazy_lists);
         assert!(!settings.preprocessor && !settings.disk_includes && !settings.owner_say_debug && !settings.recompile);

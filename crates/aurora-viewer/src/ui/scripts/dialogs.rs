@@ -413,6 +413,7 @@ impl Preferences {
                     });
                     crate::ui::widgets::divider(ui, p);
                     crate::ui::widgets::switch_labeled(ui, p, &mut settings.word_wrap, aurora_i18n::tr!("script-preferences-word-wrap"));
+                    crate::ui::widgets::switch_labeled(ui, p, &mut settings.minimap, aurora_i18n::tr!("script-preferences-minimap"));
                     crate::ui::widgets::switch_labeled(ui, p, &mut settings.search_prefer_left, aurora_i18n::tr!("script-preferences-search-left"));
                     crate::ui::widgets::switch_labeled(ui, p, &mut settings.search_inline, aurora_i18n::tr!("script-preferences-search-inline"));
                     crate::ui::widgets::switch_labeled(ui, p, &mut settings.convert_tabs, aurora_i18n::tr!("script-preferences-convert-tabs"));

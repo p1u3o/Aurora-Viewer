@@ -38,13 +38,19 @@ pub(super) struct Tools {
     pub processed: bool,
     pub processed_source: String,
     pub has_processed: bool,
-    /// Where the overview strip of the source was drawn this frame.
+    /// Where the strip (the minimap, or the thin overview) was drawn this
+    /// frame.
     pub overview: Option<egui::Rect>,
+    /// The minimap of the text as last made, with the text's hash: the map is
+    /// made again only when the script changes.
+    minimap: Option<(u64, super::minimap::Map)>,
     pub position: (usize, usize),
     pub scroll_to_cursor: bool,
     /// The line at the top of the source's viewport, 0-based, as the last
     /// frame showed it: what the sticky line above the text names.
     pub first_visible: usize,
+    /// The line at its bottom, for the minimap's window.
+    pub last_visible: usize,
     /// A click on the text this frame, without Ctrl: the split's pane that is
     /// not in front takes the front with it.
     pub clicked: bool,
@@ -1389,6 +1395,97 @@ fn overview(
     e.tools.overview = Some(strip);
 }
 
+/// The minimap: the script in a column at the right of the source, a bar per
+/// line from its indentation to its last character, in the colour of what the
+/// line starts with (Aurora's own; the thin overview strip of [`overview`]
+/// stands here when the setting is off). The part of the script on screen is
+/// framed, the changed lines, the diagnostics and the bookmarks hold the right
+/// edge, a click puts the caret on the line there and a drag moves the view
+/// alone.
+#[allow(clippy::too_many_arguments)]
+fn minimap(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, settings: &ScriptSettings, strip: egui::Rect, problems: &[Problem]) {
+    let text = if e.tools.processed { &e.tools.processed_source } else { &e.source };
+    // the map is made again only when the script changes
+    let hash = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut hasher);
+        hasher.finish()
+    };
+    if e.tools.minimap.as_ref().is_none_or(|(known, _)| *known != hash) {
+        e.tools.minimap = Some((hash, super::minimap::map(text, e.lua())));
+    }
+    let Some((_, map)) = &e.tools.minimap else {
+        return;
+    };
+    let total = map.total.max(1);
+    // a line is a few points tall: a short script does not stretch to the
+    // window, and a long one keeps a point per line
+    let step = (strip.height() / total as f32).clamp(1.0, 3.0);
+    // the marks keep the right edge, the bars the rest
+    let band = 4.0;
+    let bars = egui::Rect::from_min_max(strip.min, egui::pos2(strip.right() - band, strip.bottom()));
+    let scale = bars.width() / super::minimap::COLUMNS;
+    let painter = ui.painter().with_clip_rect(strip);
+    // the part of the script on screen, behind the bars
+    let first = e.tools.first_visible.min(total - 1);
+    let last = e.tools.last_visible.max(first).min(total - 1);
+    if last.saturating_sub(first) + 1 < total {
+        let top = strip.top() + first as f32 * step;
+        let bottom = strip.top() + (last + 1) as f32 * step;
+        painter.rect_filled(
+            egui::Rect::from_min_max(egui::pos2(strip.left(), top), egui::pos2(strip.right(), bottom.max(top + 2.0))),
+            ui.visuals().window_corner_radius,
+            p.raised.gamma_multiply(0.35),
+        );
+    }
+    let changed = if e.loaded && !e.tools.processed {
+        changed_lines(text, &e.baseline)
+    } else {
+        None
+    };
+    for line in &map.lines {
+        let y = strip.top() + line.number as f32 * step;
+        if let Some((from, to)) = line.bar {
+            let x0 = bars.left() + from * scale;
+            let x1 = (bars.left() + to * scale).min(bars.right()).max(x0 + 1.0);
+            painter.rect_filled(
+                egui::Rect::from_min_max(egui::pos2(x0, y), egui::pos2(x1, y + step)),
+                0.0,
+                settings.color(line.role, p).gamma_multiply(0.92),
+            );
+        }
+        let tick = egui::Rect::from_min_max(egui::pos2(bars.right() + 1.0, y), egui::pos2(strip.right(), y + step.max(2.0)));
+        if let Some((first, last)) = changed
+            && (first..=last).contains(&line.number)
+        {
+            painter.rect_filled(tick, 0.0, p.amber);
+        }
+        if problems
+            .iter()
+            .any(|problem| problem.line == line.number && problem.source == e.name)
+        {
+            painter.rect_filled(tick, 0.0, p.danger);
+        }
+        if e.bookmarks.contains(&line.number) {
+            painter.rect_filled(tick, 0.0, p.indigo_light);
+        }
+    }
+    let response = ui.interact(strip, egui::Id::unique((id, "minimap")), egui::Sense::click_and_drag());
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    e.tools.overview = Some(strip);
+    // a click or a drag through the map takes the caret with it, and the source
+    // scrolls to it at its next show
+    if (response.clicked() || response.dragged())
+        && let Some(pos) = response.interact_pointer_pos()
+    {
+        let line = (((pos.y - strip.top()) / step).max(0.0) as usize).min(total - 1);
+        let at = editing::line_cursor(text, line, 0);
+        editing::select(ui.ctx(), id, at..at, true);
+        e.tools.scroll_to_cursor = true;
+    }
+}
+
 /// The height the overview strip maps: the text's rows, or the text's lines
 /// when the galley has not laid them out yet.
 fn output_height(rows: &[egui::epaint::text::PlacedRow], text: &str) -> f32 {
@@ -1633,10 +1730,12 @@ fn source(
                                 // a slot under the text for the caret's row and
                                 // the indent guides
                                 let beneath = ui.painter().add(egui::Shape::Noop);
-                                // the overview strip and the scroll bar keep
-                                // their room at the right of the text
+                                // the rail (the minimap, or the thin overview
+                                // strip) and the scroll bar keep their room at
+                                // the right of the text
                                 let bar = ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_inner_margin;
-                                let width = (ui.available_width() - OVERVIEW_WIDTH - bar).max(0.0);
+                                let rail = if settings.minimap { super::minimap::WIDTH } else { OVERVIEW_WIDTH };
+                                let width = (ui.available_width() - rail - bar).max(0.0);
                                 let output = egui::TextEdit::multiline(buffer)
                                     .id(id)
                                     .code_editor()
@@ -1992,18 +2091,24 @@ fn source(
                             // the line at the top of the viewport: the sticky
                             // line of the next frame names what holds it
                             let top = output.text_clip_rect.top();
+                            let bottom = output.text_clip_rect.bottom();
                             let mut index = 0;
-                            let mut first = 0;
+                            let mut first = None;
+                            let mut last = 0;
                             for row in &output.galley.rows {
-                                if output.galley_pos.y + row.pos.y + row.height() > top {
-                                    first = index;
-                                    break;
+                                let y = output.galley_pos.y + row.pos.y;
+                                if first.is_none() && y + row.height() > top {
+                                    first = Some(index);
+                                }
+                                if y < bottom {
+                                    last = index;
                                 }
                                 if row.ends_with_newline {
                                     index += 1;
                                 }
                             }
-                            e.tools.first_visible = first;
+                            e.tools.first_visible = first.unwrap_or(0);
+                            e.tools.last_visible = last;
                             // The overview strip at the right of the source: the
                             // whole script in the height of the window, with
                             // what is visible, the changed lines and the
@@ -2013,12 +2118,17 @@ fn source(
                             if e.loaded && !ui.is_sizing_pass() && !output.galley.rows.is_empty() {
                                 let bar = ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_inner_margin;
                                 let right = ui.clip_rect().right() - bar - 1.0;
+                                let rail = if settings.minimap { super::minimap::WIDTH } else { OVERVIEW_WIDTH };
                                 let strip = egui::Rect::from_min_max(
-                                    egui::pos2(right - OVERVIEW_WIDTH, ui.clip_rect().top() + 1.0),
+                                    egui::pos2(right - rail, ui.clip_rect().top() + 1.0),
                                     egui::pos2(right, ui.clip_rect().bottom() - 1.0),
                                 );
                                 if strip.width() > 1.0 && strip.height() > 1.0 {
-                                    overview(ui, p, e, id, strip, viewport, &output.galley.rows, problems);
+                                    if settings.minimap {
+                                        minimap(ui, p, e, id, settings, strip, problems);
+                                    } else {
+                                        overview(ui, p, e, id, strip, viewport, &output.galley.rows, problems);
+                                    }
                                 }
                             }
                         });

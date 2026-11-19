@@ -10129,6 +10129,7 @@ script-preferences-colors = Editor colors
 script-preferences-reset-colors = Theme colors
 script-preferences-font-size = Font size
 script-preferences-word-wrap = Wrap long lines
+script-preferences-minimap = Minimap
 script-preferences-search-left = Prefer search on the left
 script-preferences-search-inline = Embed search when the editor is wide enough
 script-preferences-convert-tabs = Convert tabs from files to spaces
