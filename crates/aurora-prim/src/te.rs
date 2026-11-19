@@ -15,7 +15,9 @@ pub const WATER_EXCLUSION_TEXTURE: Uuid = Uuid::from_u128(0xe97cf410_8e61_7005_e
 /// Marker texture that punches a viewer-local hole in the terrain behind
 /// the face carrying it (Aurora-only, like water exclusion): the face
 /// itself is never drawn, and terrain fragments behind it are discarded.
-pub const TERRAIN_HOLE_TEXTURE: Uuid = Uuid::from_u128(0x788ea0e5_34ad_a71e_898d_0684f57bf23d);
+/// A transparent grid texture, so the marker shows as transparent (never a
+/// missing grey) where the hole does not apply, e.g. on other viewers.
+pub const TERRAIN_HOLE_TEXTURE: Uuid = Uuid::from_u128(0x13582846_330c_9d31_a3e8_c8ad46437338);
 /// Blank (white) texture.
 pub const BLANK_TEXTURE: Uuid = Uuid::from_u128(0x5748decc_f629_461c_9a36_a35a221fe21f);
 /// Flat grey the Legacy Viewer paints locally (`IMG_DEFAULT`,
