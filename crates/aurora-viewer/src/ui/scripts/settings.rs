@@ -100,6 +100,9 @@ pub struct ScriptSettings {
     /// The minimap at the right of the source, in place of the thin overview
     /// strip (Aurora's own; on, as an IDE's is).
     pub minimap: bool,
+    /// The room of the tree beside the source, as the reader dragged its edge:
+    /// 0 for the default.
+    pub tree_width: u16,
     pub search_prefer_left: bool,
     pub search_inline: bool,
     pub convert_tabs: bool,
@@ -135,6 +138,7 @@ impl Default for ScriptSettings {
             font_size: 13.0,
             word_wrap: true,
             minimap: true,
+            tree_width: 0,
             search_prefer_left: false,
             search_inline: false,
             convert_tabs: true,

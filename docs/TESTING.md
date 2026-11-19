@@ -2877,8 +2877,10 @@ front (Open to the side): the two panes scroll and edit apart, while the dock
 and the status bar stay the window's, for the script in front. The
 tree's filter and the tab strip share their row, so the tree's list and the
 source start on the same line, with the tree's bottom on the source's status
-bar; each tab's tooltip names the prim the script is in, and its menu closes
-the other scripts or all of them. At the right of the source, the minimap
+bar; the tree's edge drags its width (the inventory sidebar's gesture, a
+double click for the default) and its foot holds Settings, which opens the
+script editor's preferences. Each tab's tooltip names the prim the script is
+in, and its menu closes the other scripts or all of them. At the right of the source, the minimap
 shows the whole script as one bar per line, from its indentation to its last
 character, in the colour of what the line starts with, the part on screen
 framed and the changed lines, the diagnostics and the bookmarks on its right

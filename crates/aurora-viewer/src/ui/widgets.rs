@@ -3655,6 +3655,38 @@ pub fn paint_row_text(painter: &egui::Painter, galley: std::sync::Arc<egui::Gall
     painter.galley(pos, galley, color);
 }
 
+/// The edge of a side's panel: an 8-point strip that drags its width between
+/// `min` and `max`, lit while the pointer is on it, back to `default` on a
+/// double click. Returns the width it asks for, when it asks for one.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resize_side(
+    ui: &egui::Ui,
+    p: &Palette,
+    area: egui::Rect,
+    width: f32,
+    default: f32,
+    min: f32,
+    max: f32,
+    id: egui::Id,
+) -> Option<f32> {
+    let x = area.left() + width;
+    let hit = egui::Rect::from_min_max(egui::pos2(x, area.top()), egui::pos2(x + 8.0, area.bottom()));
+    let response = ui
+        .interact(hit, id, egui::Sense::click_and_drag())
+        .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+    if response.hovered() || response.dragged() {
+        ui.painter()
+            .vline(x + 4.0, area.y_range(), border_stroke(p, egui::Stroke::new(1.0, p.violet_light)));
+    }
+    if response.double_clicked() {
+        return Some(default.clamp(min, max));
+    }
+    if response.dragged() && response.drag_delta().x != 0.0 {
+        return Some((width + response.drag_delta().x).clamp(min, max));
+    }
+    None
+}
+
 /// A row of a window's rail (Places, Appearance's showcase): icon, name,
 /// count; `depth` indents a sub-folder. The chosen row takes the accent's
 /// wash, a hovered one the raised face.

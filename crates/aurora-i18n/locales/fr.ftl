@@ -10126,6 +10126,7 @@ script-preferences-reset-colors = Couleurs du thème
 script-preferences-font-size = Taille de la police
 script-preferences-word-wrap = Retour automatique à la ligne
 script-preferences-minimap = Mini-carte
+script-tree-settings = Paramètres
 script-preferences-search-left = Préférer la recherche à gauche
 script-preferences-search-inline = Intégrer la recherche si l’éditeur est assez large
 script-preferences-convert-tabs = Remplacer les tabulations des fichiers par des espaces

@@ -1674,7 +1674,16 @@ impl Editors {
                 view::toolbar(ui, p, e, source_id, settings, &mut self.panels, actions, true, Some(save_all));
             }
             let gap = ui.spacing().item_spacing.x;
-            let tree_width = linkset::TREE_WIDTH.min((ui.available_width() - gap).max(160.0) * 0.45);
+            // the tree keeps the room the reader gave it, or the default
+            let room = (ui.available_width() - gap).max(160.0);
+            let most = room * 0.45;
+            let least = linkset::TREE_MIN.min(most);
+            let default_tree = linkset::TREE_WIDTH.clamp(least, most);
+            let tree_width = if settings.tree_width == 0 {
+                default_tree
+            } else {
+                (f32::from(settings.tree_width)).clamp(least, most)
+            };
             let filter = self.filters.entry(root).or_default();
             let prim_of = |object: Uuid| -> &str {
                 linkset
@@ -1733,7 +1742,7 @@ impl Editors {
                 }
                 let needle = filter.trim().to_lowercase();
                 let height = ui.available_height();
-                ui.horizontal_top(|ui| {
+                let columns = ui.horizontal_top(|ui| {
                     ui.allocate_ui_with_layout(Vec2::new(tree_width, height), egui::Layout::top_down(egui::Align::Min), |ui| {
                         match linkset::tree(ui, p, linkset, Some(active), &needle) {
                             Some(linkset::TreeAction::Open(target)) => select = Some(target),
@@ -1747,6 +1756,12 @@ impl Editors {
                                 item: target.item,
                             }),
                             Some(linkset::TreeAction::NewScript(object)) => actions.push(Action::NewScript(object)),
+                            Some(linkset::TreeAction::Settings) => {
+                                self.panels.preferences.open = true;
+                                // the panel is drawn under the windows: bring it
+                                // over them, as the menu's Preferences does
+                                super::widgets::bring_floater_front(ctx, super::scripts::dialogs::Preferences::WINDOW);
+                            }
                             None => {}
                         }
                     });
@@ -1813,6 +1828,25 @@ impl Editors {
                         }
                     });
                 });
+                // the tree's edge, dragged to give the list more or less room;
+                // a double click takes the default back
+                if let Some(width) = super::widgets::resize_side(
+                    ui,
+                    p,
+                    columns.response.rect,
+                    tree_width,
+                    default_tree,
+                    least,
+                    most,
+                    egui::Id::unique(("script_tree_resize", root)),
+                ) {
+                    // the default is no choice at all: it follows the window
+                    settings.tree_width = if (width - default_tree).abs() < 0.5 {
+                        0
+                    } else {
+                        width.round() as u16
+                    };
+                }
             });
         });
         // the quick open (Ctrl+P) of this window, over its scripts
@@ -4678,6 +4712,110 @@ print(\"bye\")"
         frame_settings(&ctx, &mut editors, &mut settings, vec![]);
         let strip = editors.documents[0].tools.overview.expect("the rail");
         assert!(strip.width() < 12.0, "the overview strip: {strip:?}");
+    }
+
+    /// The tree's edge gives it more room, and a double click takes the default
+    /// back (the inventory tree's own side, reused).
+    #[test]
+    fn the_trees_edge_resizes_it_and_a_double_click_restores_it() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let (linkset, panel, door) = linkset_fixture();
+        let mut settings = settings::ScriptSettings::default();
+        for (target, name) in [(panel, "Panel Script"), (door, "Door Script")] {
+            let load = editors.open(target, name.into(), true, true, 0).unwrap();
+            editors.loaded(load, target, Ok("source".into()));
+            editors.documents.iter_mut().find(|e| e.target == target).unwrap().linkset = linkset.root;
+        }
+        let linksets = std::slice::from_ref(&linkset);
+        for _ in 0..3 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        let panel = |output: &egui::FullOutput| {
+            let p = crate::theme::Theme::default().palette();
+            let field = p.field.gamma_multiply(0.72);
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect) if rect.fill == field && rect.rect.width() > 100.0 => Some(rect.rect),
+                    _ => None,
+                })
+                .expect("the tree's panel")
+        };
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        let tree = panel(&output);
+        let before = tree.width();
+        let handle = egui::pos2(tree.right() + 4.0, tree.center().y);
+        let wider = egui::pos2(tree.right() + 44.0, tree.center().y);
+        for events in [
+            vec![
+                egui::Event::PointerMoved(handle),
+                egui::Event::PointerButton {
+                    pos: handle,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            vec![egui::Event::PointerMoved(wider)],
+            vec![egui::Event::PointerButton {
+                pos: wider,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        ] {
+            frame_linksets(&ctx, &mut editors, &mut settings, events, linksets);
+        }
+        assert!(settings.tree_width > 0, "the reader's width is kept");
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        assert!(panel(&output).width() > before, "the list is wider");
+        // a double click gives the default back
+        let tree = panel(&output);
+        let at = egui::pos2(tree.right() + 4.0, tree.center().y);
+        for pressed in [true, false, true, false] {
+            frame_linksets(
+                &ctx,
+                &mut editors,
+                &mut settings,
+                vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                linksets,
+            );
+        }
+        assert_eq!(settings.tree_width, 0, "the default again");
+    }
+
+    /// The foot of the tree opens the script editor's preferences, as the
+    /// inventory tree's foot opens its Trash.
+    #[test]
+    fn the_trees_foot_opens_the_script_preferences() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let (linkset, panel, door) = linkset_fixture();
+        let mut settings = settings::ScriptSettings::default();
+        for (target, name) in [(panel, "Panel Script"), (door, "Door Script")] {
+            let load = editors.open(target, name.into(), true, true, 0).unwrap();
+            editors.loaded(load, target, Ok("source".into()));
+            editors.documents.iter_mut().find(|e| e.target == target).unwrap().linkset = linkset.root;
+        }
+        let linksets = std::slice::from_ref(&linkset);
+        for _ in 0..3 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        let row = text_at(&output, aurora_i18n::tr!("script-tree-settings").as_ref());
+        click_at(&ctx, &mut editors, &mut settings, linksets, row, egui::PointerButton::Primary);
+        frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        assert!(editors.panels.preferences.open, "the preferences open");
     }
 
     /// A script of the tree with no tab: the click asks the app for an editor

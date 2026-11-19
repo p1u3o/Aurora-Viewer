@@ -1679,6 +1679,9 @@ fn source(
         .inner_margin(4.0)
         .show(ui, |ui| {
             ui.scope(|ui| {
+                // the pane's own edge: in a split, a column's clip is the
+                // window's, and the rail would land on the right pane's
+                let pane_right = ui.max_rect().right();
                 ui.visuals_mut().selection.bg_fill = settings.color(ColorRole::Selection, p);
                 ui.visuals_mut().text_cursor.stroke.color = settings.color(ColorRole::Cursor, p);
                 let font = egui::FontId::monospace(settings.font_size.clamp(8.0, 32.0));
@@ -2117,7 +2120,7 @@ fn source(
                             e.tools.overview = None;
                             if e.loaded && !ui.is_sizing_pass() && !output.galley.rows.is_empty() {
                                 let bar = ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_inner_margin;
-                                let right = ui.clip_rect().right() - bar - 1.0;
+                                let right = pane_right - bar - 1.0;
                                 let rail = if settings.minimap { super::minimap::WIDTH } else { OVERVIEW_WIDTH };
                                 let strip = egui::Rect::from_min_max(
                                     egui::pos2(right - rail, ui.clip_rect().top() + 1.0),

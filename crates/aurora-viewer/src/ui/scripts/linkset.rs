@@ -13,8 +13,11 @@ use aurora_net::scripts::ScriptTarget;
 use egui::{FontId, Id, RichText, Sense, TextFormat, Vec2};
 use uuid::Uuid;
 
-/// Room the tree keeps beside the source.
+/// Room the tree keeps beside the source, and the least it may be dragged to.
 pub const TREE_WIDTH: f32 = 186.0;
+pub const TREE_MIN: f32 = 140.0;
+/// The row of the tree's foot (the settings).
+const FOOT: f32 = 32.0;
 
 /// What the contents window's menu offers for one script of the tree, as the
 /// app decided it: the tree applies the contents window's own rules, it does
@@ -122,6 +125,8 @@ pub(super) enum TreeAction {
     Delete(ScriptTarget),
     /// A new script in that prim's contents.
     NewScript(Uuid),
+    /// The foot of the tree: the script editor's own preferences.
+    Settings,
 }
 
 /// The filter field over the tree: hides the scripts whose name does not
@@ -159,7 +164,9 @@ pub(super) fn tree(
 ) -> Option<TreeAction> {
     let ctx = ui.ctx().clone();
     let mut chosen = None;
-    let height = (ui.available_height() - 6.0).max(60.0);
+    // the foot holds one row, as the inventory tree's holds its Trash
+    let foot = FOOT;
+    let height = (ui.available_height() - 6.0 - foot).max(60.0);
     inventory::tree::frame(ui, p, |ui| {
         // the panel reaches the window's bottom, as the source's status bar
         // does, rather than stopping under its last row
@@ -281,6 +288,24 @@ pub(super) fn tree(
                 ctx.data_mut(|d| d.insert_persisted(collapsed_id(linkset.root), closed));
             }
         });
+        // the editor's own preferences, at the foot of the list: the row the
+        // inventory tree gives its Trash
+        let (line, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 8.0), egui::Sense::hover());
+        ui.painter().hline(line.x_range(), line.center().y, widgets::divider_stroke(p));
+        if widgets::rail_row(
+            ui,
+            p,
+            "settings-filled",
+            p.muted,
+            aurora_i18n::tr!("script-tree-settings"),
+            None,
+            false,
+            0,
+        )
+        .clicked()
+        {
+            chosen = Some(TreeAction::Settings);
+        }
     });
     chosen
 }
