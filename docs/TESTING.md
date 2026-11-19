@@ -2895,6 +2895,15 @@ cross puts that notice away and another one comes back on its own. Hovering a
 name of the keywords in use -- a native function, an event, a constant, a type
 -- shows its signature and what it does, and nothing over a name in a comment
 or a string; a region with its own LSL syntax brings its own help.
+Typing two letters of a name in the source opens the list of the names that
+start with them, under the caret: the words of the keywords in use (the
+region's own syntax included) and the words the script itself writes, the
+typed case first and the script's own names before the catalog's
+(`ui/scripts/complete.rs`). The arrows walk it, Tab or Enter takes the name and
+a click takes one too: a function comes with its bracket and the caret inside
+it, any other name as it is. Under the rows, the signature and the help of the
+one chosen read as the hover does. Escape closes the list until the letters
+change; a name in a comment or a string is not completed.
 A diagnostic is also drawn in the code: a squiggle under the word its place
 points at, red for an error and amber for a warning. The other places the word
 under the caret appears are boxed behind the text, dimmed, and the tree's

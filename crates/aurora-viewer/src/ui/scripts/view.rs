@@ -2,7 +2,7 @@
 //! LGPL 2.1). Aurora keeps its flat widgets and always-visible experience list.
 
 use super::{
-    Action, Editor, crumbs,
+    Action, Editor, complete, crumbs,
     dialogs::{Help, Panels, Search},
     editing, files, indent, reference,
     settings::{ColorRole, ScriptSettings},
@@ -1610,6 +1610,12 @@ fn source(
                 let whole_words = search.whole_words;
                 let color_editable = e.loaded && e.can_edit && e.saving.is_none() && e.loading.is_none() && !e.tools.processed;
                 let editable = color_editable && !e.colors.active();
+                // the completion list's keys, taken before the text sees them
+                let nav = if editable && !ui.is_sizing_pass() {
+                    complete::keys(ui, id)
+                } else {
+                    None
+                };
                 let mut scroll = egui::ScrollArea::new([!settings.word_wrap, true]);
                 if settings.word_wrap {
                     scroll = scroll.horizontal_scroll_offset(0.0);
@@ -1653,7 +1659,7 @@ fn source(
                                     .show(ui);
                                 (output, beneath)
                             };
-                            let (output, beneath) = if editable {
+                            let (mut output, beneath) = if editable {
                                 indent::edit(ui, id, &mut e.source, show)
                             } else {
                                 let mut text = if e.tools.processed {
@@ -1663,6 +1669,10 @@ fn source(
                                 };
                                 show(ui, &mut text)
                             };
+                            // the name being typed, completed under the caret
+                            if editable && !ui.is_sizing_pass() {
+                                complete::after(ui, p, lua, id, &mut e.source, &mut output, nav);
+                            }
                             let mut chosen = None;
                             // the word the pointer is on, for the window's
                             // definition and references commands

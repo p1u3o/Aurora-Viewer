@@ -31,6 +31,7 @@ fn two_mut(documents: &mut [Editor], a: usize, b: usize) -> (&mut Editor, &mut E
 
 pub mod backup;
 mod colors;
+mod complete;
 mod crumbs;
 mod debug;
 mod dialogs;
@@ -4196,6 +4197,101 @@ print(\"bye\")"
             2,
             "the caret is on the event's line"
         );
+    }
+
+    /// What is typed under the caret is completed: the catalog's names are
+    /// offered, Enter takes the one typed whole and a click takes another, both
+    /// with their bracket and the caret inside it.
+    #[test]
+    fn typing_a_name_offers_the_catalog_and_enter_writes_it() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let target = target(21);
+        let source = "default\n{\n    state_entry()\n    {\n    }\n}\n";
+        let load = editors.open(target, "Complete".into(), true, true, 0).unwrap();
+        editors.loaded(load, target, Ok(source.into()));
+        settle(&ctx, &mut editors);
+        // the caret inside the event's body
+        let at = editing::line_cursor(source, 4, 0);
+        editing::select(&ctx, source_id(target), at..at, true);
+        frame(&ctx, &mut editors, vec![]);
+        // a name typed whole is the first of the list: Enter takes it
+        frame(&ctx, &mut editors, vec![egui::Event::Text("llSay".into())]);
+        let output = frame(&ctx, &mut editors, vec![]);
+        assert!(
+            output
+                .shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "llSay")),
+            "the list offers the catalog's names"
+        );
+        frame(&ctx, &mut editors, vec![key(egui::Key::Enter, egui::Modifiers::NONE)]);
+        frame(&ctx, &mut editors, vec![]);
+        let source = &editors.documents[0].source;
+        assert!(source.contains("llSay("), "{source}");
+        let caret = editing::cursor(&ctx, source_id(target)).primary.index.0;
+        assert_eq!(source.chars().nth(caret - 1), Some('('), "the caret is inside the call");
+        // another name, taken with the mouse under the list
+        frame(&ctx, &mut editors, vec![egui::Event::Text("0, llSetT".into())]);
+        let output = frame(&ctx, &mut editors, vec![]);
+        let row = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "llSetText" => Some(text.pos + text.galley.size() * 0.5),
+                _ => None,
+            })
+            .expect("the row of llSetText");
+        click_at(
+            &ctx,
+            &mut editors,
+            &mut settings::ScriptSettings::default(),
+            &[],
+            row,
+            egui::PointerButton::Primary,
+        );
+        frame(&ctx, &mut editors, vec![]);
+        assert!(
+            editors.documents[0].source.contains("llSetText("),
+            "{}",
+            editors.documents[0].source
+        );
+    }
+
+    /// Escape closes the list until the name changes, and a name inside a
+    /// comment is not completed at all.
+    #[test]
+    fn escape_closes_the_list_and_a_comment_is_not_completed() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let target = target(22);
+        let source = "default\n{\n    state_entry()\n    {\n        // llS\n    }\n}\n";
+        let load = editors.open(target, "Complete".into(), true, true, 0).unwrap();
+        editors.loaded(load, target, Ok(source.into()));
+        settle(&ctx, &mut editors);
+        let at = editing::line_cursor(source, 4, 11);
+        editing::select(&ctx, source_id(target), at..at, true);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![egui::Event::Text("a".into())]);
+        let output = frame(&ctx, &mut editors, vec![]);
+        let listed = |output: &egui::FullOutput| {
+            output
+                .shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.starts_with("llSa")))
+        };
+        assert!(!listed(&output), "a name in a comment is not completed");
+        // a real name: the list shows, Escape closes it, the text stays
+        let at = editing::line_cursor(source, 4, 8);
+        editing::select(&ctx, source_id(target), at..at, true);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![egui::Event::Text("llS".into())]);
+        let output = frame(&ctx, &mut editors, vec![]);
+        assert!(listed(&output), "a name in the code is");
+        frame(&ctx, &mut editors, vec![key(egui::Key::Escape, egui::Modifiers::NONE)]);
+        let output = frame(&ctx, &mut editors, vec![]);
+        assert!(!listed(&output), "Escape closes it");
+        assert!(editors.documents[0].source.contains("llS"), "and the letters typed stay");
     }
 
     /// Ctrl and a click on a name takes the window to where the name is
