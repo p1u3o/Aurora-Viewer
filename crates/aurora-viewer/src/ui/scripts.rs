@@ -1898,6 +1898,7 @@ impl Editors {
             }
         }
         if let Some(target) = select {
+            ctx.request_repaint();
             match self.documents.iter().position(|e| e.target == target && !e.closed) {
                 Some(index) => self.select_script(root, index),
                 // that script has no editor yet: the app gives it one, with
@@ -1948,6 +1949,14 @@ impl Editors {
     /// close.
     fn select_script(&mut self, root: Uuid, index: usize) {
         let target = self.documents[index].target;
+        // a script that is not one of the split's two panes gives a single
+        // pane again, now rather than at the next frame's check
+        if let Some((left, right)) = self.splits.get(&root).copied()
+            && target != left
+            && target != right
+        {
+            self.splits.remove(&root);
+        }
         if let Some(previous) = self.active.insert(root, target)
             && previous != target
         {
@@ -3989,6 +3998,11 @@ print(\"bye\")"
         let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
         let tab = text_at(&output, "Third Script");
         click_at(&ctx, &mut editors, &mut settings, linksets, tab, egui::PointerButton::Primary);
+        assert_eq!(
+            editors.splits.get(&linkset.root),
+            None,
+            "the split is gone as soon as the choice is made, not a frame later"
+        );
         let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
         assert_eq!(editors.active.get(&linkset.root), Some(&third));
         assert_eq!(editors.splits.get(&linkset.root), None, "one script again");
@@ -4000,6 +4014,90 @@ print(\"bye\")"
         };
         assert!(drawn("third source"), "its own source");
         assert!(!drawn("panel source") && !drawn("door source"), "and nothing beside it");
+    }
+
+    /// The split's tab shows the two names in the order of the panes whichever
+    /// one is in front, each once: focusing the right pane used to draw its
+    /// name twice and the other script as a tab of its own.
+    #[test]
+    fn the_split_tab_keeps_the_panes_order_whichever_is_in_front() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let (linkset, panel, door) = linkset_fixture();
+        let mut settings = settings::ScriptSettings::default();
+        for (target, name, source) in [(panel, "Panel Script", "panel source"), (door, "Door Script", "door source")] {
+            let load = editors.open(target, name.into(), true, true, 0).unwrap();
+            editors.loaded(load, target, Ok(source.into()));
+            editors.documents.iter_mut().find(|e| e.target == target).unwrap().linkset = linkset.root;
+        }
+        let linksets = std::slice::from_ref(&linkset);
+        for _ in 0..3 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        editors.splits.insert(linkset.root, (door, panel));
+        for _ in 0..2 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        // a click in the right pane's source focuses it
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        let (galley, pos) = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "panel source" => Some((text.galley.clone(), text.pos)),
+                _ => None,
+            })
+            .expect("the panel's source beside the door's");
+        let at = pos + galley.pos_from_cursor(egui::text::CCursor::new(2)).center().to_vec2();
+        for pressed in [true, false] {
+            frame_linksets(
+                &ctx,
+                &mut editors,
+                &mut settings,
+                vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                linksets,
+            );
+        }
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        assert_eq!(editors.active.get(&linkset.root), Some(&panel), "the right pane in front");
+        // each name once, in the panes' order, the one in front in ink
+        let palette = crate::theme::Theme::default().palette();
+        let names: Vec<(String, egui::Pos2, Option<egui::Color32>)> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Door Script" || text.galley.job.text == "Panel Script" => Some((
+                    text.galley.job.text.clone(),
+                    text.pos,
+                    text.galley.job.sections.first().map(|section| section.format.color),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names.len(), 2, "the two names of the split, once each: {names:?}");
+        let door_name = names.iter().find(|(label, ..)| label == "Door Script").unwrap();
+        let panel_name = names.iter().find(|(label, ..)| label == "Panel Script").unwrap();
+        assert!(door_name.1.x < panel_name.1.x, "the left pane's name first");
+        assert_eq!(door_name.2, Some(palette.muted), "the pane not in front is dimmed");
+        assert_eq!(panel_name.2, Some(palette.ink), "the pane in front is in ink");
+        // its name in the strip brings the left pane back without moving either
+        let door_at = text_at(&output, "Door Script");
+        click_at(&ctx, &mut editors, &mut settings, linksets, door_at, egui::PointerButton::Primary);
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        assert_eq!(editors.active.get(&linkset.root), Some(&door));
+        assert_eq!(editors.splits.get(&linkset.root), Some(&(door, panel)), "the panes stay");
+        assert!(
+            text_at(&output, "Door Script").x < text_at(&output, "Panel Script").x,
+            "and so does their order in the strip"
+        );
     }
 
     /// Ctrl and a click on a name takes the window to where the name is

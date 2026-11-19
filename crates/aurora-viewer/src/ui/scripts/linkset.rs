@@ -330,9 +330,13 @@ pub(super) fn tabs(
     // as tall as the tree's filter field, which shares its row
     let height = ui.spacing().interact_size.y.max(24.0);
     let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0));
-    let front = tabs.iter().find(|tab| Some(tab.target) == active);
-    let beside = split.and_then(|(_, right)| tabs.iter().find(|tab| tab.target == right));
-    let pair = front.zip(beside);
+    // the two panes in their own order, left then right, whichever is in
+    // front: the strip stays put when the focus moves from one to the other
+    let pair = split.and_then(|(left, right)| {
+        let left = tabs.iter().find(|tab| tab.target == left)?;
+        let right = tabs.iter().find(|tab| tab.target == right)?;
+        (left.target != right.target).then_some((left, right))
+    });
     let split_open = split.is_some();
     egui::ScrollArea::horizontal()
         .id_salt("script_linkset_tabs")
@@ -340,12 +344,9 @@ pub(super) fn tabs(
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                if let Some((front, beside)) = pair {
-                    split_tab(ui, p, front, beside, background, &font, height, uv, &mut answer);
-                    for tab in tabs
-                        .iter()
-                        .filter(|tab| Some(tab.target) != active && Some(tab.target) != split.map(|(_, right)| right))
-                    {
+                if let Some((left, right)) = pair {
+                    split_tab(ui, p, left, right, active, background, &font, height, uv, &mut answer);
+                    for tab in tabs.iter().filter(|tab| tab.target != left.target && tab.target != right.target) {
                         single_tab(ui, p, tab, false, background, &font, height, uv, split_open, &mut answer);
                     }
                 } else {
@@ -436,37 +437,42 @@ fn single_tab(
     response.on_hover_text(format!("{} › {}", tab.prim, tab.name));
 }
 
-/// The tab of a split window: both scripts in one surface, their names apart,
-/// the split mark between them.
+/// The tab of a split window: both scripts in one surface, their names in the
+/// order of the panes -- left, then right -- with the split mark between them.
+/// The pane in front is in ink, the other dimmed, so that the strip says which
+/// script the tree, the dock and the status bar follow. Each name brings its
+/// script to the front, and its cross closes it.
 #[allow(clippy::too_many_arguments)]
 fn split_tab(
     ui: &mut egui::Ui,
     p: &Palette,
-    front: &Tab<'_>,
-    beside: &Tab<'_>,
+    left: &Tab<'_>,
+    right: &Tab<'_>,
+    active: Option<ScriptTarget>,
     background: egui::Color32,
     font: &egui::FontId,
     height: f32,
     uv: egui::Rect,
     answer: &mut Tabs,
 ) {
-    let name = |tab: &Tab<'_>| {
-        let label = if tab.dirty {
+    let label = |tab: &Tab<'_>| {
+        if tab.dirty {
             format!("{} *", tab.name)
         } else {
             tab.name.to_owned()
-        };
-        ui.painter().layout_no_wrap(label, font.clone(), p.muted)
+        }
     };
-    let front_name = name(front);
-    let beside_name = name(beside);
     // pad, icon, name, gap, cross, the mark, then the same for the second name
     const PAD: f32 = 8.0;
     const ICON: f32 = 15.0;
     const GAP: f32 = 6.0;
     const CROSS: f32 = 15.0;
     const MARK: f32 = 20.0;
-    let width = PAD + ICON + front_name.size().x + GAP + CROSS + MARK + ICON + beside_name.size().x + GAP + CROSS + PAD;
+    let measure = |text: &str| ui.painter().layout_no_wrap(text.to_owned(), font.clone(), p.muted).size().x;
+    let left_width = measure(&label(left));
+    let right_width = measure(&label(right));
+    let after_name = ICON + GAP + CROSS;
+    let width = PAD + after_name + left_width + MARK + after_name + right_width + PAD;
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click());
     let fill = if response.hovered() {
         background.lerp_to_gamma(p.raised, 0.18)
@@ -474,52 +480,91 @@ fn split_tab(
         background
     };
     ui.painter().rect_filled(rect, ui.visuals().window_corner_radius, fill);
-    let center = rect.center().y;
-    let mut left = rect.left() + PAD;
-    let part = |left: f32, width: f32| egui::Rect::from_min_size(egui::pos2(left, rect.top()), Vec2::new(width, height));
-    // the script in front
-    let icon_at = part(left, ICON);
-    if let Some(t) = icons::global(inventory::item_icon(10, 10, u32::from(front.lua))) {
-        ui.painter().image(
-            t.id(),
-            egui::Rect::from_center_size(icon_at.center(), Vec2::splat(13.0)),
-            uv,
-            inventory::item_icon_color(10, 10, p),
-        );
-    }
-    left += ICON;
-    let front_text = part(left, front_name.size().x);
-    ui.painter()
-        .galley(egui::pos2(left, center - front_name.size().y / 2.0), front_name.clone(), p.ink);
-    let front_hit = ui.interact(front_text, response.id.with("front"), egui::Sense::click());
-    left += front_name.size().x + GAP;
-    let front_close = ui.interact(
-        egui::Rect::from_center_size(egui::pos2(left + CROSS / 2.0, center), Vec2::splat(15.0)),
-        response.id.with("front_close"),
-        egui::Sense::click(),
+    // the left pane is the one in front unless the right one is
+    let left_front = active != Some(right.target);
+    let mut x = rect.left() + PAD;
+    let (next, left_hit, left_closed) = split_side(
+        ui,
+        p,
+        left,
+        label(left),
+        left_front,
+        x,
+        rect,
+        uv,
+        font,
+        response.id.with("left"),
+        answer,
     );
-    if let Some(t) = icons::global("x") {
-        ui.painter().image(
-            t.id(),
-            egui::Rect::from_center_size(front_close.rect.center(), Vec2::splat(10.0)),
-            uv,
-            if front_close.hovered() { p.ink } else { p.muted },
-        );
-    }
-    left += CROSS;
+    x = next;
     // the split mark between the two names
     if let Some(t) = icons::global("arrows-split") {
         ui.painter().image(
             t.id(),
-            egui::Rect::from_center_size(egui::pos2(left + MARK / 2.0, center), Vec2::splat(13.0)),
+            egui::Rect::from_center_size(egui::pos2(x + MARK / 2.0, rect.center().y), Vec2::splat(13.0)),
             uv,
             p.muted,
         );
     }
-    left += MARK;
-    // the script beside it
-    let icon_at = part(left, ICON);
-    if let Some(t) = icons::global(inventory::item_icon(10, 10, u32::from(beside.lua))) {
+    x += MARK;
+    let (_, right_hit, right_closed) = split_side(
+        ui,
+        p,
+        right,
+        label(right),
+        !left_front,
+        x,
+        rect,
+        uv,
+        font,
+        response.id.with("right"),
+        answer,
+    );
+    if !left_closed && !right_closed {
+        if response.middle_clicked() && left_hit.hovered() {
+            *answer = Tabs::Close(left.target);
+        } else if response.middle_clicked() && right_hit.hovered() {
+            *answer = Tabs::Close(right.target);
+        } else if left_hit.clicked() {
+            *answer = Tabs::Select(left.target);
+        } else if right_hit.clicked() {
+            *answer = Tabs::Select(right.target);
+        }
+    }
+    tab_menu(p, &left_hit, left, true, answer);
+    tab_menu(p, &right_hit, right, true, answer);
+    let tooltip = |tab: &Tab<'_>, front: bool| {
+        if front {
+            format!("{} › {}", tab.prim, tab.name)
+        } else {
+            format!("{} › {}\n{}", tab.prim, tab.name, aurora_i18n::tr!("script-linkset-side-by-side"))
+        }
+    };
+    left_hit.on_hover_text(tooltip(left, left_front));
+    right_hit.on_hover_text(tooltip(right, !left_front));
+}
+
+/// One name of a split tab, from `x` rightwards: its icon, the name in ink
+/// when it is the pane in front, then its cross. Returns where the next part
+/// starts, the name's response, and whether its cross asked to close it.
+#[allow(clippy::too_many_arguments)]
+fn split_side(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    tab: &Tab<'_>,
+    label: String,
+    front: bool,
+    x: f32,
+    rect: egui::Rect,
+    uv: egui::Rect,
+    font: &egui::FontId,
+    id: Id,
+    answer: &mut Tabs,
+) -> (f32, egui::Response, bool) {
+    let center = rect.center().y;
+    let mut left = x;
+    let icon_at = egui::Rect::from_min_size(egui::pos2(left, rect.top()), Vec2::new(15.0, rect.height()));
+    if let Some(t) = icons::global(inventory::item_icon(10, 10, u32::from(tab.lua))) {
         ui.painter().image(
             t.id(),
             egui::Rect::from_center_size(icon_at.center(), Vec2::splat(13.0)),
@@ -527,43 +572,31 @@ fn split_tab(
             inventory::item_icon_color(10, 10, p),
         );
     }
-    left += ICON;
-    let beside_text = part(left, beside_name.size().x);
-    ui.painter()
-        .galley(egui::pos2(left, center - beside_name.size().y / 2.0), beside_name.clone(), p.muted);
-    let beside_hit = ui.interact(beside_text, response.id.with("beside"), egui::Sense::click());
-    left += beside_name.size().x + GAP;
-    let beside_close = ui.interact(
-        egui::Rect::from_center_size(egui::pos2(left + CROSS / 2.0, center), Vec2::splat(15.0)),
-        response.id.with("beside_close"),
+    left += 15.0;
+    let name = ui
+        .painter()
+        .layout_no_wrap(label, font.clone(), if front { p.ink } else { p.muted });
+    let text = egui::Rect::from_min_size(egui::pos2(left, center - name.size().y / 2.0), name.size());
+    ui.painter().galley(text.min, name.clone(), if front { p.ink } else { p.muted });
+    let hit = ui.interact(text, id, egui::Sense::click());
+    left += name.size().x + 6.0;
+    let close = ui.interact(
+        egui::Rect::from_center_size(egui::pos2(left + 7.5, center), Vec2::splat(15.0)),
+        id.with("close"),
         egui::Sense::click(),
     );
     if let Some(t) = icons::global("x") {
         ui.painter().image(
             t.id(),
-            egui::Rect::from_center_size(beside_close.rect.center(), Vec2::splat(10.0)),
+            egui::Rect::from_center_size(close.rect.center(), Vec2::splat(10.0)),
             uv,
-            if beside_close.hovered() { p.ink } else { p.muted },
+            if close.hovered() { p.ink } else { p.muted },
         );
     }
-    if front_close.clicked() || (response.middle_clicked() && front_hit.hovered()) {
-        *answer = Tabs::Close(front.target);
-    } else if beside_close.clicked() || (response.middle_clicked() && beside_hit.hovered()) {
-        *answer = Tabs::Close(beside.target);
-    } else if front_hit.clicked() {
-        *answer = Tabs::Select(front.target);
-    } else if beside_hit.clicked() {
-        *answer = Tabs::Select(beside.target);
+    if close.clicked() {
+        *answer = Tabs::Close(tab.target);
     }
-    tab_menu(p, &front_hit, front, true, answer);
-    tab_menu(p, &beside_hit, beside, true, answer);
-    front_hit.on_hover_text(format!("{} › {}", front.prim, front.name));
-    beside_hit.on_hover_text(format!(
-        "{} › {}\n{}",
-        beside.prim,
-        beside.name,
-        aurora_i18n::tr!("script-linkset-side-by-side")
-    ));
+    (left + 15.0, hit, close.clicked())
 }
 
 /// The menu of a tab: close it or the others, open it beside or back in one
