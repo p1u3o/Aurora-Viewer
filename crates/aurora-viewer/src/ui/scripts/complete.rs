@@ -346,6 +346,18 @@ fn accept(ui: &egui::Ui, field: Id, source: &mut String, word: &Typed, item: &It
     }
 }
 
+/// The first lines of a help, on one paragraph: a tooltip of the catalog runs
+/// to many lines, and the list keeps the room for its rows.
+fn brief(docs: &str) -> String {
+    const LINES: usize = 3;
+    let mut lines = docs.lines().filter(|line| !line.trim().is_empty());
+    let mut text = lines.by_ref().take(LINES).collect::<Vec<_>>().join(" ");
+    if lines.next().is_some() {
+        text.push('…');
+    }
+    text
+}
+
 /// The list under the caret: a row per name, a lit one for the arrows' choice,
 /// and under them the signature and the help of that one; the row clicked, if
 /// any.
@@ -384,7 +396,7 @@ fn draw(ui: &egui::Ui, p: &Palette, anchor: egui::Rect, list: &List) -> Option<u
                         ui.label(RichText::new(&item.detail).font(egui::FontId::monospace(11.5)).color(p.ink));
                     }
                     if !item.docs.is_empty() {
-                        ui.add(egui::Label::new(RichText::new(&item.docs).size(11.0).color(p.muted)).wrap());
+                        ui.add(egui::Label::new(RichText::new(brief(&item.docs)).size(11.0).color(p.muted)).wrap());
                     }
                 }
             });
@@ -464,5 +476,12 @@ mod tests {
         let names = candidates(false, "myHelper();", "myH", MOST);
         assert_eq!(names.first().map(|item| item.text.as_str()), Some("myHelper"));
         assert_eq!(names[0].kind, Kind::Name);
+    }
+
+    #[test]
+    fn the_help_under_the_list_keeps_three_lines() {
+        assert_eq!(brief("One.\nTwo.\nThree."), "One. Two. Three.");
+        assert_eq!(brief("One.\n\nTwo.\nThree.\nFour."), "One. Two. Three.…");
+        assert_eq!(brief(""), "");
     }
 }
