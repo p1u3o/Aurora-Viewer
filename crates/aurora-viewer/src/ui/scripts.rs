@@ -273,8 +273,9 @@ pub struct Editors {
     dock_tabs: std::collections::HashMap<Uuid, view::DockTab>,
     /// The word each window's dock searches its scripts for, by its root.
     dock_search: std::collections::HashMap<Uuid, String>,
-    /// The script a window shows beside the one in front, by its root.
-    splits: std::collections::HashMap<Uuid, ScriptTarget>,
+    /// The two scripts a window shows side by side, left then right, by its
+    /// root. The one in front is one of them.
+    splits: std::collections::HashMap<Uuid, (ScriptTarget, ScriptTarget)>,
     /// The quick open (Ctrl+P) of a window, while it is up.
     quick_open: Option<QuickOpen>,
     panels: dialogs::Panels,
@@ -1565,10 +1566,10 @@ impl Editors {
         let chosen = self.active.get(&root).copied().filter(|target| members.contains(target));
         let active = prompting.or(raised).or(chosen).unwrap_or(members[0]);
         self.active.insert(root, active);
-        // a split whose script closed, or which shows the one in front twice,
-        // is back to one pane
-        if let Some(split) = self.splits.get(&root).copied()
-            && (split == active || !members.contains(&split))
+        // a split lasts while both its scripts are open and one of them is the
+        // one in front: choosing another script gives a single pane again
+        if let Some((left, right)) = self.splits.get(&root).copied()
+            && (left == right || !members.contains(&left) || !members.contains(&right) || (active != left && active != right))
         {
             self.splits.remove(&root);
         }
@@ -1747,27 +1748,29 @@ impl Editors {
                         if let Some(index) = self.documents.iter().position(|e| e.target == active && !e.closed) {
                             // Ctrl+F belongs to the script in front
                             focus::claim(ctx, egui::LayerId::new(egui::Order::Middle, egui::Id::unique(&window)), source_id);
-                            // a script opened beside this one, if it is still open
-                            let split = self
-                                .splits
-                                .get(&root)
-                                .copied()
-                                .filter(|target| *target != active)
-                                .and_then(|target| self.documents.iter().position(|e| e.target == target && !e.closed));
+                            // the two panes, left then right, when the split holds
+                            let split = self.splits.get(&root).copied().and_then(|(left, right)| {
+                                let left = self.documents.iter().position(|e| e.target == left && !e.closed)?;
+                                let right = self.documents.iter().position(|e| e.target == right && !e.closed)?;
+                                (left != right).then_some((left, right))
+                            });
                             let search = Some(view::SearchDock {
                                 query: dock_search,
                                 hits: &hits,
                             });
-                            if let Some(other) = split {
-                                let other_id = egui::Id::unique((&Self::document_id(&self.documents[other]), "source_text"));
-                                let (left, right) = two_mut(&mut self.documents, index, other);
-                                clicked_problem = view::split_body(
+                            if let Some((left, right)) = split {
+                                let left_id = egui::Id::unique((&Self::document_id(&self.documents[left]), "source_text"));
+                                let right_id = egui::Id::unique((&Self::document_id(&self.documents[right]), "source_text"));
+                                let side = if left == index { view::Side::Left } else { view::Side::Right };
+                                let (a, b) = two_mut(&mut self.documents, left, right);
+                                let (dock, focus) = view::split_body(
                                     ui,
                                     p,
-                                    left,
-                                    source_id,
-                                    right,
-                                    other_id,
+                                    a,
+                                    left_id,
+                                    b,
+                                    right_id,
+                                    side,
                                     settings,
                                     &mut self.panels,
                                     actions,
@@ -1777,6 +1780,10 @@ impl Editors {
                                     dock_tab,
                                     search,
                                 );
+                                clicked_problem = dock;
+                                if let Some(target) = focus {
+                                    self.active.insert(root, target);
+                                }
                             } else {
                                 let e = &mut self.documents[index];
                                 clicked_problem = view::body(
@@ -1891,11 +1898,6 @@ impl Editors {
             }
         }
         if let Some(target) = select {
-            // the script chosen comes to the front; the one that was beside it
-            // takes its place there
-            if self.splits.get(&root) == Some(&target) {
-                self.splits.insert(root, active);
-            }
             match self.documents.iter().position(|e| e.target == target && !e.closed) {
                 Some(index) => self.select_script(root, index),
                 // that script has no editor yet: the app gives it one, with
@@ -1915,8 +1917,10 @@ impl Editors {
             }
         }
         // the tab's menu: another script beside this window's, or one at a time
-        if let Some(target) = split_open_at {
-            self.splits.insert(root, target);
+        if let Some(target) = split_open_at
+            && target != active
+        {
+            self.splits.insert(root, (active, target));
         }
         if unsplit {
             self.splits.remove(&root);
@@ -3889,6 +3893,115 @@ print(\"bye\")"
         );
     }
 
+    /// A click in the pane that is not in front brings its script to the
+    /// front (the tree and the status bar follow it), and the panes stay.
+    #[test]
+    fn a_click_in_the_other_pane_brings_it_to_the_front() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let (linkset, panel, door) = linkset_fixture();
+        let mut settings = settings::ScriptSettings::default();
+        for (target, name, source) in [(panel, "Panel Script", "panel source"), (door, "Door Script", "door source")] {
+            let load = editors.open(target, name.into(), true, true, 0).unwrap();
+            editors.loaded(load, target, Ok(source.into()));
+            editors.documents.iter_mut().find(|e| e.target == target).unwrap().linkset = linkset.root;
+        }
+        let linksets = std::slice::from_ref(&linkset);
+        for _ in 0..3 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        editors.splits.insert(linkset.root, (door, panel));
+        for _ in 0..2 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        assert_eq!(editors.active.get(&linkset.root), Some(&door), "the door's script in front");
+        // a click in the right pane's source
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        let (galley, pos) = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "panel source" => Some((text.galley.clone(), text.pos)),
+                _ => None,
+            })
+            .expect("the panel's source beside the door's");
+        let at = pos + galley.pos_from_cursor(egui::text::CCursor::new(2)).center().to_vec2();
+        for pressed in [true, false] {
+            frame_linksets(
+                &ctx,
+                &mut editors,
+                &mut settings,
+                vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                linksets,
+            );
+        }
+        frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        assert_eq!(
+            editors.active.get(&linkset.root),
+            Some(&panel),
+            "the pane clicked is the one in front, for the tree and the status bar"
+        );
+        assert_eq!(
+            editors.splits.get(&linkset.root),
+            Some(&(door, panel)),
+            "the panes stay where they are"
+        );
+    }
+
+    /// Choosing a script that is not one of the split's two gives a single
+    /// pane again.
+    #[test]
+    fn choosing_another_script_leaves_a_single_pane() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let (linkset, panel, door) = linkset_fixture();
+        let third = ScriptTarget {
+            object: Uuid::from_u128(503),
+            item: Uuid::from_u128(3),
+        };
+        let mut settings = settings::ScriptSettings::default();
+        for (target, name, source) in [
+            (panel, "Panel Script", "panel source"),
+            (door, "Door Script", "door source"),
+            (third, "Third Script", "third source"),
+        ] {
+            let load = editors.open(target, name.into(), true, true, 0).unwrap();
+            editors.loaded(load, target, Ok(source.into()));
+            editors.documents.iter_mut().find(|e| e.target == target).unwrap().linkset = linkset.root;
+        }
+        let linksets = std::slice::from_ref(&linkset);
+        for _ in 0..3 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        editors.splits.insert(linkset.root, (door, panel));
+        for _ in 0..2 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        // the third script, from the strip
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        let tab = text_at(&output, "Third Script");
+        click_at(&ctx, &mut editors, &mut settings, linksets, tab, egui::PointerButton::Primary);
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        assert_eq!(editors.active.get(&linkset.root), Some(&third));
+        assert_eq!(editors.splits.get(&linkset.root), None, "one script again");
+        let drawn = |label: &str| {
+            output
+                .shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == label))
+        };
+        assert!(drawn("third source"), "its own source");
+        assert!(!drawn("panel source") && !drawn("door source"), "and nothing beside it");
+    }
+
     /// Ctrl and a click on a name takes the window to where the name is
     /// declared, in another script of the linkset.
     #[test]
@@ -4073,7 +4186,7 @@ print(\"bye\")"
             .memory(|m| m.area_rect(egui::Id::unique(format!("script_linkset_{}", linkset.root))))
             .expect("the window")
             .width();
-        editors.splits.insert(linkset.root, panel);
+        editors.splits.insert(linkset.root, (door, panel));
         let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
         for _ in 0..3 {
             frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
@@ -4100,9 +4213,9 @@ print(\"bye\")"
         let right = text_pos("panel source");
         assert!(right.x > left.x + 100.0, "a pane each, side by side: {left:?} {right:?}");
         assert!((right.y - left.y).abs() < 4.0, "their tops are level");
-        // the two scripts shown come first in the strip, the split mark between
-        // them (documents order would put the panel's script first)
-        let tab = |label: &str| -> (f32, f32) {
+        // one tab holds both names, the split mark between them, and the front
+        // script's name comes first (documents order would put the panel first)
+        let label_rect = |label: &str| -> egui::Rect {
             let text = output
                 .shapes
                 .iter()
@@ -4111,17 +4224,17 @@ print(\"bye\")"
                     _ => None,
                 })
                 .unwrap_or_else(|| panic!("the {label} tab"));
-            let left = text.pos.x - 21.0;
-            (left, left + 26.0 + text.galley.size().x + 20.0)
+            egui::Rect::from_min_size(text.pos, text.galley.size())
         };
-        let (front_left, front_right) = tab("Door Script");
-        let (beside_left, _) = tab("Panel Script");
-        assert!(front_left < beside_left, "the front script's tab comes first");
-        assert!(
-            beside_left - front_right >= 18.0,
-            "the split mark takes its room between them: {}",
-            beside_left - front_right
-        );
+        let front = label_rect("Door Script");
+        let beside = label_rect("Panel Script");
+        assert!(front.left() < beside.left(), "the front script's name comes first");
+        let background = settings.color(settings::ColorRole::Background, &crate::theme::Theme::default().palette());
+        let shared = output.shapes.iter().any(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) => rect.fill == background && rect.rect.contains_rect(front) && rect.rect.contains_rect(beside),
+            _ => false,
+        });
+        assert!(shared, "the two names share one tab");
         // and opening it does not widen the window
         let window = ctx
             .memory(|m| m.area_rect(egui::Id::unique(format!("script_linkset_{}", linkset.root))))
@@ -4133,7 +4246,7 @@ print(\"bye\")"
         click_at(&ctx, &mut editors, &mut settings, linksets, tab, egui::PointerButton::Primary);
         frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
         assert_eq!(editors.active.get(&linkset.root), Some(&panel));
-        assert_eq!(editors.splits.get(&linkset.root), Some(&door));
+        assert_eq!(editors.splits.get(&linkset.root), Some(&(door, panel)));
     }
 
     /// The overview strip maps the whole script: a click near its bottom puts

@@ -14,6 +14,7 @@ use crate::{
         widgets::{self, Floater, flat_button, icon_button},
     },
 };
+use aurora_net::scripts::ScriptTarget;
 use egui::{Id, RichText, Vec2};
 
 #[derive(Default)]
@@ -44,6 +45,9 @@ pub(super) struct Tools {
     /// The line at the top of the source's viewport, 0-based, as the last
     /// frame showed it: what the sticky line above the text names.
     pub first_visible: usize,
+    /// A click on the text this frame, without Ctrl: the split's pane that is
+    /// not in front takes the front with it.
+    pub clicked: bool,
     /// The name Ctrl+click (or the context menu) asked the window to take the
     /// caret to the declaration of.
     pub goto_word: Option<String>,
@@ -367,10 +371,18 @@ pub(super) fn body(
     clicked
 }
 
+/// Which pane of a split holds the script in front: the window's dock, its
+/// readout and its search are that one's.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Side {
+    Left,
+    Right,
+}
+
 /// Two scripts side by side in one window: the rows above each pane's source
 /// on one line (so both sources start level), then both sources, then the
-/// window's dock and the status bar of the script in front. `left` is the
-/// script in front: its outline, its readout and its search are the window's.
+/// window's dock and the status bar of the script in front. Clicking a pane's
+/// source brings that script to the front, without moving either pane.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn split_body(
     ui: &mut egui::Ui,
@@ -379,6 +391,7 @@ pub(super) fn split_body(
     left_id: Id,
     right: &mut Editor,
     right_id: Id,
+    focused: Side,
     settings: &ScriptSettings,
     prefs: &mut Panels,
     actions: &mut Vec<Action>,
@@ -387,7 +400,7 @@ pub(super) fn split_body(
     folded: &mut bool,
     tab: &mut DockTab,
     search: Option<SearchDock<'_>>,
-) -> Option<DockClick> {
+) -> (Option<DockClick>, Option<ScriptTarget>) {
     // Two equal columns: egui splits the width exactly, and each column's own
     // layout keeps the two sources at the same height.
     ui.columns(2, |columns| {
@@ -415,17 +428,27 @@ pub(super) fn split_body(
         right.tools.body_top = columns[1].cursor().top();
         source(&mut columns[1], p, right, right_id, settings, height, &prefs.search, problems);
     });
+    // a click in the pane that is not in front brings its script to the front
+    let focus = match focused {
+        Side::Left if right.tools.clicked => Some(right.target),
+        Side::Right if left.tools.clicked => Some(left.target),
+        _ => None,
+    };
+    let front = match focused {
+        Side::Left => &mut *left,
+        Side::Right => &mut *right,
+    };
     let clicked = if dock_height > 0.0 {
-        dock(ui, p, left, problems, all_sources, folded, tab, search)
+        dock(ui, p, front, problems, all_sources, folded, tab, search)
     } else {
         None
     };
-    let footer = ui.scope(|ui| footer(ui, p, left, actions));
-    if (left.tools.footer_height - footer.response.rect.height()).abs() > 0.5 {
-        left.tools.footer_height = footer.response.rect.height();
+    let footer = ui.scope(|ui| footer(ui, p, front, actions));
+    if (front.tools.footer_height - footer.response.rect.height()).abs() > 0.5 {
+        front.tools.footer_height = footer.response.rect.height();
         ui.ctx().request_repaint();
     }
-    clicked
+    (clicked, focus)
 }
 
 /// The room the Problems dock takes under the source.
@@ -1822,6 +1845,9 @@ fn source(
                                         .on_hover_text(format!("{}\n{}", entry.signature, entry.tooltip));
                                 }
                             }
+                            // a click on the text brings this pane to the front
+                            // (a split's other pane, from `split_body`)
+                            e.tools.clicked = output.response.clicked() && !ui.ctx().input(|i| i.modifiers.command || i.modifiers.ctrl);
                             // Ctrl (Cmd) on a name and a click: the window takes
                             // the caret to where the name is declared
                             if output.response.clicked()

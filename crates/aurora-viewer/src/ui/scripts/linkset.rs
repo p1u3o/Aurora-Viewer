@@ -312,16 +312,18 @@ pub(super) enum Tabs {
 /// The strip of open scripts, flush above the source: the tab in front takes
 /// the editor's own background, so it sits on its top edge. A tab marks its
 /// unsaved text with a star, as the tree does, and its cross closes it (the
-/// middle button too); its menu closes the others or all of them. In a split
-/// window the two scripts it shows come first — the one in front, the split
-/// mark, the one beside it — and the others follow.
+/// middle button too); its menu closes the others or all of them.
+///
+/// A split window's two scripts share one tab, their names side by side with
+/// the split mark between them: the one in front in ink, the one beside it
+/// dimmed, a cross for each. The other tabs follow.
 pub(super) fn tabs(
     ui: &mut egui::Ui,
     p: &Palette,
     tabs: &[Tab<'_>],
     active: Option<ScriptTarget>,
     background: egui::Color32,
-    split: Option<ScriptTarget>,
+    split: Option<(ScriptTarget, ScriptTarget)>,
 ) -> Tabs {
     let mut answer = Tabs::None;
     let font = widgets::control_font(ui, 12.0);
@@ -329,19 +331,8 @@ pub(super) fn tabs(
     let height = ui.spacing().interact_size.y.max(24.0);
     let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0));
     let front = tabs.iter().find(|tab| Some(tab.target) == active);
-    let beside = split.and_then(|split| tabs.iter().find(|tab| tab.target == split));
-    let mut order: Vec<(&Tab<'_>, bool)> = Vec::new();
-    if let (Some(front), Some(beside)) = (front, beside) {
-        order.push((front, false));
-        order.push((beside, true));
-        order.extend(
-            tabs.iter()
-                .filter(|tab| Some(tab.target) != active && Some(tab.target) != split)
-                .map(|tab| (tab, false)),
-        );
-    } else {
-        order.extend(tabs.iter().map(|tab| (tab, false)));
-    }
+    let beside = split.and_then(|(_, right)| tabs.iter().find(|tab| tab.target == right));
+    let pair = front.zip(beside);
     let split_open = split.is_some();
     egui::ScrollArea::horizontal()
         .id_salt("script_linkset_tabs")
@@ -349,99 +340,251 @@ pub(super) fn tabs(
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                for (index, (tab, beside)) in order.iter().enumerate() {
-                    if index == 1 && split_open {
-                        // the two panes' tabs, joined by the split mark
-                        let (rect, response) = ui.allocate_exact_size(Vec2::new(18.0, height), Sense::hover());
-                        if let Some(icon) = icons::global("arrows-split") {
-                            ui.painter().image(
-                                icon.id(),
-                                egui::Rect::from_center_size(rect.center(), Vec2::splat(13.0)),
-                                uv,
-                                p.muted,
-                            );
-                        }
-                        response.on_hover_text(aurora_i18n::tr!("script-linkset-side-by-side"));
+                if let Some((front, beside)) = pair {
+                    split_tab(ui, p, front, beside, background, &font, height, uv, &mut answer);
+                    for tab in tabs
+                        .iter()
+                        .filter(|tab| Some(tab.target) != active && Some(tab.target) != split.map(|(_, right)| right))
+                    {
+                        single_tab(ui, p, tab, false, background, &font, height, uv, split_open, &mut answer);
                     }
-                    let label = if tab.dirty {
-                        format!("{} *", tab.name)
-                    } else {
-                        tab.name.to_owned()
-                    };
-                    let name = ui.painter().layout_no_wrap(label, font.clone(), p.muted);
-                    let width = 26.0 + name.size().x + 20.0;
-                    let selected = active == Some(tab.target);
-                    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
-                    let fill = if selected {
-                        background
-                    } else if response.hovered() {
-                        p.raised.gamma_multiply(0.30)
-                    } else if *beside {
-                        // shown beside the script in front
-                        p.raised.gamma_multiply(0.18)
-                    } else {
-                        egui::Color32::TRANSPARENT
-                    };
-                    ui.painter().rect_filled(rect, ui.visuals().window_corner_radius, fill);
-                    let center = rect.center().y;
-                    let mut left = rect.left() + 6.0;
-                    if let Some(t) = icons::global(inventory::item_icon(10, 10, u32::from(tab.lua))) {
-                        ui.painter().image(
-                            t.id(),
-                            egui::Rect::from_center_size(egui::pos2(left + 6.0, center), Vec2::splat(13.0)),
+                } else {
+                    for tab in tabs {
+                        single_tab(
+                            ui,
+                            p,
+                            tab,
+                            active == Some(tab.target),
+                            background,
+                            &font,
+                            height,
                             uv,
-                            inventory::item_icon_color(10, 10, p),
+                            split_open,
+                            &mut answer,
                         );
                     }
-                    left += 15.0;
-                    ui.painter().galley(
-                        egui::pos2(left, center - name.size().y / 2.0),
-                        name.clone(),
-                        if selected { p.ink } else { p.muted },
-                    );
-                    let close = egui::Rect::from_center_size(egui::pos2(rect.right() - 9.0, center), Vec2::splat(15.0));
-                    let cross = ui.interact(close, response.id.with("close"), egui::Sense::click());
-                    if let Some(t) = icons::global("x") {
-                        ui.painter().image(
-                            t.id(),
-                            egui::Rect::from_center_size(close.center(), Vec2::splat(10.0)),
-                            uv,
-                            if cross.hovered() { p.ink } else { p.muted },
-                        );
-                    }
-                    let cross = cross.on_hover_text(aurora_i18n::tr!("script-linkset-close"));
-                    if cross.clicked() || response.middle_clicked() {
-                        answer = Tabs::Close(tab.target);
-                    } else if response.clicked() && !selected {
-                        answer = Tabs::Select(tab.target);
-                    }
-                    // the tab's own menu: the others, or every script
-                    menu::context_menu_of_button(&response, p, |ui| {
-                        if menu::item(ui, p, "x", aurora_i18n::tr!("common-close")) {
-                            answer = Tabs::Close(tab.target);
-                        }
-                        if menu::item(ui, p, "tabs", aurora_i18n::tr!("script-linkset-close-others")) {
-                            answer = Tabs::CloseOthers(tab.target);
-                        }
-                        if menu::item(ui, p, "circle-x", aurora_i18n::tr!("script-linkset-close-all")) {
-                            answer = Tabs::CloseAll;
-                        }
-                        menu::separator(ui, p);
-                        if menu::item_if(ui, p, "arrows-split", aurora_i18n::tr!("script-linkset-split"), tabs.len() > 1) {
-                            answer = Tabs::Split(tab.target);
-                        }
-                        if split_open && menu::item(ui, p, "layout-sidebar-right-filled", aurora_i18n::tr!("script-linkset-unsplit")) {
-                            answer = Tabs::Unsplit;
-                        }
-                    });
-                    let tip = if *beside {
-                        format!("{} › {}\n{}", tab.prim, tab.name, aurora_i18n::tr!("script-linkset-side-by-side"))
-                    } else {
-                        format!("{} › {}", tab.prim, tab.name)
-                    };
-                    response.on_hover_text(tip);
                 }
             });
         });
     answer
+}
+
+/// One tab of the strip: its icon, its name (starred when unsaved), its cross
+/// and its menu.
+#[allow(clippy::too_many_arguments)]
+fn single_tab(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    tab: &Tab<'_>,
+    selected: bool,
+    background: egui::Color32,
+    font: &egui::FontId,
+    height: f32,
+    uv: egui::Rect,
+    split_open: bool,
+    answer: &mut Tabs,
+) {
+    let label = if tab.dirty {
+        format!("{} *", tab.name)
+    } else {
+        tab.name.to_owned()
+    };
+    let name = ui.painter().layout_no_wrap(label, font.clone(), p.muted);
+    let width = 26.0 + name.size().x + 20.0;
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click());
+    let fill = if selected {
+        background
+    } else if response.hovered() {
+        p.raised.gamma_multiply(0.30)
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    ui.painter().rect_filled(rect, ui.visuals().window_corner_radius, fill);
+    let center = rect.center().y;
+    let mut left = rect.left() + 6.0;
+    if let Some(t) = icons::global(inventory::item_icon(10, 10, u32::from(tab.lua))) {
+        ui.painter().image(
+            t.id(),
+            egui::Rect::from_center_size(egui::pos2(left + 6.0, center), Vec2::splat(13.0)),
+            uv,
+            inventory::item_icon_color(10, 10, p),
+        );
+    }
+    left += 15.0;
+    ui.painter().galley(
+        egui::pos2(left, center - name.size().y / 2.0),
+        name.clone(),
+        if selected { p.ink } else { p.muted },
+    );
+    let close = egui::Rect::from_center_size(egui::pos2(rect.right() - 9.0, center), Vec2::splat(15.0));
+    let cross = ui.interact(close, response.id.with("close"), egui::Sense::click());
+    if let Some(t) = icons::global("x") {
+        ui.painter().image(
+            t.id(),
+            egui::Rect::from_center_size(close.center(), Vec2::splat(10.0)),
+            uv,
+            if cross.hovered() { p.ink } else { p.muted },
+        );
+    }
+    let cross = cross.on_hover_text(aurora_i18n::tr!("script-linkset-close"));
+    if cross.clicked() || response.middle_clicked() {
+        *answer = Tabs::Close(tab.target);
+    } else if response.clicked() && !selected {
+        *answer = Tabs::Select(tab.target);
+    }
+    tab_menu(p, &response, tab, split_open, answer);
+    response.on_hover_text(format!("{} › {}", tab.prim, tab.name));
+}
+
+/// The tab of a split window: both scripts in one surface, their names apart,
+/// the split mark between them.
+#[allow(clippy::too_many_arguments)]
+fn split_tab(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    front: &Tab<'_>,
+    beside: &Tab<'_>,
+    background: egui::Color32,
+    font: &egui::FontId,
+    height: f32,
+    uv: egui::Rect,
+    answer: &mut Tabs,
+) {
+    let name = |tab: &Tab<'_>| {
+        let label = if tab.dirty {
+            format!("{} *", tab.name)
+        } else {
+            tab.name.to_owned()
+        };
+        ui.painter().layout_no_wrap(label, font.clone(), p.muted)
+    };
+    let front_name = name(front);
+    let beside_name = name(beside);
+    // pad, icon, name, gap, cross, the mark, then the same for the second name
+    const PAD: f32 = 8.0;
+    const ICON: f32 = 15.0;
+    const GAP: f32 = 6.0;
+    const CROSS: f32 = 15.0;
+    const MARK: f32 = 20.0;
+    let width = PAD + ICON + front_name.size().x + GAP + CROSS + MARK + ICON + beside_name.size().x + GAP + CROSS + PAD;
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click());
+    let fill = if response.hovered() {
+        background.lerp_to_gamma(p.raised, 0.18)
+    } else {
+        background
+    };
+    ui.painter().rect_filled(rect, ui.visuals().window_corner_radius, fill);
+    let center = rect.center().y;
+    let mut left = rect.left() + PAD;
+    let part = |left: f32, width: f32| egui::Rect::from_min_size(egui::pos2(left, rect.top()), Vec2::new(width, height));
+    // the script in front
+    let icon_at = part(left, ICON);
+    if let Some(t) = icons::global(inventory::item_icon(10, 10, u32::from(front.lua))) {
+        ui.painter().image(
+            t.id(),
+            egui::Rect::from_center_size(icon_at.center(), Vec2::splat(13.0)),
+            uv,
+            inventory::item_icon_color(10, 10, p),
+        );
+    }
+    left += ICON;
+    let front_text = part(left, front_name.size().x);
+    ui.painter()
+        .galley(egui::pos2(left, center - front_name.size().y / 2.0), front_name.clone(), p.ink);
+    let front_hit = ui.interact(front_text, response.id.with("front"), egui::Sense::click());
+    left += front_name.size().x + GAP;
+    let front_close = ui.interact(
+        egui::Rect::from_center_size(egui::pos2(left + CROSS / 2.0, center), Vec2::splat(15.0)),
+        response.id.with("front_close"),
+        egui::Sense::click(),
+    );
+    if let Some(t) = icons::global("x") {
+        ui.painter().image(
+            t.id(),
+            egui::Rect::from_center_size(front_close.rect.center(), Vec2::splat(10.0)),
+            uv,
+            if front_close.hovered() { p.ink } else { p.muted },
+        );
+    }
+    left += CROSS;
+    // the split mark between the two names
+    if let Some(t) = icons::global("arrows-split") {
+        ui.painter().image(
+            t.id(),
+            egui::Rect::from_center_size(egui::pos2(left + MARK / 2.0, center), Vec2::splat(13.0)),
+            uv,
+            p.muted,
+        );
+    }
+    left += MARK;
+    // the script beside it
+    let icon_at = part(left, ICON);
+    if let Some(t) = icons::global(inventory::item_icon(10, 10, u32::from(beside.lua))) {
+        ui.painter().image(
+            t.id(),
+            egui::Rect::from_center_size(icon_at.center(), Vec2::splat(13.0)),
+            uv,
+            inventory::item_icon_color(10, 10, p),
+        );
+    }
+    left += ICON;
+    let beside_text = part(left, beside_name.size().x);
+    ui.painter()
+        .galley(egui::pos2(left, center - beside_name.size().y / 2.0), beside_name.clone(), p.muted);
+    let beside_hit = ui.interact(beside_text, response.id.with("beside"), egui::Sense::click());
+    left += beside_name.size().x + GAP;
+    let beside_close = ui.interact(
+        egui::Rect::from_center_size(egui::pos2(left + CROSS / 2.0, center), Vec2::splat(15.0)),
+        response.id.with("beside_close"),
+        egui::Sense::click(),
+    );
+    if let Some(t) = icons::global("x") {
+        ui.painter().image(
+            t.id(),
+            egui::Rect::from_center_size(beside_close.rect.center(), Vec2::splat(10.0)),
+            uv,
+            if beside_close.hovered() { p.ink } else { p.muted },
+        );
+    }
+    if front_close.clicked() || (response.middle_clicked() && front_hit.hovered()) {
+        *answer = Tabs::Close(front.target);
+    } else if beside_close.clicked() || (response.middle_clicked() && beside_hit.hovered()) {
+        *answer = Tabs::Close(beside.target);
+    } else if front_hit.clicked() {
+        *answer = Tabs::Select(front.target);
+    } else if beside_hit.clicked() {
+        *answer = Tabs::Select(beside.target);
+    }
+    tab_menu(p, &front_hit, front, true, answer);
+    tab_menu(p, &beside_hit, beside, true, answer);
+    front_hit.on_hover_text(format!("{} › {}", front.prim, front.name));
+    beside_hit.on_hover_text(format!(
+        "{} › {}\n{}",
+        beside.prim,
+        beside.name,
+        aurora_i18n::tr!("script-linkset-side-by-side")
+    ));
+}
+
+/// The menu of a tab: close it or the others, open it beside or back in one
+/// pane.
+fn tab_menu(p: &Palette, response: &egui::Response, tab: &Tab<'_>, split_open: bool, answer: &mut Tabs) {
+    menu::context_menu_of_button(response, p, |ui| {
+        if menu::item(ui, p, "x", aurora_i18n::tr!("common-close")) {
+            *answer = Tabs::Close(tab.target);
+        }
+        if menu::item(ui, p, "tabs", aurora_i18n::tr!("script-linkset-close-others")) {
+            *answer = Tabs::CloseOthers(tab.target);
+        }
+        if menu::item(ui, p, "circle-x", aurora_i18n::tr!("script-linkset-close-all")) {
+            *answer = Tabs::CloseAll;
+        }
+        menu::separator(ui, p);
+        if menu::item(ui, p, "arrows-split", aurora_i18n::tr!("script-linkset-split")) {
+            *answer = Tabs::Split(tab.target);
+        }
+        if split_open && menu::item(ui, p, "layout-sidebar-right-filled", aurora_i18n::tr!("script-linkset-unsplit")) {
+            *answer = Tabs::Unsplit;
+        }
+    });
 }
