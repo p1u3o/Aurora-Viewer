@@ -1,10 +1,10 @@
 //! What the viewer itself can see in a script, without the simulator's
 //! compiler: a block that is never closed, a `}` that closes nothing, a string
-//! or a block comment left open. The object-wide check runs it over every script
-//! of a linkset, the ones no tab holds read from their prim.
+//! or a block comment left open. A script's own Problems runs it over the
+//! script in front, and the object-wide pass over every script of a linkset,
+//! the ones no tab holds read from their prim (`ui/scripts.rs`).
 //!
-//! The rest of what Alchemy's Script Studio checks (its own lints) is not here
-//! yet: the list of a script's findings is where they will land.
+//! Alchemy's Script Studio lints are beside it, in `lints.rs`.
 
 /// One thing wrong with a script's text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,6 +17,27 @@ pub(super) enum Finding {
     OpenString { line: usize },
     /// A `/*` that the source never closes.
     OpenComment { line: usize },
+}
+
+impl Finding {
+    /// The line it is on, from 0.
+    pub(super) fn line(self) -> usize {
+        match self {
+            Finding::StrayClose { line } | Finding::OpenBlock { line } | Finding::OpenString { line } | Finding::OpenComment { line } => {
+                line
+            }
+        }
+    }
+
+    /// What the row says.
+    pub(super) fn message(self) -> String {
+        match self {
+            Finding::StrayClose { .. } => aurora_i18n::tr!("script-check-stray-close").to_string(),
+            Finding::OpenBlock { .. } => aurora_i18n::tr!("script-check-open-block").to_string(),
+            Finding::OpenString { .. } => aurora_i18n::tr!("script-check-open-string").to_string(),
+            Finding::OpenComment { .. } => aurora_i18n::tr!("script-check-open-comment").to_string(),
+        }
+    }
 }
 
 /// The findings of `source`, in the order of the text, at most `MOST`.

@@ -10108,10 +10108,15 @@ script-dock-search = Search
 script-dock-references = References
 script-search-scope-window = Open scripts
 script-search-scope-object = This object
-script-check-object = Check object
-script-check-running = { $count ->
-    [one] Checking { $count } script…
-   *[other] Checking { $count } scripts…
+script-check-again = Read the object's scripts again
+script-check-reading = { $count ->
+    [one] Reading { $count } script…
+   *[other] Reading { $count } scripts…
+    }
+script-check-clean = Checked the object: nothing to report.
+script-check-findings = { $count ->
+    [one] Checked the object: { $count } finding.
+   *[other] Checked the object: { $count } findings.
     }
 script-check-unreachable = { $name } could not be read: { $reason }
 script-check-stray-close = A {"}"} closes no block.

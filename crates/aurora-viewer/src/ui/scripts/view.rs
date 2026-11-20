@@ -75,8 +75,9 @@ pub(super) struct Tools {
     /// The notice over this source the reader has put away: it comes back when
     /// another one takes its place.
     pub(super) notice_hidden: Option<Notice>,
-    /// The dock's Check object, asked: the window reads the object's scripts.
-    pub(super) check_object: bool,
+    /// The dock's Check again, asked: the window reads again the object's
+    /// scripts that could not be read.
+    pub(super) check_again: bool,
     /// The snippet the reader is filling, its placeholders walked with Tab.
     pub(super) snippet: Option<complete::Snippet>,
     footer_height: f32,
@@ -630,11 +631,14 @@ pub(super) struct SearchDock<'a> {
     pub object: &'a mut bool,
 }
 
-/// What the Problems dock says of the object-wide check: how many scripts it
-/// still reads, when it runs.
+/// What the Problems dock says of the object: the scripts it is still
+/// reading, and what it found in all of them.
 #[derive(Clone, Copy)]
 pub(super) struct CheckDock {
-    pub waiting: Option<usize>,
+    pub reading: usize,
+    pub found: usize,
+    /// A script could not be read: offer to read the object's scripts again.
+    pub retry: bool,
 }
 
 /// The References tab's state for one frame: the name the window is renaming,
@@ -957,22 +961,29 @@ fn dock(
                         {
                             *tab = DockTab::References;
                         }
-                        // the object's every script, checked from the dock
+                        // the object's every script, as the editor sees it, with
+                        // nothing to press: what it is reading, then what it found
                         if *tab == DockTab::Problems
                             && let Some(check) = &check
                         {
-                            match check.waiting {
-                                Some(count) => {
-                                    ui.label(
-                                        RichText::new(aurora_i18n::tr!("script-check-running", count = count as i64))
-                                            .size(11.0)
-                                            .color(p.muted),
-                                    );
-                                }
-                                None => {
-                                    if flat_button(ui, p, aurora_i18n::tr!("script-check-object")).clicked() {
-                                        clicked = Some(DockClick::Check);
-                                    }
+                            if check.reading > 0 {
+                                ui.label(
+                                    RichText::new(aurora_i18n::tr!("script-check-reading", count = check.reading as i64))
+                                        .size(11.0)
+                                        .color(p.muted),
+                                );
+                            } else {
+                                let text = if check.found == 0 {
+                                    aurora_i18n::tr!("script-check-clean").to_string()
+                                } else {
+                                    aurora_i18n::tr!("script-check-findings", count = check.found as i64).to_string()
+                                };
+                                ui.label(RichText::new(text).size(11.0).color(p.muted));
+                                // a script the region would not give: try again
+                                if check.retry
+                                    && crate::ui::widgets::icon_button(ui, p, "refresh", aurora_i18n::tr!("script-check-again"), true)
+                                {
+                                    clicked = Some(DockClick::Check);
                                 }
                             }
                         }

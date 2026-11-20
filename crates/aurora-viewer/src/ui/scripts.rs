@@ -146,14 +146,15 @@ struct ReadText {
     error: Option<String>,
 }
 
-/// The check of one window's object: the scripts it read from their prims, and
-/// what it found in them.
+/// What the editor sees in one window's object: the rows it shows, and what
+/// they were made of, so that they are worked out again only when a text or
+/// the object's list changes.
+#[derive(Default)]
 struct Check {
-    /// The scripts whose text it waits for.
-    waiting: Vec<ScriptTarget>,
-    /// The rows it found: the script, its name, the line and what is wrong.
+    /// The object's scripts and their texts, hashed.
+    signature: u64,
+    /// The rows: the script, its name, the line and what is wrong.
     rows: Vec<(ScriptTarget, String, usize, String)>,
-    done: bool,
 }
 
 /// The References tab of one window: the name it is renaming, and the new name
@@ -1418,6 +1419,50 @@ impl Editors {
         rows
     }
 
+    /// What the editor sees in the object's scripts: the structure of each, the
+    /// lints of the ones no tab holds, and the scripts it could not read. A
+    /// script with a tab keeps only its structure here: its own Problems has
+    /// its lints already.
+    fn object_rows(
+        targets: &[(ScriptTarget, String, bool)],
+        open: &[(Option<usize>, ScriptTarget, &str, &str, bool)],
+        read: &std::collections::HashMap<ScriptTarget, ReadText>,
+    ) -> Vec<(ScriptTarget, String, usize, String)> {
+        let mut rows = Vec::new();
+        for (target, name, lua) in targets {
+            if let Some((_, _, _, source, _)) = open.iter().find(|(_, open, ..)| open == target) {
+                for finding in check::structure(source) {
+                    rows.push((*target, name.clone(), finding.line(), finding.message()));
+                }
+                continue;
+            }
+            let Some(read) = read.get(target) else {
+                continue;
+            };
+            if let Some(reason) = &read.error {
+                rows.push((
+                    *target,
+                    name.clone(),
+                    0,
+                    aurora_i18n::tr!("script-check-unreachable", name = name.as_str(), reason = reason.as_str()).to_string(),
+                ));
+                continue;
+            }
+            let Some(text) = &read.text else {
+                continue;
+            };
+            if !lua {
+                for lint in lints::lints(text) {
+                    rows.push((*target, name.clone(), lint.line, lint.rule.message()));
+                }
+            }
+            for finding in check::structure(text) {
+                rows.push((*target, name.clone(), finding.line(), finding.message()));
+            }
+        }
+        rows
+    }
+
     /// Save every script the window has open that has something to save
     /// (`linkset` nil: the one script of `target`, as Save). A script the
     /// preprocessor handles answers with its own save later, as Save does.
@@ -1704,8 +1749,8 @@ impl Editors {
         let dock_tab = self.dock_tabs.entry(root).or_default();
         let dock_search = self.dock_search.entry(root).or_default();
         // the Search tab's hits, in the scripts as they are edited
-        // the dock's Check object, taken before the scripts are borrowed
-        let check_asked = std::mem::take(&mut self.documents[active_index].tools.check_object);
+        // the dock's Check again, taken before the scripts are borrowed
+        let check_again = std::mem::take(&mut self.documents[active_index].tools.check_again);
         let open: Vec<(Option<usize>, ScriptTarget, &str, &str, bool)> = self
             .documents
             .iter()
@@ -1751,98 +1796,66 @@ impl Editors {
             self.reads.insert(request, target);
             actions.push(Action::ReadScript { target, request });
         }
-        // the object-wide check, asked from the Problems dock: every script of
-        // the linkset no tab holds is read from its prim, then looked at
-        if check_asked {
-            let mut waiting = Vec::new();
-            if let Some(linkset) = linkset {
-                for prim in &linkset.prims {
-                    for script in &prim.scripts {
-                        let target = ScriptTarget {
-                            object: prim.object,
-                            item: script.item,
-                        };
-                        if self.documents.iter().any(|e| !e.closed && e.target == target) {
-                            continue;
-                        }
-                        match self.read.get(&target) {
-                            Some(read) if read.text.is_some() || read.error.is_some() => {}
-                            Some(_) => waiting.push(target),
-                            None => {
-                                let request = Uuid::new_v4();
-                                self.read.entry(target).or_default().request = Some(request);
-                                self.reads.insert(request, target);
-                                actions.push(Action::ReadScript { target, request });
-                                waiting.push(target);
-                            }
+        // The object's every script, as the dock shows it: one no tab holds is
+        // read from its prim once, and what the editor sees in all of them is
+        // worked out again whenever a text or the object's list changes. There
+        // is no button: the Problems tab says what it sees, all the time.
+        let mut targets: Vec<(ScriptTarget, String, bool)> = Vec::new();
+        let mut reading = 0usize;
+        let mut retry = false;
+        if let Some(linkset) = linkset {
+            for prim in &linkset.prims {
+                for script in &prim.scripts {
+                    let target = ScriptTarget {
+                        object: prim.object,
+                        item: script.item,
+                    };
+                    let lua = aurora_net::scripts::is_slua_item(script.flags);
+                    targets.push((target, script.name.clone(), lua));
+                    if open.iter().any(|(_, open, ..)| *open == target) {
+                        continue;
+                    }
+                    if check_again
+                        && let Some(read) = self.read.get_mut(&target)
+                        && read.error.is_some()
+                    {
+                        // the reader asked for another try at what failed
+                        *read = ReadText::default();
+                    }
+                    match self.read.get(&target) {
+                        Some(read) if read.text.is_some() => {}
+                        Some(read) if read.error.is_some() => retry = true,
+                        Some(read) if read.request.is_some() => reading += 1,
+                        _ => {
+                            let request = Uuid::new_v4();
+                            self.read.entry(target).or_default().request = Some(request);
+                            self.reads.insert(request, target);
+                            actions.push(Action::ReadScript { target, request });
+                            reading += 1;
                         }
                     }
                 }
             }
-            self.checks.insert(
-                root,
-                Check {
-                    done: waiting.is_empty(),
-                    waiting,
-                    rows: Vec::new(),
-                },
-            );
         }
-        // once every script it waits for is here, the check says what it sees
-        let ready = self.checks.get(&root).is_some_and(|check| {
-            !check.done
-                && check.waiting.iter().all(|target| {
-                    self.read
-                        .get(target)
-                        .is_some_and(|read| read.text.is_some() || read.error.is_some())
-                })
-        });
-        if ready {
-            let mut rows = Vec::new();
-            if let Some(linkset) = linkset {
-                for prim in &linkset.prims {
-                    for script in &prim.scripts {
-                        let target = ScriptTarget {
-                            object: prim.object,
-                            item: script.item,
-                        };
-                        if self.documents.iter().any(|e| !e.closed && e.target == target) {
-                            continue;
-                        }
-                        let Some(read) = self.read.get(&target) else {
-                            continue;
-                        };
-                        if let Some(reason) = &read.error {
-                            rows.push((
-                                target,
-                                script.name.clone(),
-                                0,
-                                aurora_i18n::tr!("script-check-unreachable", name = script.name.as_str(), reason = reason.as_str())
-                                    .to_string(),
-                            ));
-                        } else if let Some(text) = &read.text {
-                            if !aurora_net::scripts::is_slua_item(script.flags) {
-                                for lint in lints::lints(text) {
-                                    rows.push((target, script.name.clone(), lint.line, lint.rule.message()));
-                                }
-                            }
-                            for finding in check::structure(text) {
-                                let (line, message) = match finding {
-                                    check::Finding::StrayClose { line } => (line, aurora_i18n::tr!("script-check-stray-close")),
-                                    check::Finding::OpenBlock { line } => (line, aurora_i18n::tr!("script-check-open-block")),
-                                    check::Finding::OpenString { line } => (line, aurora_i18n::tr!("script-check-open-string")),
-                                    check::Finding::OpenComment { line } => (line, aurora_i18n::tr!("script-check-open-comment")),
-                                };
-                                rows.push((target, script.name.clone(), line, message.to_string()));
-                            }
-                        }
-                    }
+        let signature = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            for (target, name, lua) in &targets {
+                target.item.hash(&mut hasher);
+                name.hash(&mut hasher);
+                lua.hash(&mut hasher);
+                if let Some((_, _, _, source, _)) = open.iter().find(|(_, open, ..)| open == target) {
+                    source.hash(&mut hasher);
+                } else if let Some(read) = self.read.get(target) {
+                    read.text.hash(&mut hasher);
+                    read.error.hash(&mut hasher);
                 }
             }
-            if let Some(check) = self.checks.get_mut(&root) {
-                check.rows = rows;
-                check.done = true;
-            }
+            hasher.finish()
+        };
+        if self.checks.get(&root).is_none_or(|check| check.signature != signature) {
+            let rows = Self::object_rows(&targets, &open, &self.read);
+            self.checks.insert(root, Check { signature, rows });
         }
         // the check's rows, under each script's name, after the window's own
         let mut check_rows: Vec<(ScriptTarget, usize)> = Vec::new();
@@ -1894,12 +1907,12 @@ impl Editors {
         // Save All: every script this window has open that has something to save
         let save_all = self.documents.iter().any(|e| !e.closed && e.linkset == root && e.can_save());
         let reference_word = self.references.get(&root).map(|state| state.word.clone()).unwrap_or_default();
-        // what the Problems dock says of the object-wide check, while it runs
+        // what the Problems dock says of the object: what it is still reading,
+        // and what it found
         let check = Some(view::CheckDock {
-            waiting: self
-                .checks
-                .get(&root)
-                .and_then(|check| (!check.done).then_some(check.waiting.len())),
+            reading,
+            found: self.checks.get(&root).map_or(0, |check| check.rows.len()),
+            retry,
         });
         let mut open = true;
         let mut select = None;
@@ -2202,7 +2215,7 @@ impl Editors {
                     }
                 }
                 view::DockClick::Check => {
-                    self.documents[active_index].tools.check_object = true;
+                    self.documents[active_index].tools.check_again = true;
                 }
                 view::DockClick::Rename => {
                     let state = self.references.entry(root).or_default();
@@ -5253,21 +5266,23 @@ print(\"bye\")"
         editors.loaded(load, panel, Ok("alpha here;\n".into()));
         editors.documents.iter_mut().find(|e| e.target == panel).unwrap().linkset = linkset.root;
         let linksets = std::slice::from_ref(&linkset);
+        // the door's script has no tab: the window asks for its text as it
+        // opens (the Problems tab reads the object by itself)
+        let mut request = None;
         for _ in 0..3 {
-            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+            let (_, actions) = frame_linksets_actions(&ctx, &mut editors, &mut settings, vec![], linksets);
+            request = request.or_else(|| {
+                actions.iter().find_map(|action| match action {
+                    Action::ReadScript { target, request } if *target == door => Some(*request),
+                    _ => None,
+                })
+            });
         }
+        let request = request.expect("the script no tab holds is read");
         editors.dock_search.insert(linkset.root, "alpha".into());
         editors.dock_tabs.insert(linkset.root, view::DockTab::Search);
         editors.search_object.insert(linkset.root, true);
-        // the door's script has no tab: the window asks for its text
-        let (_, actions) = frame_linksets_actions(&ctx, &mut editors, &mut settings, vec![], linksets);
-        let request = actions
-            .iter()
-            .find_map(|action| match action {
-                Action::ReadScript { target, request } if *target == door => Some(*request),
-                _ => None,
-            })
-            .expect("the script no tab holds is read");
+        frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
         editors.loaded(request, door, Ok("also alpha\n".into()));
         let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
         let listed = |label: &str| {
@@ -5297,8 +5312,9 @@ print(\"bye\")"
         assert!(!still, "the object's script is out of the window's scope");
     }
 
-    /// Check object reads every script of the linkset and says what it sees in
-    /// them: here, a block a script no tab holds never closes.
+    /// The Problems tab reads the object's every script on its own -- no
+    /// button -- and says what the editor sees in them: here, a block a script
+    /// no tab holds never closes, and then one opened in the script in front.
     #[test]
     fn the_object_check_reads_the_whole_object_and_finds_an_open_block() {
         let ctx = egui::Context::default();
@@ -5309,37 +5325,40 @@ print(\"bye\")"
         editors.loaded(load, panel, Ok("default { }\n".into()));
         editors.documents.iter_mut().find(|e| e.target == panel).unwrap().linkset = linkset.root;
         let linksets = std::slice::from_ref(&linkset);
+        // the script no tab holds is read without anything being pressed
+        let mut request = None;
         for _ in 0..3 {
-            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+            let (_, actions) = frame_linksets_actions(&ctx, &mut editors, &mut settings, vec![], linksets);
+            request = request.or_else(|| {
+                actions.iter().find_map(|action| match action {
+                    Action::ReadScript { target, request } if *target == door => Some(*request),
+                    _ => None,
+                })
+            });
         }
-        // the dock's Check object
-        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
-        let ask = text_at(&output, aurora_i18n::tr!("script-check-object").as_ref());
-        click_at(&ctx, &mut editors, &mut settings, linksets, ask, egui::PointerButton::Primary);
-        // it reads the script no tab holds
-        let (_, actions) = frame_linksets_actions(&ctx, &mut editors, &mut settings, vec![], linksets);
-        let request = actions
-            .iter()
-            .find_map(|action| match action {
-                Action::ReadScript { target, request } if *target == door => Some(*request),
-                _ => None,
-            })
-            .expect("the door's script is read");
+        let request = request.expect("the door's script is read on its own");
         editors.loaded(request, door, Ok("default\n{\n    state_entry()\n    {\n}\n".into()));
         let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
         let block = aurora_i18n::tr!("script-check-open-block");
-        assert!(
+        let blocks = |output: &egui::FullOutput| {
             output
                 .shapes
                 .iter()
-                .any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == block)),
-            "the check says the block never closes"
-        );
+                .filter(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == block))
+                .count()
+        };
+        assert_eq!(blocks(&output), 1, "the check says the block never closes");
         assert!(
             output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text)
                 if text.galley.job.text.starts_with("Door Script"))),
             "under the script's name"
         );
+        // the script in front is read as it is typed, in the same list
+        if let Some(e) = editors.documents.iter_mut().find(|e| e.target == panel) {
+            e.source.push_str("integer x = 1;\n{\n");
+        }
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        assert_eq!(blocks(&output), 2, "a block opened in the script in front shows at once");
     }
 
     /// Help › Shortcuts opens a window that tells what each key does in a
