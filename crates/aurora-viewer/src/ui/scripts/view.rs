@@ -1361,7 +1361,7 @@ const EXPERIENCE_WIDTH: f32 = 180.0;
 /// of the script's own commands when a window of its own keeps them in the
 /// toolbar.
 const COMPILE_WIDTH: f32 = 136.0;
-pub(super) const RUN_WIDTH: f32 = 96.0;
+pub(super) const RUN_WIDTH: f32 = 112.0;
 
 pub(super) fn toolbar(
     ui: &mut egui::Ui,
@@ -1377,6 +1377,9 @@ pub(super) fn toolbar(
     let ctx = ui.ctx().clone();
     let mut chosen = None;
     let row = ui.horizontal(|ui| {
+        // the same height whether the script's own commands fit at the right
+        // or not: the source below must not move with them
+        ui.set_min_height(26.0);
         let left = ui.cursor().left();
         // Save sits above the source, with the script's other commands
         // (`run_buttons`), not among the tools here
@@ -1440,7 +1443,7 @@ pub(super) fn toolbar(
             ui.allocate_ui_with_layout(Vec2::new(right, 24.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 if own {
-                    run_buttons(ui, p, e, actions);
+                    run_buttons(ui, p, e, actions, 24.0);
                 }
                 if let Some(width) = experience {
                     ui.allocate_ui_with_layout(Vec2::new(width, 24.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -1556,12 +1559,12 @@ fn run_state(e: &Editor) -> (bool, bool, Option<bool>) {
 
 /// The commands of the script, as icons above the source: save at the right,
 /// then reset, then pause or resume, which says what a click does.
-pub(super) fn run_buttons(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, actions: &mut Vec<Action>) {
+pub(super) fn run_buttons(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, actions: &mut Vec<Action>, side: f32) {
     let (save, reset, running) = run_state(e);
-    if icon_button(ui, p, "device-floppy-filled", aurora_i18n::tr!("common-save"), save) {
+    if crate::ui::widgets::icon_button_sized(ui, p, "device-floppy-filled", aurora_i18n::tr!("common-save"), save, side) {
         actions.extend(e.save());
     }
-    if reset && icon_button(ui, p, "reload", aurora_i18n::tr!("script-reset"), true) {
+    if reset && crate::ui::widgets::icon_button_sized(ui, p, "reload", aurora_i18n::tr!("script-reset"), true, side) {
         actions.push(Action::Reset(e.target));
     }
     if let Some(running) = running {
@@ -1571,7 +1574,7 @@ pub(super) fn run_buttons(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, action
         } else {
             ("player-play-filled", aurora_i18n::tr!("script-resume"))
         };
-        if icon_button(ui, p, icon, label, true) {
+        if crate::ui::widgets::icon_button_sized(ui, p, icon, label, true, side) {
             actions.push(Action::Running {
                 target: e.target,
                 running: !running,
@@ -2514,6 +2517,12 @@ pub(super) fn crumbs_row(
     let name = e.name.clone();
     let read_only = e.loaded && !e.can_edit;
     let counted = problems.len();
+    // what the call under the caret takes, at the right of the path: the
+    // parameter being filled in ink (signature help), when the setting is on
+    let signature = settings
+        .signature_help
+        .then(|| super::signature::at_caret(text, editing::cursor(ui.ctx(), id).primary.index.0, e.lua()))
+        .flatten();
     let mut jump = None;
     // The bar of the path, under the source: a quiet face, and a chip per
     // block that holds the caret, the one it is in lit.
@@ -2544,6 +2553,10 @@ pub(super) fn crumbs_row(
         if switch_word(&mut ui, p, aurora_i18n::tr!("script-tab-source"), !processed) {
             e.tools.processed = false;
         }
+    }
+    if let Some(signature) = &signature {
+        ui.add(egui::Label::new(signature_job(p, signature)).truncate());
+        ui.add_space(10.0);
     }
     if trailer
         && read_only
@@ -2592,6 +2605,27 @@ fn switch_word(ui: &mut egui::Ui, p: &Palette, text: &str, on: bool) -> bool {
 }
 
 /// One step of the crumbs: its words, a click away from its line.
+/// The signature of the call the caret is in: its name, then its parameters,
+/// the one being filled in ink and the others muted.
+fn signature_job(p: &Palette, signature: &super::signature::Signature) -> egui::text::LayoutJob {
+    let font = egui::FontId::proportional(11.0);
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        &format!("{}(", signature.name),
+        0.0,
+        egui::TextFormat::simple(font.clone(), p.muted),
+    );
+    for (index, param) in signature.params.iter().enumerate() {
+        if index > 0 {
+            job.append(", ", 0.0, egui::TextFormat::simple(font.clone(), p.muted));
+        }
+        let color = if index == signature.at { p.ink } else { p.muted };
+        job.append(param, 0.0, egui::TextFormat::simple(font.clone(), color));
+    }
+    job.append(")", 0.0, egui::TextFormat::simple(font, p.muted));
+    job
+}
+
 /// One word of the path: a chip, lit when it is the block the caret is in, and
 /// lit again under the pointer when a click goes to it.
 fn crumb(ui: &mut egui::Ui, p: &Palette, text: &str, current: bool, jumps: bool) -> egui::Response {

@@ -2786,6 +2786,11 @@ pub fn icon_button(ui: &mut egui::Ui, p: &Palette, icon: &str, tip: &str, enable
     small_icon_button(ui, p, icon, tip, enabled, false)
 }
 
+/// `icon_button` with a larger glyph and hit target, in logical points.
+pub fn icon_button_sized(ui: &mut egui::Ui, p: &Palette, icon: &str, tip: &str, enabled: bool, side: f32) -> bool {
+    sized_icon_button(ui, p, icon, tip, enabled, false, side)
+}
+
 /// `icon_button` that stays lit while `on` (a mode that is armed); true
 /// when clicked.
 pub fn icon_toggle(ui: &mut egui::Ui, p: &Palette, icon: &str, tip: &str, on: bool) -> bool {

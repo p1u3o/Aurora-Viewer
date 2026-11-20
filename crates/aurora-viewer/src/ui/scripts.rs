@@ -52,6 +52,7 @@ mod preprocessor;
 pub mod recovery;
 mod reference;
 pub mod settings;
+mod signature;
 mod syntax;
 mod view;
 
@@ -1543,7 +1544,10 @@ impl Editors {
                 egui::LayerId::new(egui::Order::Middle, egui::Id::unique(&id)),
                 egui::Id::unique((&Self::document_id(e), "source_text")),
             );
-            let title = format!("{}{}", e.name, if e.dirty() { " *" } else { "" });
+            let title = {
+                let name = format!("{}{}", e.name, if e.dirty() { " *" } else { "" });
+                aurora_i18n::tr!("script-window-title", name = name.as_str()).to_string()
+            };
             let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
             let panels = &mut self.panels;
             Floater::new(
@@ -1767,11 +1771,14 @@ impl Editors {
             self.splits.remove(&root);
         }
         let linkset = linksets.iter().find(|l| l.root == root);
-        let title = linkset
-            .map(|l| l.name.clone())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| aurora_i18n::tr!("common-object-contents").into());
         let active_index = self.documents.iter().position(|e| e.target == active && !e.closed).unwrap_or(0);
+        let title = {
+            // the script in front, as the window's title (the tab strip says
+            // which one that is)
+            let e = &self.documents[active_index];
+            let name = format!("{}{}", e.name, if e.dirty() { " *" } else { "" });
+            aurora_i18n::tr!("script-window-title", name = name.as_str()).to_string()
+        };
         let source_id = egui::Id::unique((&Self::document_id(&self.documents[active_index]), "source_text"));
         // the Problems dock: this script's, or every script of the window
         let all_sources = self.problems_all.entry(root).or_insert(false);
@@ -1975,6 +1982,9 @@ impl Editors {
         .compact_header();
         // the tree and a readable source side by side
         window_ui.min_size = Vec2::new(600.0, 380.0);
+        // the object the window is about, beside the title that names the
+        // script in front
+        window_ui.title_note = linkset.map(|linkset| linkset.name.clone()).filter(|name| !name.is_empty());
         window_ui.show(ctx, p, &mut open, |ui| {
             // File, Edit and Help, then the toolbar, once for the window and
             // for the script in front
@@ -2109,7 +2119,7 @@ impl Editors {
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     if let Some(e) = self.documents.get_mut(active_index) {
-                                        view::run_buttons(ui, p, e, actions);
+                                        view::run_buttons(ui, p, e, actions, 26.0);
                                     }
                                 },
                             );

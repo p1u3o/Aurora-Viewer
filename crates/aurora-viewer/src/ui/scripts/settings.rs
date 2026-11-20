@@ -112,6 +112,10 @@ pub struct ScriptSettings {
     /// edge: 0 for the default.
     #[serde(default)]
     pub dock_height: u16,
+    /// The parameters of the call under the caret, in the bar beneath the
+    /// source, the one being filled in ink (signature help).
+    #[serde(default = "on_by_default")]
+    pub signature_help: bool,
     pub search_prefer_left: bool,
     pub search_inline: bool,
     pub convert_tabs: bool,
@@ -169,6 +173,11 @@ impl ScriptSettings {
     }
 }
 
+/// A setting that is on unless the file says otherwise.
+fn on_by_default() -> bool {
+    true
+}
+
 /// ExternalWebsocketSyncPort's default.
 pub const WEBSOCKET_PORT: u16 = 9020;
 
@@ -182,6 +191,7 @@ impl Default for ScriptSettings {
             tree_width: 0,
             dock_tabs: String::new(),
             dock_height: 0,
+            signature_help: true,
             search_prefer_left: false,
             search_inline: false,
             convert_tabs: true,

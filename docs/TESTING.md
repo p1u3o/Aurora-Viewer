@@ -2838,7 +2838,9 @@ the catch-up after a long frame.
 **`AURORA_DEMO_SCRIPTS=inventory|object|object-readonly|both|save|object-save|error|readonly|syntax|object-syntax|syntax-readonly|indent|object-indent|tabstops|object-tabstops|close-brace|object-close-brace|colors|color-picker|color-accept|color-cancel|comment-lines|comment-block|multiline-indent|multiline-outdent|folding|object-folding|word-wrap|no-word-wrap|word-wrap-preferences|experience|experience-save|workbench|object-workbench|insert-filter|insert-empty|search|search-left|search-inline|search-overlay|search-outside|preferences|help|preprocessor|object-preprocessor|processed|preprocessor-error|lua|slua|linkset|shortcuts|quit`**:
 `linkset` adds three linked prims beside the plaza at frame 280, names their
 scripts ("Panel Script", "Door Script", "Lamp Flicker", "Lamp Sparkle") and
-opens the first and the last: the window shows the tree of the linkset on the
+opens the first and the last: the window is titled "Script Editor: <the script
+in front>" (the object's name in muted beside it), and shows the tree of the
+linkset on the
 left, its filter field at the top of its own panel -- level with the first
 line of the source, so the tree and the text start on the same line -- and a
 star on the script whose text is unsaved; the File, Edit, Insert and Help
@@ -2850,7 +2852,9 @@ indent guides, change bars against the saved script, and the status readout
 it, whose rows go to their line and which stays with "No problems." when
 everything compiles. The bar under the source gives the caret's line and column, the tab size and
 the size of the script; the path of the caret (the script, then the blocks that
-hold the line, the one it is in lit) is a strip of chips under it. Above the
+hold the line, the one it is in lit) is a strip of chips under it, and at
+its right the parameters of the call the caret is in, the one being filled in
+ink (`signature.rs`; Preferences › Script editor turns it off). Above the
 source, at the right of the tabs, are Save, Reset and the script's running
 state as icons -- the last a pause button while it runs, a play button while it
 does not -- and the compile target sits at the right end of the toolbar, left of
