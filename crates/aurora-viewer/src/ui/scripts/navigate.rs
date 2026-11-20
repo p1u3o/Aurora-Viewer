@@ -5,11 +5,15 @@
 
 use super::editing;
 use super::outline::{self, Kind};
+use aurora_net::scripts::ScriptTarget;
 
 /// One hit of the dock's Search tab.
 pub(super) struct Hit {
-    /// The script's place in the window's list of documents.
-    pub document: usize,
+    /// The script's place in the window's list of documents, when it has one:
+    /// a script searched for the object scope has a target only.
+    pub document: Option<usize>,
+    /// The script it is in.
+    pub target: ScriptTarget,
     pub name: String,
     /// The line and the column it starts at, counted as the source is.
     pub line: usize,
@@ -23,20 +27,22 @@ pub(super) struct Hit {
 /// How many hits the dock keeps: past this, the query is too broad to read.
 pub(super) const MAX_HITS: usize = 200;
 
-/// The hits of `query` in the window's scripts (`(document, name, source)`),
-/// in the window's order and the text's, case-insensitively, at most
-/// [`MAX_HITS`]. A query of one character is not one.
-pub(super) fn find(scripts: &[(usize, &str, &str, bool)], query: &str) -> Vec<Hit> {
+/// The hits of `query` in the window's scripts (`(document, target, name,
+/// source)`), in the window's order and the text's, case-insensitively, at most
+/// [`MAX_HITS`]. `document` is none for a script the object scope read out of
+/// its prim. A query of one character is not one.
+pub(super) fn find(scripts: &[(Option<usize>, ScriptTarget, &str, &str, bool)], query: &str) -> Vec<Hit> {
     let needle = query.trim();
     if needle.chars().count() < 2 {
         return Vec::new();
     }
     let mut hits = Vec::new();
-    for (document, name, source, lua) in scripts {
+    for (document, target, name, source, lua) in scripts {
         for (line, text) in source.lines().enumerate() {
             for range in editing::matches_filtered(text, needle, true, false) {
                 hits.push(Hit {
                     document: *document,
+                    target: *target,
                     name: (*name).to_owned(),
                     line,
                     column: range.start,
@@ -138,15 +144,27 @@ pub(super) fn definition(scripts: &[(usize, &str, bool)], word: &str, current: u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
 
     #[test]
     fn a_query_lists_its_hits_in_the_windows_and_the_texts_order() {
         let door = "integer alpha = 0;\nllSay(0, \"alpha\");\n";
         let panel = "// alpha twice: alpha\n";
-        let scripts = [(0usize, "Panel Script", panel, false), (1, "Door Script", door, false)];
+        let panel_target = ScriptTarget {
+            object: Uuid::nil(),
+            item: Uuid::from_u128(1),
+        };
+        let door_target = ScriptTarget {
+            object: Uuid::nil(),
+            item: Uuid::from_u128(2),
+        };
+        let scripts = [
+            (Some(0usize), panel_target, "Panel Script", panel, false),
+            (Some(1), door_target, "Door Script", door, false),
+        ];
         let hits = find(&scripts, "alpha");
-        let rows: Vec<(usize, usize, usize)> = hits.iter().map(|hit| (hit.document, hit.line, hit.column)).collect();
-        assert_eq!(rows, vec![(0, 0, 3), (0, 0, 16), (1, 0, 8), (1, 1, 10)]);
+        let rows: Vec<(Option<usize>, usize, usize)> = hits.iter().map(|hit| (hit.document, hit.line, hit.column)).collect();
+        assert_eq!(rows, vec![(Some(0), 0, 3), (Some(0), 0, 16), (Some(1), 0, 8), (Some(1), 1, 10)]);
         assert_eq!(hits[0].name, "Panel Script");
         assert_eq!(hits[2].text, "integer alpha = 0;");
         // case-insensitive, and trimmed
@@ -158,10 +176,18 @@ mod tests {
     #[test]
     fn the_hits_stop_at_the_limit() {
         let source = "x\n".repeat(MAX_HITS + 10);
-        let scripts = [(0usize, "Loop", source.as_str(), false)];
+        let target = ScriptTarget {
+            object: Uuid::nil(),
+            item: Uuid::from_u128(4),
+        };
+        let scripts = [(None, target, "Loop", source.as_str(), false)];
         assert_eq!(find(&scripts, "x").len(), 0, "one letter is not a query");
         let source = "xx\n".repeat(MAX_HITS + 10);
-        assert_eq!(find(&[(0, "Loop", source.as_str(), false)], "xx").len(), MAX_HITS);
+        let target = ScriptTarget {
+            object: Uuid::nil(),
+            item: Uuid::from_u128(3),
+        };
+        assert_eq!(find(&[(None, target, "Loop", source.as_str(), false)], "xx").len(), MAX_HITS);
     }
 
     #[test]

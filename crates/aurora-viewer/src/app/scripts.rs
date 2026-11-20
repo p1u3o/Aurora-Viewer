@@ -729,6 +729,24 @@ impl App {
         self.open_script_from(target, None);
     }
 
+    /// Reads a script's text for an object-wide search or check, without an
+    /// editor for it: the answer goes back to the editor as `loaded`.
+    fn read_script(&mut self, target: ScriptTarget, request: Uuid) {
+        if self.world.rlva.has("viewscript") {
+            return;
+        }
+        let Some(info) = self.script_info(target) else {
+            return;
+        };
+        self.send(NetCommand::LoadScript {
+            request,
+            target,
+            handle: info.handle,
+            owner: info.owner,
+            asset: info.asset,
+        });
+    }
+
     /// The root of the linkset an object's script is in: the scripts of one
     /// linkset share a window, its tree and its tabs. Nil for an inventory
     /// script, and for an object that is gone.
@@ -1090,6 +1108,7 @@ impl App {
                 }
             }
             Action::OpenScript(target) => self.open_script(target),
+            Action::ReadScript { target, request } => self.read_script(target, request),
             Action::TakeScript { object, item } => self.take_task_script(object, item),
             Action::DeleteScript { object, item } => self.remove_task_items(object, &[item]),
             Action::NewScript(object) => self.new_task_script(object),

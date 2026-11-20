@@ -2865,7 +2865,13 @@ dock's second tab, Outline, lists the states, events, functions and globals
 the script declares with their lines, and a click goes to one
 (`ui/scripts/outline.rs`). The dock's third tab, Search, finds a word in every
 script the window has open, with its script, line and text, and a click opens
-that script on the hit. Its fourth, References, opens on a name (the context
+that script on the hit; its scope leads it from those open scripts to **This
+object**, the whole linkset, whose scripts no tab holds are read from their
+prims (a hit in one opens it). The Problems dock's **Check object** reads every
+script of the linkset the same way and lists what the viewer sees in them,
+under each script's name: a block a script never closes, a `}` that closes
+none, a string or a comment left open, and the scripts it could not read (a
+click on such a row opens the script). Its fourth, References, opens on a name (the context
 menu's Find references): every place the name is used in the window's scripts,
 the whole name in code only, a click away from each, with a field for a new
 name and Rename all, which rewrites them in every script at once (each document

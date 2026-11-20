@@ -10106,6 +10106,18 @@ script-problems-unfold = Show the problems
 script-dock-outline = Outline
 script-dock-search = Search
 script-dock-references = References
+script-search-scope-window = Open scripts
+script-search-scope-object = This object
+script-check-object = Check object
+script-check-running = { $count ->
+    [one] Checking { $count } script…
+   *[other] Checking { $count } scripts…
+    }
+script-check-unreachable = { $name } could not be read: { $reason }
+script-check-stray-close = A {"}"} closes no block.
+script-check-open-block = A {"{"} is never closed.
+script-check-open-string = A string is never closed.
+script-check-open-comment = A comment is never closed.
 script-references-new-name = New name
 script-references-rename = Rename all
 script-references-count = { $count ->

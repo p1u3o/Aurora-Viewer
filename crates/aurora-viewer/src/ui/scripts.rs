@@ -30,6 +30,7 @@ fn two_mut(documents: &mut [Editor], a: usize, b: usize) -> (&mut Editor, &mut E
 }
 
 pub mod backup;
+mod check;
 mod colors;
 mod complete;
 mod crumbs;
@@ -72,6 +73,12 @@ pub enum Action {
         name: String,
     },
     Paste(ScriptTarget),
+    /// Read a script's text for an object-wide search or check, no document
+    /// opened: the app answers `loaded` with that request.
+    ReadScript {
+        target: ScriptTarget,
+        request: Uuid,
+    },
     SettingsChanged,
     Save {
         request: Uuid,
@@ -127,6 +134,25 @@ struct QuickOpen {
     query: String,
     selected: usize,
     focus: bool,
+}
+
+/// A script's text read for an object-wide search or check, no document
+/// opened: its request while it loads, then its text or what stopped it.
+#[derive(Default)]
+struct ReadText {
+    request: Option<Uuid>,
+    text: Option<String>,
+    error: Option<String>,
+}
+
+/// The check of one window's object: the scripts it read from their prims, and
+/// what it found in them.
+struct Check {
+    /// The scripts whose text it waits for.
+    waiting: Vec<ScriptTarget>,
+    /// The rows it found: the script, its name, the line and what is wrong.
+    rows: Vec<(ScriptTarget, String, usize, String)>,
+    done: bool,
 }
 
 /// The References tab of one window: the name it is renaming, and the new name
@@ -304,6 +330,15 @@ pub struct Editors {
     /// The name each window's References tab renames, and the new name being
     /// typed for it, by the window's root.
     references: std::collections::HashMap<Uuid, ReferenceState>,
+    /// Whether a window's Search tab looks in every script of its object, by
+    /// the window's root.
+    search_object: std::collections::HashMap<Uuid, bool>,
+    /// The scripts read for an object-wide search or check, no document
+    /// opened, by the script; and the request being served, by its id.
+    read: std::collections::HashMap<ScriptTarget, ReadText>,
+    reads: std::collections::HashMap<Uuid, ScriptTarget>,
+    /// Each window's object-wide check, by the window's root.
+    checks: std::collections::HashMap<Uuid, Check>,
     /// The two scripts a window shows side by side, left then right, by its
     /// root. The one in front is one of them.
     splits: std::collections::HashMap<Uuid, (ScriptTarget, ScriptTarget)>,
@@ -777,6 +812,17 @@ impl Editors {
     }
 
     pub fn loaded(&mut self, request: Uuid, target: ScriptTarget, result: Result<String, String>) {
+        // a script read for a search or a check has no document
+        if let Some(target) = self.reads.remove(&request) {
+            if let Some(read) = self.read.get_mut(&target) {
+                read.request = None;
+                match result {
+                    Ok(text) => read.text = Some(text),
+                    Err(reason) => read.error = Some(reason),
+                }
+            }
+            return;
+        }
         if let Some(include) = self.includes.remove(&request) {
             let _ = include.reply.send(result.map(|source| preprocessor::Include {
                 source,
@@ -1416,7 +1462,7 @@ impl Editors {
             .rename_title(e.name.clone(), e.can_edit && e.loaded && e.saving.is_none() && e.loading.is_none())
             .show(ctx, p, &mut open, |ui| {
                 clicked = view::body(
-                    ui, p, e, body_id, settings, panels, actions, true, &rows, None, folded, dock_tab, None, None,
+                    ui, p, e, body_id, settings, panels, actions, true, &rows, None, folded, dock_tab, None, None, None,
                 );
             });
         }
@@ -1437,7 +1483,7 @@ impl Editors {
                 }
             }
             // only a window of a linkset has the Search and References tabs
-            Some(view::DockClick::Search(_) | view::DockClick::Reference(_) | view::DockClick::Rename) => {}
+            Some(view::DockClick::Search(_) | view::DockClick::Reference(_) | view::DockClick::Rename | view::DockClick::Check) => {}
             None => {}
         }
         // Ctrl+click on a name: the declaration, in this script alone
@@ -1642,19 +1688,163 @@ impl Editors {
         let dock_tab = self.dock_tabs.entry(root).or_default();
         let dock_search = self.dock_search.entry(root).or_default();
         // the Search tab's hits, in the scripts as they are edited
-        let scripts: Vec<(usize, &str, &str, bool)> = self
+        // the dock's Check object, taken before the scripts are borrowed
+        let check_asked = std::mem::take(&mut self.documents[active_index].tools.check_object);
+        let open: Vec<(Option<usize>, ScriptTarget, &str, &str, bool)> = self
             .documents
             .iter()
             .enumerate()
             .filter(|(_, e)| !e.closed && e.linkset == root)
-            .map(|(index, e)| (index, e.name.as_str(), e.source.as_str(), e.lua()))
+            .map(|(index, e)| (Some(index), e.target, e.name.as_str(), e.source.as_str(), e.lua()))
             .collect();
-        let hits = navigate::find(&scripts, dock_search);
+        let mut hits = navigate::find(&open, dock_search);
+        // the object scope looks in every script of the linkset, the ones no
+        // tab holds read from their prim as the reader asks
+        let object_search = *self.search_object.entry(root).or_insert(false);
+        let mut unread: Vec<ScriptTarget> = Vec::new();
+        if object_search && let Some(linkset) = linkset {
+            for prim in &linkset.prims {
+                for script in &prim.scripts {
+                    let target = ScriptTarget {
+                        object: prim.object,
+                        item: script.item,
+                    };
+                    if open.iter().any(|(_, open, ..)| *open == target) {
+                        continue;
+                    }
+                    let lua = aurora_net::scripts::is_slua_item(script.flags);
+                    if let Some(text) = self.read.get(&target).and_then(|read| read.text.as_deref()) {
+                        hits.extend(navigate::find(&[(None, target, script.name.as_str(), text, lua)], dock_search));
+                    } else if self.read.get(&target).is_none_or(|read| read.error.is_none()) {
+                        unread.push(target);
+                    }
+                }
+            }
+            hits.truncate(navigate::MAX_HITS);
+        }
+        for target in unread {
+            let waiting = self
+                .read
+                .get(&target)
+                .is_some_and(|read| read.text.is_some() || read.error.is_some() || read.request.is_some());
+            if waiting {
+                continue;
+            }
+            let request = Uuid::new_v4();
+            self.read.entry(target).or_default().request = Some(request);
+            self.reads.insert(request, target);
+            actions.push(Action::ReadScript { target, request });
+        }
+        // the object-wide check, asked from the Problems dock: every script of
+        // the linkset no tab holds is read from its prim, then looked at
+        if check_asked {
+            let mut waiting = Vec::new();
+            if let Some(linkset) = linkset {
+                for prim in &linkset.prims {
+                    for script in &prim.scripts {
+                        let target = ScriptTarget {
+                            object: prim.object,
+                            item: script.item,
+                        };
+                        if self.documents.iter().any(|e| !e.closed && e.target == target) {
+                            continue;
+                        }
+                        match self.read.get(&target) {
+                            Some(read) if read.text.is_some() || read.error.is_some() => {}
+                            Some(_) => waiting.push(target),
+                            None => {
+                                let request = Uuid::new_v4();
+                                self.read.entry(target).or_default().request = Some(request);
+                                self.reads.insert(request, target);
+                                actions.push(Action::ReadScript { target, request });
+                                waiting.push(target);
+                            }
+                        }
+                    }
+                }
+            }
+            self.checks.insert(
+                root,
+                Check {
+                    done: waiting.is_empty(),
+                    waiting,
+                    rows: Vec::new(),
+                },
+            );
+        }
+        // once every script it waits for is here, the check says what it sees
+        let ready = self.checks.get(&root).is_some_and(|check| {
+            !check.done
+                && check.waiting.iter().all(|target| {
+                    self.read
+                        .get(target)
+                        .is_some_and(|read| read.text.is_some() || read.error.is_some())
+                })
+        });
+        if ready {
+            let mut rows = Vec::new();
+            if let Some(linkset) = linkset {
+                for prim in &linkset.prims {
+                    for script in &prim.scripts {
+                        let target = ScriptTarget {
+                            object: prim.object,
+                            item: script.item,
+                        };
+                        if self.documents.iter().any(|e| !e.closed && e.target == target) {
+                            continue;
+                        }
+                        let Some(read) = self.read.get(&target) else {
+                            continue;
+                        };
+                        if let Some(reason) = &read.error {
+                            rows.push((
+                                target,
+                                script.name.clone(),
+                                0,
+                                aurora_i18n::tr!("script-check-unreachable", name = script.name.as_str(), reason = reason.as_str())
+                                    .to_string(),
+                            ));
+                        } else if let Some(text) = &read.text {
+                            for finding in check::structure(text) {
+                                let (line, message) = match finding {
+                                    check::Finding::StrayClose { line } => (line, aurora_i18n::tr!("script-check-stray-close")),
+                                    check::Finding::OpenBlock { line } => (line, aurora_i18n::tr!("script-check-open-block")),
+                                    check::Finding::OpenString { line } => (line, aurora_i18n::tr!("script-check-open-string")),
+                                    check::Finding::OpenComment { line } => (line, aurora_i18n::tr!("script-check-open-comment")),
+                                };
+                                rows.push((target, script.name.clone(), line, message.to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(check) = self.checks.get_mut(&root) {
+                check.rows = rows;
+                check.done = true;
+            }
+        }
+        // the check's rows, under each script's name, after the window's own
+        let mut check_rows: Vec<(ScriptTarget, usize)> = Vec::new();
+        if let Some(check) = self.checks.get(&root) {
+            for (target, name, line, message) in &check.rows {
+                check_rows.push((*target, problems.len()));
+                problems.push(view::Problem {
+                    source: name.clone(),
+                    line: *line,
+                    column: 0,
+                    message: message.clone(),
+                });
+            }
+        }
         // the References tab's places: the name in code, the whole name each
+        let open_docs: Vec<(usize, &str, &str, bool)> = open
+            .iter()
+            .filter_map(|(document, _, name, source, lua)| Some(((*document)?, *name, *source, *lua)))
+            .collect();
         let reference_hits = self
             .references
             .get(&root)
-            .map(|state| navigate::references(&scripts, &state.word))
+            .map(|state| navigate::references(&open_docs, &state.word))
             .unwrap_or_default();
         // Ctrl+P: the window's scripts in a quick open list, from the script in
         // front (the filter field when the listing is not there yet)
@@ -1683,6 +1873,13 @@ impl Editors {
         // Save All: every script this window has open that has something to save
         let save_all = self.documents.iter().any(|e| !e.closed && e.linkset == root && e.can_save());
         let reference_word = self.references.get(&root).map(|state| state.word.clone()).unwrap_or_default();
+        // what the Problems dock says of the object-wide check, while it runs
+        let check = Some(view::CheckDock {
+            waiting: self
+                .checks
+                .get(&root)
+                .and_then(|check| (!check.done).then_some(check.waiting.len())),
+        });
         let mut open = true;
         let mut select = None;
         let mut close_one = None;
@@ -1825,6 +2022,7 @@ impl Editors {
                             let search = Some(view::SearchDock {
                                 query: dock_search,
                                 hits: &hits,
+                                object: self.search_object.entry(root).or_default(),
                             });
                             if let Some((left, right)) = split {
                                 let left_id = egui::Id::unique((&Self::document_id(&self.documents[left]), "source_text"));
@@ -1852,6 +2050,7 @@ impl Editors {
                                         name: &mut self.references.entry(root).or_default().name,
                                         hits: &reference_hits,
                                     }),
+                                    check,
                                 );
                                 clicked_problem = dock;
                                 if let Some(target) = focus {
@@ -1879,6 +2078,7 @@ impl Editors {
                                         name: &mut self.references.entry(root).or_default().name,
                                         hits: &reference_hits,
                                     }),
+                                    check,
                                 );
                             }
                         }
@@ -1940,7 +2140,10 @@ impl Editors {
         if let Some(click) = clicked_problem {
             match click {
                 view::DockClick::Problem(row) => {
-                    if let (Some(&index), Some(problem)) = (problem_rows.get(row), problems.get(row)) {
+                    if let Some((target, _)) = check_rows.iter().find(|(_, index)| *index == row) {
+                        // a script no tab holds: opening it is the way there
+                        actions.push(Action::OpenScript(*target));
+                    } else if let (Some(&index), Some(problem)) = (problem_rows.get(row), problems.get(row)) {
                         let e = &mut self.documents[index];
                         self.active.insert(root, e.target);
                         let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
@@ -1957,10 +2160,16 @@ impl Editors {
                 }
                 view::DockClick::Search(index) => {
                     if let Some(hit) = hits.get(index) {
-                        let e = &mut self.documents[hit.document];
-                        self.active.insert(root, e.target);
-                        let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
-                        view::go_to_line(ctx, e, body_id, hit.line, hit.column);
+                        match hit.document {
+                            Some(document) => {
+                                let e = &mut self.documents[document];
+                                self.active.insert(root, e.target);
+                                let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
+                                view::go_to_line(ctx, e, body_id, hit.line, hit.column);
+                            }
+                            // a script the object scope read has no tab yet
+                            None => actions.push(Action::OpenScript(hit.target)),
+                        }
                     }
                 }
                 view::DockClick::Reference(index) => {
@@ -1970,6 +2179,9 @@ impl Editors {
                         let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
                         view::go_to_line(ctx, e, body_id, hit.line, hit.column);
                     }
+                }
+                view::DockClick::Check => {
+                    self.documents[active_index].tools.check_object = true;
                 }
                 view::DockClick::Rename => {
                     let state = self.references.entry(root).or_default();
@@ -5005,6 +5217,107 @@ print(\"bye\")"
         assert_eq!(
             editors.references.get(&linkset.root).map(|state| state.word.as_str()),
             Some("amount")
+        );
+    }
+
+    /// The Search tab's object scope looks in the scripts of the linkset no tab
+    /// holds, read from their prim, and a click opens the script it is in.
+    #[test]
+    fn the_object_scope_searches_the_scripts_no_tab_holds() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let (linkset, panel, door) = linkset_fixture();
+        let mut settings = settings::ScriptSettings::default();
+        let load = editors.open(panel, "Panel Script".into(), true, true, 0).unwrap();
+        editors.loaded(load, panel, Ok("alpha here;\n".into()));
+        editors.documents.iter_mut().find(|e| e.target == panel).unwrap().linkset = linkset.root;
+        let linksets = std::slice::from_ref(&linkset);
+        for _ in 0..3 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        editors.dock_search.insert(linkset.root, "alpha".into());
+        editors.dock_tabs.insert(linkset.root, view::DockTab::Search);
+        editors.search_object.insert(linkset.root, true);
+        // the door's script has no tab: the window asks for its text
+        let (_, actions) = frame_linksets_actions(&ctx, &mut editors, &mut settings, vec![], linksets);
+        let request = actions
+            .iter()
+            .find_map(|action| match action {
+                Action::ReadScript { target, request } if *target == door => Some(*request),
+                _ => None,
+            })
+            .expect("the script no tab holds is read");
+        editors.loaded(request, door, Ok("also alpha\n".into()));
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        let listed = |label: &str| {
+            output
+                .shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == label))
+        };
+        assert!(listed("alpha here;"), "the tab's own script");
+        assert!(listed("also alpha"), "and the one read from its prim");
+        // a click opens that script, which has no tab yet
+        let hit = text_at(&output, "also alpha");
+        let actions = click_at(&ctx, &mut editors, &mut settings, linksets, hit, egui::PointerButton::Primary);
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, Action::OpenScript(target) if *target == door)),
+            "the script no tab holds is opened on its hit"
+        );
+        // the window's own scripts alone: the read one is left out
+        editors.search_object.insert(linkset.root, false);
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        let still = output
+            .shapes
+            .iter()
+            .any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "also alpha"));
+        assert!(!still, "the object's script is out of the window's scope");
+    }
+
+    /// Check object reads every script of the linkset and says what it sees in
+    /// them: here, a block a script no tab holds never closes.
+    #[test]
+    fn the_object_check_reads_the_whole_object_and_finds_an_open_block() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let (linkset, panel, door) = linkset_fixture();
+        let mut settings = settings::ScriptSettings::default();
+        let load = editors.open(panel, "Panel Script".into(), true, true, 0).unwrap();
+        editors.loaded(load, panel, Ok("default { }\n".into()));
+        editors.documents.iter_mut().find(|e| e.target == panel).unwrap().linkset = linkset.root;
+        let linksets = std::slice::from_ref(&linkset);
+        for _ in 0..3 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        // the dock's Check object
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        let ask = text_at(&output, aurora_i18n::tr!("script-check-object").as_ref());
+        click_at(&ctx, &mut editors, &mut settings, linksets, ask, egui::PointerButton::Primary);
+        // it reads the script no tab holds
+        let (_, actions) = frame_linksets_actions(&ctx, &mut editors, &mut settings, vec![], linksets);
+        let request = actions
+            .iter()
+            .find_map(|action| match action {
+                Action::ReadScript { target, request } if *target == door => Some(*request),
+                _ => None,
+            })
+            .expect("the door's script is read");
+        editors.loaded(request, door, Ok("default\n{\n    state_entry()\n    {\n}\n".into()));
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        let block = aurora_i18n::tr!("script-check-open-block");
+        assert!(
+            output
+                .shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == block)),
+            "the check says the block never closes"
+        );
+        assert!(
+            output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text)
+                if text.galley.job.text.starts_with("Door Script"))),
+            "under the script's name"
         );
     }
 

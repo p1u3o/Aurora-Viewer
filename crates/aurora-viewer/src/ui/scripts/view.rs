@@ -75,6 +75,8 @@ pub(super) struct Tools {
     /// The notice over this source the reader has put away: it comes back when
     /// another one takes its place.
     pub(super) notice_hidden: Option<Notice>,
+    /// The dock's Check object, asked: the window reads the object's scripts.
+    pub(super) check_object: bool,
     /// The snippet the reader is filling, its placeholders walked with Tab.
     pub(super) snippet: Option<complete::Snippet>,
     footer_height: f32,
@@ -397,6 +399,7 @@ pub(super) fn body(
     tab: &mut DockTab,
     search: Option<SearchDock<'_>>,
     references: Option<ReferencesDock<'_>>,
+    check: Option<CheckDock>,
 ) -> Option<DockClick> {
     let ctx = ui.ctx().clone();
     e.tools.body_top = ui.cursor().top();
@@ -474,7 +477,7 @@ pub(super) fn body(
         crumbs_row(ui, p, e, id, settings, problems, tab, true);
     }
     let clicked = if dock_height > 0.0 {
-        dock(ui, p, e, problems, all_sources, folded, tab, search, references)
+        dock(ui, p, e, problems, all_sources, folded, tab, search, references, check)
     } else {
         None
     };
@@ -516,6 +519,7 @@ pub(super) fn split_body(
     tab: &mut DockTab,
     search: Option<SearchDock<'_>>,
     references: Option<ReferencesDock<'_>>,
+    check: Option<CheckDock>,
 ) -> (Option<DockClick>, Option<ScriptTarget>) {
     // Two equal columns: egui splits the width exactly, and each column's own
     // layout keeps the two sources at the same height.
@@ -561,7 +565,7 @@ pub(super) fn split_body(
         Side::Right => &mut *right,
     };
     let clicked = if dock_height > 0.0 {
-        dock(ui, p, front, problems, all_sources, folded, tab, search, references)
+        dock(ui, p, front, problems, all_sources, folded, tab, search, references, check)
     } else {
         None
     };
@@ -607,6 +611,8 @@ pub(super) enum DockClick {
     Reference(usize),
     /// Rename every reference of the tab to the new name.
     Rename,
+    /// Check every script of the window's object.
+    Check,
 }
 
 /// The Search tab's state for one frame: the query being typed and the hits
@@ -614,6 +620,15 @@ pub(super) enum DockClick {
 pub(super) struct SearchDock<'a> {
     pub query: &'a mut String,
     pub hits: &'a [super::navigate::Hit],
+    /// Every script of the linkset, the ones no tab holds read from their prim.
+    pub object: &'a mut bool,
+}
+
+/// What the Problems dock says of the object-wide check: how many scripts it
+/// still reads, when it runs.
+#[derive(Clone, Copy)]
+pub(super) struct CheckDock {
+    pub waiting: Option<usize>,
 }
 
 /// The References tab's state for one frame: the name the window is renaming,
@@ -701,10 +716,26 @@ fn cell(ui: &mut egui::Ui, width: f32, text: RichText, truncate: bool) {
 /// The Search tab of the dock: a field and the word's hits in the window's
 /// scripts, a click away from each. `query` is the window's own.
 fn search_dock(ui: &mut egui::Ui, p: &Palette, search: SearchDock<'_>) -> Option<DockClick> {
-    let SearchDock { query, hits } = search;
+    let SearchDock { query, hits, object } = search;
     let mut clicked = None;
     let width = ui.available_width();
     let clear = !query.is_empty();
+    // the window's own scripts, or every script of the object
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        if ui
+            .selectable_label(!*object, RichText::new(aurora_i18n::tr!("script-search-scope-window")).size(11.0))
+            .clicked()
+        {
+            *object = false;
+        }
+        if ui
+            .selectable_label(*object, RichText::new(aurora_i18n::tr!("script-search-scope-object")).size(11.0))
+            .clicked()
+        {
+            *object = true;
+        }
+    });
     let (_, cleared) = inventory::tree::search_field(
         ui,
         p,
@@ -846,6 +877,7 @@ fn dock(
     tab: &mut DockTab,
     search: Option<SearchDock<'_>>,
     references: Option<ReferencesDock<'_>>,
+    check: Option<CheckDock>,
 ) -> Option<DockClick> {
     let mut clicked = None;
     // Exactly the room reserved for it, whatever the list holds: the dock
@@ -918,6 +950,25 @@ fn dock(
                                 .clicked()
                         {
                             *tab = DockTab::References;
+                        }
+                        // the object's every script, checked from the dock
+                        if *tab == DockTab::Problems
+                            && let Some(check) = &check
+                        {
+                            match check.waiting {
+                                Some(count) => {
+                                    ui.label(
+                                        RichText::new(aurora_i18n::tr!("script-check-running", count = count as i64))
+                                            .size(11.0)
+                                            .color(p.muted),
+                                    );
+                                }
+                                None => {
+                                    if flat_button(ui, p, aurora_i18n::tr!("script-check-object")).clicked() {
+                                        clicked = Some(DockClick::Check);
+                                    }
+                                }
+                            }
                         }
                         if *tab == DockTab::Problems
                             && let Some(all) = all_sources
@@ -2896,6 +2947,7 @@ mod tests {
                                     None,
                                     &mut false,
                                     &mut DockTab::default(),
+                                    None,
                                     None,
                                     None,
                                 );
