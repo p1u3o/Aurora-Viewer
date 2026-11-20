@@ -404,6 +404,11 @@ pub(super) struct Tab<'a> {
 pub(super) enum Tabs {
     None,
     Select(ScriptTarget),
+    /// A tab dragged over another one, which takes its place.
+    Reorder {
+        from: ScriptTarget,
+        to: ScriptTarget,
+    },
     Close(ScriptTarget),
     CloseOthers(ScriptTarget),
     CloseAll,
@@ -430,6 +435,9 @@ pub(super) fn tabs(
     split: Option<(ScriptTarget, ScriptTarget)>,
 ) -> Tabs {
     let mut answer = Tabs::None;
+    // where each tab was drawn, and whether a drag began on it: the places a
+    // tab dragged by its strip can be dropped on
+    let mut zones: Vec<(ScriptTarget, egui::Rect, bool)> = Vec::new();
     let font = widgets::control_font(ui, 12.0);
     // as tall as the tree's filter field, which shares its row
     let height = ui.spacing().interact_size.y.max(24.0);
@@ -451,7 +459,7 @@ pub(super) fn tabs(
                 if let Some((left, right)) = pair {
                     split_tab(ui, p, left, right, active, background, &font, height, uv, &mut answer);
                     for tab in tabs.iter().filter(|tab| tab.target != left.target && tab.target != right.target) {
-                        single_tab(ui, p, tab, false, background, &font, height, uv, split_open, &mut answer);
+                        single_tab(ui, p, tab, false, background, &font, height, uv, split_open, &mut answer, None);
                     }
                 } else {
                     for tab in tabs {
@@ -466,11 +474,61 @@ pub(super) fn tabs(
                             uv,
                             split_open,
                             &mut answer,
+                            Some(&mut zones),
                         );
                     }
                 }
             });
         });
+    // A tab dragged by its strip lifts with the pointer and takes the place of
+    // the tab it is dropped on (not with a split open: the pair is one tab).
+    if pair.is_none() && zones.len() > 1 {
+        let ctx = ui.ctx().clone();
+        let drag = ui.scope_id().with("script_tabs_reorder");
+        for (index, (_, _, started)) in zones.iter().enumerate() {
+            if *started {
+                ctx.data_mut(|d| d.insert_temp(drag, index));
+            }
+        }
+        if let Some(from) = ctx.data(|d| d.get_temp::<usize>(drag))
+            && from < zones.len()
+        {
+            let pointer = ctx.input(|i| i.pointer.interact_pos());
+            if let Some(pos) = pointer
+                && ctx.input(|i| i.pointer.any_down())
+                && let Some(tab) = tabs.iter().find(|tab| tab.target == zones[from].0)
+            {
+                let label = if tab.dirty {
+                    format!("{} *", tab.name)
+                } else {
+                    tab.name.to_owned()
+                };
+                let galley = ui.fonts_mut(|fonts| fonts.layout_no_wrap(label, font.clone(), p.ink));
+                let lifted = egui::Rect::from_center_size(pos, galley.size() + Vec2::new(26.0, 12.0));
+                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, drag));
+                painter.rect_filled(lifted, ui.visuals().window_corner_radius, p.field);
+                painter.rect_stroke(
+                    lifted,
+                    ui.visuals().window_corner_radius,
+                    egui::Stroke::new(1.0, p.violet),
+                    egui::StrokeKind::Inside,
+                );
+                painter.galley(lifted.center() - galley.size() / 2.0, galley, p.ink);
+            }
+            if ctx.input(|i| i.pointer.any_released()) {
+                let to = pointer
+                    .and_then(|pos| zones.iter().position(|(_, rect, _)| pos.x >= rect.left() && pos.x <= rect.right()))
+                    .unwrap_or(from);
+                ctx.data_mut(|d| d.remove_temp::<usize>(drag));
+                if to != from {
+                    answer = Tabs::Reorder {
+                        from: zones[from].0,
+                        to: zones[to].0,
+                    };
+                }
+            }
+        }
+    }
     answer
 }
 
@@ -488,6 +546,7 @@ fn single_tab(
     uv: egui::Rect,
     split_open: bool,
     answer: &mut Tabs,
+    zones: Option<&mut Vec<(ScriptTarget, egui::Rect, bool)>>,
 ) {
     let label = if tab.dirty {
         format!("{} *", tab.name)
@@ -496,7 +555,10 @@ fn single_tab(
     };
     let name = ui.painter().layout_no_wrap(label, font.clone(), p.muted);
     let width = 26.0 + name.size().x + 20.0;
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click_and_drag());
+    if let Some(zones) = zones {
+        zones.push((tab.target, rect, response.drag_started()));
+    }
     let fill = if selected {
         background
     } else if response.hovered() {
@@ -577,7 +639,7 @@ fn split_tab(
     let right_width = measure(&label(right));
     let after_name = ICON + GAP + CROSS;
     let width = PAD + after_name + left_width + MARK + after_name + right_width + PAD;
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click_and_drag());
     let fill = if response.hovered() {
         background.lerp_to_gamma(p.raised, 0.18)
     } else {

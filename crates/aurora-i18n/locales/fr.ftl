@@ -10110,11 +10110,6 @@ script-check-reading = { $count ->
     [one] Lecture de { $count } script…
    *[other] Lecture de { $count } scripts…
     }
-script-check-clean = Objet vérifié : rien à signaler.
-script-check-findings = { $count ->
-    [one] Objet vérifié : { $count } constat.
-   *[other] Objet vérifié : { $count } constats.
-    }
 script-check-unreachable = { $name } n’a pas pu être lu : { $reason }
 script-check-stray-close = Un « {"}"} » ne ferme aucun bloc.
 script-check-open-block = Un « {"{"} » n’est jamais fermé.

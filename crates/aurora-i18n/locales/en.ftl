@@ -10114,11 +10114,6 @@ script-check-reading = { $count ->
     [one] Reading { $count } script…
    *[other] Reading { $count } scripts…
     }
-script-check-clean = Checked the object: nothing to report.
-script-check-findings = { $count ->
-    [one] Checked the object: { $count } finding.
-   *[other] Checked the object: { $count } findings.
-    }
 script-check-unreachable = { $name } could not be read: { $reason }
 script-check-stray-close = A {"}"} closes no block.
 script-check-open-block = A {"{"} is never closed.

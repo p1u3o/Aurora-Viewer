@@ -2842,8 +2842,9 @@ opens the first and the last: the window shows the tree of the linkset on the
 left, its filter field at the top of its own panel -- level with the first
 line of the source, so the tree and the text start on the same line -- and a
 star on the script whose text is unsaved; the File, Edit, Insert and Help
-menus and the toolbar (Save All included) above it, and a tab strip over the
-whole window, above the tree and the source. The source shows the current line,
+menus and the toolbar (Save All included) above it, and a tab strip above the
+source, its first tab's left edge on the source's, each tab dragged into
+another order. The source shows the current line,
 indent guides, change bars against the saved script, and the status readout
 (Line, column, Spaces, size); a failing compile fills the Problems dock under
 it, whose rows go to their line and which stays with "No problems." when
@@ -2878,9 +2879,9 @@ to press: as the window opens and again whenever a text changes, it lists
 what the viewer sees in them under each script's name -- a block a script
 never closes, a `}` that closes none, a string or a comment left open -- and
 the scripts it could not read (a click on such a row opens the script). The
-header says "Reading 2 scripts…" while it waits, then "Checked the object: 3
-findings" or "nothing to report", small, just left of the scope's dropdown,
-with a refresh button when a script could not be read. The dock's tabs look
+header says "Reading 2 scripts…" while it waits, with a refresh button when a
+script could not be read; what it found is the list itself, so nothing repeats
+"No problems." alongside it. The dock's tabs look
 alike: the columns of the table (the script, the line, then what the row
 says), the text of its rows and headers, the padding, and a field drawn as
 the Search tab's; a tab drags into another order, kept in the settings

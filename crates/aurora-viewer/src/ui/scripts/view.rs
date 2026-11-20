@@ -695,7 +695,6 @@ pub(super) struct SearchDock<'a> {
 #[derive(Clone, Copy)]
 pub(super) struct CheckDock {
     pub reading: usize,
-    pub found: usize,
     /// A script could not be read: offer to read the object's scripts again.
     pub retry: bool,
 }
@@ -1082,11 +1081,11 @@ fn dock(
             let labels: Vec<(&str, bool)> = labels.iter().map(|(label, enabled)| (label.as_str(), *enabled)).collect();
             // the status of the object's check and the scope's room, so that
             // the tabs take what is left of the row
+            // what it is still reading; what it found is the list itself, so
+            // that nothing repeats "No problems." under the header
             let status = (*tab == DockTab::Problems).then(|| match &check {
                 Some(check) if check.reading > 0 => aurora_i18n::tr!("script-check-reading", count = check.reading as i64).to_string(),
-                Some(check) if check.found == 0 => aurora_i18n::tr!("script-check-clean").to_string(),
-                Some(check) => aurora_i18n::tr!("script-check-findings", count = check.found as i64).to_string(),
-                None => String::new(),
+                _ => String::new(),
             });
             let status = status.filter(|text| !text.is_empty());
             let retry = *tab == DockTab::Problems && check.as_ref().is_some_and(|check| check.retry);

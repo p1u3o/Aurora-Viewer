@@ -344,6 +344,9 @@ pub struct Editors {
     /// The two scripts a window shows side by side, left then right, by its
     /// root. The one in front is one of them.
     splits: std::collections::HashMap<Uuid, (ScriptTarget, ScriptTarget)>,
+    /// The scripts of each window's tab strip, in the order the reader dragged
+    /// them into, by the window's root.
+    tab_order: std::collections::HashMap<Uuid, Vec<ScriptTarget>>,
     /// The prim each window's tree is to open because the script in it was
     /// just chosen: a script brought to the front shows in the tree.
     reveal: std::collections::HashMap<Uuid, Uuid>,
@@ -392,6 +395,27 @@ struct PendingInclude {
     owner: ScriptTarget,
     asset: Uuid,
     reply: std::sync::mpsc::Sender<Result<preprocessor::Include, String>>,
+}
+
+/// The tab strip's order once `moved` is dropped on `onto`: before it when it
+/// comes from its right, after it when it comes from its left.
+fn reorder_targets(order: &mut Vec<ScriptTarget>, moved: ScriptTarget, onto: ScriptTarget) {
+    let Some(from) = order.iter().position(|target| *target == moved) else {
+        return;
+    };
+    let Some(at) = order.iter().position(|target| *target == onto) else {
+        return;
+    };
+    if from == at {
+        return;
+    }
+    order.remove(from);
+    let anchor = order
+        .iter()
+        .position(|target| *target == onto)
+        .unwrap_or(order.len().saturating_sub(1));
+    let slot = if from < at { anchor + 1 } else { anchor };
+    order.insert(slot.min(order.len()), moved);
 }
 
 impl Editors {
@@ -1915,11 +1939,7 @@ impl Editors {
         let reference_word = self.references.get(&root).map(|state| state.word.clone()).unwrap_or_default();
         // what the Problems dock says of the object: what it is still reading,
         // and what it found
-        let check = Some(view::CheckDock {
-            reading,
-            found: self.checks.get(&root).map_or(0, |check| check.rows.len()),
-            retry,
-        });
+        let check = Some(view::CheckDock { reading, retry });
         let mut open = true;
         let mut select = None;
         let mut close_one = None;
@@ -1974,18 +1994,22 @@ impl Editors {
                     .unwrap_or("")
             };
             ui.scope(|ui| {
-                // The tabs of the open scripts take the window's width; the
-                // tree, its filter inside its panel, starts under them, level
-                // with the source, and its bottom lands on the source's status
-                // bar.
+                // The tabs of the open scripts start where the source does, and
+                // the tree, its filter inside its panel, starts under them,
+                // level with the source; its bottom lands on the source's
+                // status bar.
                 ui.spacing_mut().item_spacing.y = 0.0;
                 let header = ui.spacing().interact_size.y.max(24.0);
                 ui.horizontal_top(|ui| {
+                    // the tree's room, then the same gap the source takes: the
+                    // first tab's left edge lines up with the text box's
+                    ui.allocate_exact_size(Vec2::new(tree_width, header), egui::Sense::hover());
+                    ui.add_space(gap);
                     ui.allocate_ui_with_layout(
                         Vec2::new(ui.available_width(), header),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
-                            let tabs: Vec<linkset::Tab> = self
+                            let mut tabs: Vec<linkset::Tab> = self
                                 .documents
                                 .iter()
                                 .filter(|e| !e.closed && e.linkset == root)
@@ -1997,6 +2021,11 @@ impl Editors {
                                     dirty: e.dirty(),
                                 })
                                 .collect();
+                            // in the order the reader dragged them into; the
+                            // rest keep the order they were opened in
+                            if let Some(order) = self.tab_order.get(&root) {
+                                tabs.sort_by_key(|tab| order.iter().position(|target| *target == tab.target).unwrap_or(usize::MAX));
+                            }
                             match linkset::tabs(
                                 ui,
                                 p,
@@ -2006,6 +2035,22 @@ impl Editors {
                                 self.splits.get(&root).copied(),
                             ) {
                                 linkset::Tabs::Select(target) => select = Some(target),
+                                linkset::Tabs::Reorder { from, to } => {
+                                    let current: Vec<ScriptTarget> = self
+                                        .documents
+                                        .iter()
+                                        .filter(|e| !e.closed && e.linkset == root)
+                                        .map(|e| e.target)
+                                        .collect();
+                                    let order = self.tab_order.entry(root).or_insert_with(|| current.clone());
+                                    order.retain(|target| current.contains(target));
+                                    reorder_targets(order, from, to);
+                                    for target in current {
+                                        if !order.contains(&target) {
+                                            order.push(target);
+                                        }
+                                    }
+                                }
                                 linkset::Tabs::Close(target) => close_one = Some(target),
                                 linkset::Tabs::CloseOthers(target) => close_others = Some(target),
                                 linkset::Tabs::CloseAll => close_all = true,
@@ -4140,9 +4185,10 @@ print(\"bye\")"
     }
 
     /// The tree shows the contents window's C/M/T letters on each script, the
-    /// tab strip runs over the whole window, and the filter of the scripts sits
-    /// at the top of the tree's own panel: its row is level with the editor's
-    /// first line, the panel starting where the source does.
+    /// tab strip starts over the source, its first tab lined up with the text,
+    /// and the filter of the scripts sits at the top of the tree's own panel:
+    /// its row is level with the editor's first line, the panel starting where
+    /// the source does.
     #[test]
     fn the_tree_shows_the_rights_under_tabs_that_span_the_window() {
         let ctx = egui::Context::default();
@@ -4182,8 +4228,8 @@ print(\"bye\")"
         let source = of("door source").expect("the source");
         assert!(tab.y < filter.y - 10.0, "the tabs sit above the panel: {} and {}", tab.y, filter.y);
         assert!(
-            first.x < filter.x + 120.0,
-            "the strip starts at the window's left, over the tree: {} and {}",
+            first.x > filter.x + 150.0 && first.x < source.x,
+            "the strip starts over the source, past the tree: {} and {}",
             first.x,
             filter.x
         );
@@ -5337,6 +5383,20 @@ print(\"bye\")"
             .iter()
             .any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "also alpha"));
         assert!(!still, "the object's script is out of the window's scope");
+    }
+
+    /// A tab dragged over another takes its place: before it when it comes
+    /// from its right, after it when it comes from its left.
+    #[test]
+    fn a_script_tab_dragged_over_another_takes_its_place() {
+        let (a, b, c) = (target(61), target(62), target(63));
+        let mut order = vec![a, b, c];
+        reorder_targets(&mut order, c, a);
+        assert_eq!(order, vec![c, a, b], "from the right, before it");
+        reorder_targets(&mut order, c, b);
+        assert_eq!(order, vec![a, b, c], "from the left, after it");
+        reorder_targets(&mut order, a, a);
+        assert_eq!(order, vec![a, b, c], "dropped on itself");
     }
 
     /// The order the reader drags the dock's tabs into is kept, and a list
