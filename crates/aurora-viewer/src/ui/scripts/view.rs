@@ -877,7 +877,9 @@ fn outline_dock(ui: &mut egui::Ui, p: &Palette, e: &Editor) -> Option<DockClick>
                     super::outline::Kind::Function => ("function-filled", p.indigo_light),
                     super::outline::Kind::Global => ("variable", p.muted),
                 };
-                let label = widgets::name_with_suffix(&item.name, &format!("   {}", item.line + first), inventory::tree::font(), p.ink);
+                // the text of the dock's tables, at the same size
+                let font = crate::ui::widgets::control_font(ui, DOCK_TEXT);
+                let label = widgets::name_with_suffix(&item.name, &format!("   {}", item.line + first), font, p.ink);
                 let row = ui
                     .horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
