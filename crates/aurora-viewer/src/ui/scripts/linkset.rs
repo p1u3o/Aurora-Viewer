@@ -222,26 +222,36 @@ pub(super) fn filter(ui: &mut egui::Ui, p: &Palette, text: &mut String, focus: b
 }
 
 /// The tree of the linkset: a group per prim, its scripts under it. Returns
-/// what a click or a menu entry of a row asked for. `needle` is the filter
-/// field's text (lowercase, trimmed): the scripts whose name does not contain
-/// it are hidden (a prim whose name matches keeps all of its scripts).
+/// what a click or a menu entry of a row asked for. `filter_text` is the
+/// field's own text, drawn at the top of the panel: the scripts whose name
+/// does not contain it are hidden (a prim whose name matches keeps all of its
+/// scripts).
 pub(super) fn tree(
     ui: &mut egui::Ui,
     p: &Palette,
     linkset: Option<&Linkset>,
     active: Option<ScriptTarget>,
-    needle: &str,
+    filter_text: &mut String,
+    filter_focus: bool,
 ) -> Option<TreeAction> {
     let ctx = ui.ctx().clone();
     let mut chosen = None;
-    // the foot holds one row, as the inventory tree's holds its Trash
+    // the filter's row, inside the panel, then the list, then the foot, which
+    // holds one row as the inventory tree's holds its Trash
+    let field = ui.spacing().interact_size.y.max(24.0) + 6.0;
     let foot = FOOT;
-    let height = (ui.available_height() - 6.0 - foot).max(60.0);
+    let height = (ui.available_height() - field - 6.0 - foot).max(60.0);
     inventory::tree::frame(ui, p, |ui| {
         // the panel reaches the window's bottom, as the source's status bar
         // does, rather than stopping under its last row
         ui.set_min_height(ui.available_height());
         inventory::tree::spacing(ui);
+        // the filter belongs to the list it filters: inside its panel, above
+        // its first row
+        filter(ui, p, filter_text, filter_focus);
+        ui.add_space(6.0);
+        let needle = filter_text.trim().to_lowercase();
+        let needle = needle.as_str();
         inventory::tree::scroll(ui, height - 8.0).show(ui, |ui| {
             ui.set_width(ui.available_width());
             let Some(linkset) = linkset else {

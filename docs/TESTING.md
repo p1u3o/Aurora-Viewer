@@ -2839,9 +2839,11 @@ the catch-up after a long frame.
 `linkset` adds three linked prims beside the plaza at frame 280, names their
 scripts ("Panel Script", "Door Script", "Lamp Flicker", "Lamp Sparkle") and
 opens the first and the last: the window shows the tree of the linkset on the
-left, with a filter field and a star on the script whose text is unsaved, the
-File, Edit, Insert and Help menus and the toolbar (Save All included) above
-it, and a tab strip flush above the source. The source shows the current line,
+left, its filter field at the top of its own panel -- level with the first
+line of the source, so the tree and the text start on the same line -- and a
+star on the script whose text is unsaved; the File, Edit, Insert and Help
+menus and the toolbar (Save All included) above it, and a tab strip over the
+whole window, above the tree and the source. The source shows the current line,
 indent guides, change bars against the saved script, and the status readout
 (Line, column, Spaces, size); a failing compile fills the Problems dock under
 it, whose rows go to their line and which stays with "No problems." when

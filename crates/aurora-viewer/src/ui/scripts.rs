@@ -1974,59 +1974,57 @@ impl Editors {
                     .unwrap_or("")
             };
             ui.scope(|ui| {
-                // The filter of the tree and the tabs of the open scripts share
-                // one row, both as tall as a field: the tree's list and the
-                // source line up under them, and the tree's bottom lands on the
-                // source's status bar.
+                // The tabs of the open scripts take the window's width; the
+                // tree, its filter inside its panel, starts under them, level
+                // with the source, and its bottom lands on the source's status
+                // bar.
                 ui.spacing_mut().item_spacing.y = 0.0;
                 let header = ui.spacing().interact_size.y.max(24.0);
                 ui.horizontal_top(|ui| {
-                    ui.allocate_ui_with_layout(Vec2::new(tree_width, header), egui::Layout::top_down(egui::Align::Min), |ui| {
-                        linkset::filter(ui, p, filter, filter_focus)
-                    });
-                    ui.add_space(gap);
-                    let width = ui.available_width();
-                    ui.allocate_ui_with_layout(Vec2::new(width, header), egui::Layout::top_down(egui::Align::Min), |ui| {
-                        let tabs: Vec<linkset::Tab> = self
-                            .documents
-                            .iter()
-                            .filter(|e| !e.closed && e.linkset == root)
-                            .map(|e| linkset::Tab {
-                                target: e.target,
-                                name: &e.name,
-                                prim: prim_of(e.target.object),
-                                lua: e.lua(),
-                                dirty: e.dirty(),
-                            })
-                            .collect();
-                        match linkset::tabs(
-                            ui,
-                            p,
-                            &tabs,
-                            Some(active),
-                            settings.color(settings::ColorRole::Background, p),
-                            self.splits.get(&root).copied(),
-                        ) {
-                            linkset::Tabs::Select(target) => select = Some(target),
-                            linkset::Tabs::Close(target) => close_one = Some(target),
-                            linkset::Tabs::CloseOthers(target) => close_others = Some(target),
-                            linkset::Tabs::CloseAll => close_all = true,
-                            linkset::Tabs::Split(target) => split_open_at = Some(target),
-                            linkset::Tabs::Unsplit => unsplit = true,
-                            linkset::Tabs::None => {}
-                        }
-                    });
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(ui.available_width(), header),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            let tabs: Vec<linkset::Tab> = self
+                                .documents
+                                .iter()
+                                .filter(|e| !e.closed && e.linkset == root)
+                                .map(|e| linkset::Tab {
+                                    target: e.target,
+                                    name: &e.name,
+                                    prim: prim_of(e.target.object),
+                                    lua: e.lua(),
+                                    dirty: e.dirty(),
+                                })
+                                .collect();
+                            match linkset::tabs(
+                                ui,
+                                p,
+                                &tabs,
+                                Some(active),
+                                settings.color(settings::ColorRole::Background, p),
+                                self.splits.get(&root).copied(),
+                            ) {
+                                linkset::Tabs::Select(target) => select = Some(target),
+                                linkset::Tabs::Close(target) => close_one = Some(target),
+                                linkset::Tabs::CloseOthers(target) => close_others = Some(target),
+                                linkset::Tabs::CloseAll => close_all = true,
+                                linkset::Tabs::Split(target) => split_open_at = Some(target),
+                                linkset::Tabs::Unsplit => unsplit = true,
+                                linkset::Tabs::None => {}
+                            }
+                        },
+                    );
                 });
                 // the notice of the script in front, over the window's body:
                 // the tree and the sources start level under it
                 if let Some(e) = self.documents.get_mut(active_index) {
                     view::notice_bar(ui, p, e, actions, dock_tab);
                 }
-                let needle = filter.trim().to_lowercase();
                 let height = ui.available_height();
                 let columns = ui.horizontal_top(|ui| {
                     ui.allocate_ui_with_layout(Vec2::new(tree_width, height), egui::Layout::top_down(egui::Align::Min), |ui| {
-                        match linkset::tree(ui, p, linkset, Some(active), &needle) {
+                        match linkset::tree(ui, p, linkset, Some(active), filter, filter_focus) {
                             Some(linkset::TreeAction::Open(target)) => select = Some(target),
                             Some(linkset::TreeAction::Close(target)) => close_one = Some(target),
                             Some(linkset::TreeAction::Take(target)) => actions.push(Action::TakeScript {
@@ -4141,9 +4139,10 @@ print(\"bye\")"
         assert_eq!(boxes, 2, "the two other occurrences of alpha");
     }
 
-    /// The tree shows the contents window's C/M/T letters on each script, and
-    /// the tab strip runs over the whole window: the tree and the source start
-    /// on the same line under it.
+    /// The tree shows the contents window's C/M/T letters on each script, the
+    /// tab strip runs over the whole window, and the filter of the scripts sits
+    /// at the top of the tree's own panel: its row is level with the editor's
+    /// first line, the panel starting where the source does.
     #[test]
     fn the_tree_shows_the_rights_under_tabs_that_span_the_window() {
         let ctx = egui::Context::default();
@@ -4175,23 +4174,32 @@ print(\"bye\")"
             .find(|(drawn, pos)| drawn.starts_with("Door Script") && drawn.ends_with("CMT") && pos.x < 560.0)
             .unwrap_or_else(|| panic!("the row with its rights: {texts:?}"));
         assert!(row.0.starts_with("Door Script"), "{:?}", row.0);
-        // the tabs share the filter's row; the tree's list and the source start
-        // on the line under it
+        // the tabs run over the window, above the panel
+        let first = of("Panel Script").expect("the first tab");
         let tab = of("Door Script").expect("the tab");
         let filter = of("Filter scripts").expect("the tree's filter");
         let prim = of("Control Panel").expect("the tree's first prim");
         let source = of("door source").expect("the source");
+        assert!(tab.y < filter.y - 10.0, "the tabs sit above the panel: {} and {}", tab.y, filter.y);
         assert!(
-            (tab.y - filter.y).abs() <= 3.0,
-            "the tabs and the filter share a row: {} and {}",
-            tab.y,
-            filter.y
+            first.x < filter.x + 120.0,
+            "the strip starts at the window's left, over the tree: {} and {}",
+            first.x,
+            filter.x
+        );
+        // the filter is the panel's first row, level with the editor's first
+        // line: the tree and the source start on the same line
+        assert!(
+            (filter.y - source.y).abs() <= 6.0,
+            "the filter and the source start on one line: {} and {}",
+            filter.y,
+            source.y
         );
         assert!(
-            (prim.y - source.y).abs() <= 6.0,
-            "the tree's list and the source start on one line: {} and {}",
+            prim.y > filter.y + 10.0,
+            "the tree's rows come under its filter: {} and {}",
             prim.y,
-            source.y
+            filter.y
         );
     }
 
