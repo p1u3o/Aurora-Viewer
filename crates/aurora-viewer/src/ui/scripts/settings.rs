@@ -108,6 +108,10 @@ pub struct ScriptSettings {
     /// them into, by name; empty or partial, the rest keep the default order.
     #[serde(default)]
     pub dock_tabs: String,
+    /// The room of the dock under the source, as the reader dragged its top
+    /// edge: 0 for the default.
+    #[serde(default)]
+    pub dock_height: u16,
     pub search_prefer_left: bool,
     pub search_inline: bool,
     pub convert_tabs: bool,
@@ -177,6 +181,7 @@ impl Default for ScriptSettings {
             minimap: true,
             tree_width: 0,
             dock_tabs: String::new(),
+            dock_height: 0,
             search_prefer_left: false,
             search_inline: false,
             convert_tabs: true,

@@ -3764,6 +3764,39 @@ pub(crate) fn resize_side(
     None
 }
 
+/// The top edge of a panel under another: a strip that drags its height
+/// between `min` and `max`, lit while the pointer is on it, back to `default`
+/// on a double click. Returns the height it asks for, when it asks for one.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resize_edge(
+    ui: &egui::Ui,
+    p: &Palette,
+    area: egui::Rect,
+    height: f32,
+    default: f32,
+    min: f32,
+    max: f32,
+    id: egui::Id,
+) -> Option<f32> {
+    let y = area.top();
+    let hit = egui::Rect::from_min_max(egui::pos2(area.left(), y - 4.0), egui::pos2(area.right(), y + 4.0));
+    let response = ui
+        .interact(hit, id, egui::Sense::click_and_drag())
+        .on_hover_cursor(egui::CursorIcon::ResizeVertical);
+    if response.hovered() || response.dragged() {
+        ui.painter()
+            .hline(area.x_range(), y, border_stroke(p, egui::Stroke::new(1.0, p.violet_light)));
+    }
+    if response.double_clicked() {
+        return Some(default.clamp(min, max));
+    }
+    // the edge is the panel's top: pulling it up gives the panel more room
+    if response.dragged() && response.drag_delta().y != 0.0 {
+        return Some((height - response.drag_delta().y).clamp(min, max));
+    }
+    None
+}
+
 /// A row of a window's rail (Places, Appearance's showcase): icon, name,
 /// count; `depth` indents a sub-folder. The chosen row takes the accent's
 /// wash, a hovered one the raised face.

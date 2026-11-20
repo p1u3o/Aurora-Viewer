@@ -472,7 +472,7 @@ pub(super) fn body(
     let dock_room = if *folded {
         DOCK_HEADER
     } else {
-        (DOCK_HEIGHT.min(room * 0.30)).ceil()
+        dock_room(settings.dock_height, room)
     };
     let dock_height = if room >= footer_height + dock_room + SOURCE_MIN + gap * 2.0 + 8.0 {
         dock_room
@@ -561,7 +561,7 @@ pub(super) fn split_body(
     let dock_room = if *folded {
         DOCK_HEADER
     } else {
-        (DOCK_HEIGHT.min(room * 0.30)).ceil()
+        dock_room(settings.dock_height, room)
     };
     let dock_height = if room >= footer_height + dock_room + SOURCE_MIN + gap_y * 2.0 + 8.0 {
         dock_room
@@ -623,12 +623,27 @@ pub(super) fn split_body(
 }
 
 /// The room the Problems dock takes under the source.
-const DOCK_HEIGHT: f32 = 146.0;
+pub(super) const DOCK_HEIGHT: f32 = 146.0;
+/// The least room the dock keeps when its edge is dragged: its header and a
+/// row of its table; and the most, before the window's own room has a say.
+const DOCK_LEAST: f32 = 90.0;
+const DOCK_MOST: f32 = 520.0;
 /// Folded, it keeps the room of its header alone.
 const DOCK_HEADER: f32 = 30.0;
 /// The least height the source keeps: a short window gives the dock's room to
 /// the source instead.
 const SOURCE_MIN: f32 = 120.0;
+
+/// The room the dock under the source takes in a window body `room` points
+/// tall: what the reader dragged its edge to -- never less than its least, nor
+/// more than three fifths of the window, so that the text keeps the rest -- or,
+/// when nothing was dragged, the default, which a short window brings down to
+/// a third.
+fn dock_room(stored: u16, room: f32) -> f32 {
+    let wanted = if stored == 0 { DOCK_HEIGHT } else { f32::from(stored) };
+    let share = if stored == 0 { 0.30 } else { 0.60 };
+    wanted.clamp(DOCK_LEAST, DOCK_MOST).min((room * share).max(DOCK_LEAST)).ceil()
+}
 
 /// Which list the dock under the source shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -679,6 +694,8 @@ pub(super) enum DockClick {
     Check,
     /// The tabs of the dock, dragged into another order.
     Reorder([DockTab; 4]),
+    /// The dock's edge dragged to a new height.
+    Resize(f32),
 }
 
 /// The Search tab's state for one frame: the query being typed and the hits
@@ -1046,6 +1063,20 @@ fn dock(
     // the whole window with it, frame after frame.
     let height = height.max(DOCK_HEADER);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), egui::Sense::hover());
+    // the edge above the dock drags its height, and a double click takes the
+    // default back, as the tree's edge does for its width
+    if let Some(wanted) = widgets::resize_edge(
+        ui,
+        p,
+        rect,
+        height,
+        DOCK_HEIGHT,
+        DOCK_LEAST,
+        DOCK_MOST,
+        ui.scope_id().with("dock_resize"),
+    ) {
+        clicked = Some(DockClick::Resize(wanted));
+    }
     let mut ui = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect)
@@ -2819,6 +2850,21 @@ pub(super) fn poll_files(ctx: &egui::Context, e: &mut Editor, id: Id, settings: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The dock keeps the height its edge was dragged to, within its least and
+    /// the room the window leaves once the text has its own; the default is a
+    /// third of the window at most, and folding gives it its header alone.
+    #[test]
+    fn the_dock_keeps_the_height_its_edge_was_dragged_to() {
+        // nothing dragged: the default, a third of the window at most
+        assert_eq!(dock_room(0, 2000.0), DOCK_HEIGHT);
+        assert_eq!(dock_room(0, 300.0), 90.0);
+        // what the reader dragged is kept, up to three fifths of the window
+        assert_eq!(dock_room(240, 2000.0), 240.0);
+        assert_eq!(dock_room(400, 500.0), 300.0);
+        // and never less than its header and a row
+        assert_eq!(dock_room(10, 2000.0), DOCK_LEAST);
+    }
 
     /// A tab dragged onto another takes its place: before it when it comes
     /// from its right, after it when it comes from its left.

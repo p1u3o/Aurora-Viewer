@@ -397,6 +397,16 @@ struct PendingInclude {
     reply: std::sync::mpsc::Sender<Result<preprocessor::Include, String>>,
 }
 
+/// The dock's height as the settings keep it: the default is no choice at
+/// all, so a height that is the default stores 0 and follows the window.
+fn store_dock_height(height: f32) -> u16 {
+    if (height - view::DOCK_HEIGHT).abs() < 0.5 {
+        0
+    } else {
+        height.round().clamp(0.0, f32::from(u16::MAX)) as u16
+    }
+}
+
 /// The tab strip's order once `moved` is dropped on `onto`: before it when it
 /// comes from its right, after it when it comes from its left.
 fn reorder_targets(order: &mut Vec<ScriptTarget>, moved: ScriptTarget, onto: ScriptTarget) {
@@ -1568,6 +1578,11 @@ impl Editors {
                 }
             }
             // only a window of a linkset has the Search and References tabs
+            // a window of its own has the same dock, its edge dragged the same
+            Some(view::DockClick::Resize(height)) => {
+                settings.dock_height = store_dock_height(height);
+                actions.push(Action::SettingsChanged);
+            }
             Some(
                 view::DockClick::Search(_)
                 | view::DockClick::Reference(_)
@@ -2268,6 +2283,10 @@ impl Editors {
                 }
                 view::DockClick::Reorder(order) => {
                     settings.set_dock_order(order);
+                    actions.push(Action::SettingsChanged);
+                }
+                view::DockClick::Resize(height) => {
+                    settings.dock_height = store_dock_height(height);
                     actions.push(Action::SettingsChanged);
                 }
                 view::DockClick::Rename => {
@@ -5383,6 +5402,15 @@ print(\"bye\")"
             .iter()
             .any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "also alpha"));
         assert!(!still, "the object's script is out of the window's scope");
+    }
+
+    /// The dock's height is kept as the reader left it, and the default one is
+    /// not kept at all, so that it follows the size of the window.
+    #[test]
+    fn the_docks_default_height_is_not_stored() {
+        assert_eq!(store_dock_height(view::DOCK_HEIGHT), 0);
+        assert_eq!(store_dock_height(view::DOCK_HEIGHT + 0.2), 0, "close enough to the default");
+        assert_eq!(store_dock_height(300.0), 300);
     }
 
     /// A tab dragged over another takes its place: before it when it comes
