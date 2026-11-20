@@ -1567,9 +1567,9 @@ pub(super) fn run_buttons(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, action
     if let Some(running) = running {
         // the icon says what pressing it does
         let (icon, label) = if running {
-            ("player-pause", aurora_i18n::tr!("script-pause"))
+            ("player-pause-filled", aurora_i18n::tr!("script-pause"))
         } else {
-            ("player-play", aurora_i18n::tr!("script-resume"))
+            ("player-play-filled", aurora_i18n::tr!("script-resume"))
         };
         if icon_button(ui, p, icon, label, true) {
             actions.push(Action::Running {
