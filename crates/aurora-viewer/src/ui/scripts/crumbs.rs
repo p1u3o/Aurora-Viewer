@@ -127,6 +127,9 @@ fn header_start(chars: &[char], code: &[bool], brace: usize) -> usize {
         }
     }
     let mut start = at;
+    // a `for (integer i = 0; i < 3; ++i)` opens its block: the `;` inside its
+    // brackets do not end the statement
+    let mut depth = 0i32;
     while start > 0 {
         let previous = start - 1;
         if !code[previous] {
@@ -134,7 +137,12 @@ fn header_start(chars: &[char], code: &[bool], brace: usize) -> usize {
             start = previous;
             continue;
         }
-        if matches!(chars[previous], ';' | '{' | '}') {
+        match chars[previous] {
+            ')' => depth += 1,
+            '(' => depth -= 1,
+            _ => {}
+        }
+        if depth <= 0 && matches!(chars[previous], ';' | '{' | '}') {
             break;
         }
         start = previous;

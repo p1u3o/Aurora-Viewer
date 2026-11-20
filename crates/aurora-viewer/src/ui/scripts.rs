@@ -44,6 +44,7 @@ mod focus;
 mod folding;
 mod indent;
 mod linkset;
+mod lints;
 mod minimap;
 mod navigate;
 mod outline;
@@ -1388,7 +1389,8 @@ impl Editors {
         if !e.is_open() {
             return Vec::new();
         }
-        e.errors
+        let mut rows: Vec<view::Problem> = e
+            .errors
             .iter()
             .map(|message| {
                 let (line, column) = editing::error_location(message).unwrap_or((0, 0));
@@ -1399,7 +1401,19 @@ impl Editors {
                     message: message.clone(),
                 }
             })
-            .collect()
+            .collect();
+        // what the editor itself sees, the lints of Alchemy's Script Studio
+        if !e.lua() {
+            for lint in lints::lints(&e.source) {
+                rows.push(view::Problem {
+                    source: e.name.clone(),
+                    line: lint.line,
+                    column: lint.column,
+                    message: lint.rule.message(),
+                });
+            }
+        }
+        rows
     }
 
     /// Save every script the window has open that has something to save
@@ -1805,6 +1819,11 @@ impl Editors {
                                     .to_string(),
                             ));
                         } else if let Some(text) = &read.text {
+                            if !aurora_net::scripts::is_slua_item(script.flags) {
+                                for lint in lints::lints(text) {
+                                    rows.push((target, script.name.clone(), lint.line, lint.rule.message()));
+                                }
+                            }
                             for finding in check::structure(text) {
                                 let (line, message) = match finding {
                                     check::Finding::StrayClose { line } => (line, aurora_i18n::tr!("script-check-stray-close")),

@@ -2871,7 +2871,12 @@ prims (a hit in one opens it). The Problems dock's **Check object** reads every
 script of the linkset the same way and lists what the viewer sees in them,
 under each script's name: a block a script never closes, a `}` that closes
 none, a string or a comment left open, and the scripts it could not read (a
-click on such a row opens the script). Its fourth, References, opens on a name (the context
+click on such a row opens the script). Every script's Problems list also
+carries the editor's own lints, read off the code (`ui/scripts/lints.rs`): a
+timer under 0.1 s, `llSleep`, a listener with an empty name and message, a
+sensor repeating under a second, an integer past 32 bits, two primitive-
+parameter calls in a row, a string built in a loop, and a call repeated three
+times with the same arguments in an event. Its fourth, References, opens on a name (the context
 menu's Find references): every place the name is used in the window's scripts,
 the whole name in code only, a click away from each, with a field for a new
 name and Rename all, which rewrites them in every script at once (each document
