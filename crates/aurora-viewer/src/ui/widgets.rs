@@ -2420,7 +2420,28 @@ pub fn stretched_tabs(ui: &mut egui::Ui, p: &Palette, selected: &mut usize, labe
 }
 
 fn tabs_row(ui: &mut egui::Ui, p: &Palette, selected: &mut usize, labels: &[(&str, bool)], stretched: bool, compact: bool) -> bool {
+    tabs_row_full(ui, p, selected, labels, stretched, compact, false).0
+}
+
+/// The same flat tab strip, whose tabs the reader drags into another order:
+/// what a drag asked for, as the places of the tab taken and of the one it was
+/// dropped on.
+pub fn tabs_reorderable(ui: &mut egui::Ui, p: &Palette, selected: &mut usize, labels: &[(&str, bool)]) -> Option<(usize, usize)> {
+    tabs_row_full(ui, p, selected, labels, false, true, true).1
+}
+
+fn tabs_row_full(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    selected: &mut usize,
+    labels: &[(&str, bool)],
+    stretched: bool,
+    compact: bool,
+    draggable: bool,
+) -> (bool, Option<(usize, usize)>) {
     let mut changed = false;
+    let mut rects: Vec<egui::Rect> = Vec::new();
+    let mut responses: Vec<egui::Response> = Vec::new();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         let n = labels.len().max(1) as f32;
@@ -2446,7 +2467,16 @@ fn tabs_row(ui: &mut egui::Ui, p: &Palette, selected: &mut usize, labels: &[(&st
             } else {
                 text_w[i] * compact + extra.min(40.0)
             };
-            let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, height), if *enabled { Sense::click() } else { Sense::hover() });
+            let sense = if *enabled {
+                if draggable { Sense::click_and_drag() } else { Sense::click() }
+            } else {
+                Sense::hover()
+            };
+            let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, height), sense);
+            if draggable && *enabled {
+                rects.push(rect);
+                responses.push(resp.clone());
+            }
             let sel = *selected == i;
             if sel || (resp.hovered() && *enabled) {
                 let fill = if sel {
@@ -2472,14 +2502,61 @@ fn tabs_row(ui: &mut egui::Ui, p: &Palette, selected: &mut usize, labels: &[(&st
             );
             let left = rect.center().x - galley.size().x / 2.0;
             paint_row_text(ui.painter(), galley, left, rect.center().y, col);
-            let resp = resp.on_hover_text(*label);
+            let resp = if draggable && *enabled {
+                resp.on_hover_cursor(egui::CursorIcon::Grab)
+            } else {
+                resp
+            }
+            .on_hover_text(*label);
             if resp.clicked() && !sel {
                 *selected = i;
                 changed = true;
             }
         }
     });
-    changed
+    if draggable && labels.len() > 1 {
+        // A tab dragged by its strip lifts with the pointer, and takes the
+        // place of the tab it is dropped on.
+        let ctx = ui.ctx().clone();
+        let drag = ui.scope_id().with("tab_drag");
+        for (index, response) in responses.iter().enumerate() {
+            if response.drag_started() {
+                ctx.data_mut(|d| d.insert_temp(drag, index));
+            }
+        }
+        let from = ctx.data(|d| d.get_temp::<usize>(drag));
+        if let Some(from) = from
+            && from < labels.len()
+        {
+            let pointer = ctx.input(|i| i.pointer.interact_pos());
+            if let Some(pos) = pointer
+                && ctx.input(|i| i.pointer.any_down())
+            {
+                let font = control_font(ui, 12.0);
+                let galley = ui.fonts_mut(|fonts| fonts.layout_no_wrap(labels[from].0.to_owned(), font, p.ink));
+                let lifted = egui::Rect::from_center_size(pos, galley.size() + Vec2::new(26.0, 12.0));
+                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, drag));
+                painter.rect_filled(lifted, ui.visuals().window_corner_radius, p.field);
+                painter.rect_stroke(
+                    lifted,
+                    ui.visuals().window_corner_radius,
+                    egui::Stroke::new(1.0, p.violet),
+                    egui::StrokeKind::Inside,
+                );
+                painter.galley(lifted.center() - galley.size() / 2.0, galley, p.ink);
+            }
+            if ctx.input(|i| i.pointer.any_released()) {
+                let to = pointer
+                    .and_then(|pos| rects.iter().position(|rect| pos.x >= rect.left() && pos.x <= rect.right()))
+                    .unwrap_or(from);
+                ctx.data_mut(|d| d.remove_temp::<usize>(drag));
+                if to != from {
+                    return (changed, Some((from, to)));
+                }
+            }
+        }
+    }
+    (changed, None)
 }
 
 /// Height of a `segmented` choice, room around its segments, and room

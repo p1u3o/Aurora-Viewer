@@ -1544,7 +1544,13 @@ impl Editors {
                 }
             }
             // only a window of a linkset has the Search and References tabs
-            Some(view::DockClick::Search(_) | view::DockClick::Reference(_) | view::DockClick::Rename | view::DockClick::Check) => {}
+            Some(
+                view::DockClick::Search(_)
+                | view::DockClick::Reference(_)
+                | view::DockClick::Rename
+                | view::DockClick::Check
+                | view::DockClick::Reorder(_),
+            ) => {}
             None => {}
         }
         // Ctrl+click on a name: the declaration, in this script alone
@@ -2216,6 +2222,10 @@ impl Editors {
                 }
                 view::DockClick::Check => {
                     self.documents[active_index].tools.check_again = true;
+                }
+                view::DockClick::Reorder(order) => {
+                    settings.set_dock_order(order);
+                    actions.push(Action::SettingsChanged);
                 }
                 view::DockClick::Rename => {
                     let state = self.references.entry(root).or_default();
@@ -4258,6 +4268,15 @@ print(\"bye\")"
         for cell in ["0:8", "1:10", "4:8"] {
             text_at(&output, cell);
         }
+        // the columns of the table, and the scope of the search in the header
+        for label in [
+            aurora_i18n::tr!("script-problems-source").as_ref(),
+            aurora_i18n::tr!("script-problems-line").as_ref(),
+            aurora_i18n::tr!("script-dock-text").as_ref(),
+            aurora_i18n::tr!("script-search-scope-window").as_ref(),
+        ] {
+            text_at(&output, label);
+        }
         // a click opens that script on the line
         let at = text_at(&output, "4:8");
         click_at(&ctx, &mut editors, &mut settings, linksets, at, egui::PointerButton::Primary);
@@ -5310,6 +5329,50 @@ print(\"bye\")"
             .iter()
             .any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "also alpha"));
         assert!(!still, "the object's script is out of the window's scope");
+    }
+
+    /// The order the reader drags the dock's tabs into is kept, and a list
+    /// that names only some of them leaves the rest in their default order.
+    #[test]
+    fn the_dock_tabs_keep_the_order_they_were_dragged_into() {
+        use view::DockTab::{Outline, Problems, References, Search};
+        let mut settings = settings::ScriptSettings::default();
+        assert_eq!(settings.dock_order(), [Problems, Outline, Search, References], "the default");
+        settings.set_dock_order([References, Problems, Outline, Search]);
+        assert_eq!(settings.dock_order(), [References, Problems, Outline, Search]);
+        // what the settings file holds, even written by hand
+        settings.dock_tabs = "search,,outline,unknown,search".into();
+        assert_eq!(settings.dock_order(), [Search, Outline, Problems, References]);
+    }
+
+    /// Folding the dock gives its room to the source, never to the window: it
+    /// used to grow the window a few points every frame, down the screen.
+    #[test]
+    fn folding_the_dock_keeps_the_windows_size() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let (linkset, panel, _door) = linkset_fixture();
+        let mut settings = settings::ScriptSettings::default();
+        let load = editors.open(panel, "Panel Script".into(), true, true, 0).unwrap();
+        editors.loaded(load, panel, Ok("default { }\n".into()));
+        editors.documents.iter_mut().find(|e| e.target == panel).unwrap().linkset = linkset.root;
+        let linksets = std::slice::from_ref(&linkset);
+        let window = egui::Id::unique(format!("script_linkset_{}", linkset.root));
+        let size = |ctx: &egui::Context| egui::AreaState::load(ctx, window).and_then(|state| state.size);
+        for _ in 0..4 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        let opened = size(&ctx).expect("the window's size");
+        editors.problems_folded.insert(linkset.root, true);
+        for _ in 0..6 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        assert_eq!(size(&ctx), Some(opened), "folded, the window keeps its size");
+        editors.problems_folded.insert(linkset.root, false);
+        for _ in 0..6 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        assert_eq!(size(&ctx), Some(opened), "and unfolded again");
     }
 
     /// The Problems tab reads the object's every script on its own -- no

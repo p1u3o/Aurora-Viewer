@@ -467,7 +467,13 @@ pub(super) fn body(
     let room = ui.available_height();
     let gap = ui.spacing().item_spacing.y;
     // A folded dock keeps only its header line.
-    let dock_room = if *folded { DOCK_HEADER } else { DOCK_HEIGHT };
+    // the dock never takes more than a third of the window: a short window
+    // keeps its text
+    let dock_room = if *folded {
+        DOCK_HEADER
+    } else {
+        (DOCK_HEIGHT.min(room * 0.30)).ceil()
+    };
     let dock_height = if room >= footer_height + dock_room + SOURCE_MIN + gap * 2.0 + 8.0 {
         dock_room
     } else {
@@ -484,7 +490,20 @@ pub(super) fn body(
         crumbs_row(ui, p, e, id, settings, problems, tab, true);
     }
     let clicked = if dock_height > 0.0 {
-        dock(ui, p, e, problems, all_sources, folded, tab, search, references, check)
+        dock(
+            ui,
+            p,
+            e,
+            problems,
+            all_sources,
+            folded,
+            dock_height,
+            tab,
+            &settings.dock_order(),
+            search,
+            references,
+            check,
+        )
     } else {
         None
     };
@@ -537,7 +556,13 @@ pub(super) fn split_body(
     } else {
         155.0
     };
-    let dock_room = if *folded { DOCK_HEADER } else { DOCK_HEIGHT };
+    // the dock never takes more than a third of the window: a short window
+    // keeps its text
+    let dock_room = if *folded {
+        DOCK_HEADER
+    } else {
+        (DOCK_HEIGHT.min(room * 0.30)).ceil()
+    };
     let dock_height = if room >= footer_height + dock_room + SOURCE_MIN + gap_y * 2.0 + 8.0 {
         dock_room
     } else {
@@ -572,7 +597,20 @@ pub(super) fn split_body(
         Side::Right => &mut *right,
     };
     let clicked = if dock_height > 0.0 {
-        dock(ui, p, front, problems, all_sources, folded, tab, search, references, check)
+        dock(
+            ui,
+            p,
+            front,
+            problems,
+            all_sources,
+            folded,
+            dock_height,
+            tab,
+            &settings.dock_order(),
+            search,
+            references,
+            check,
+        )
     } else {
         None
     };
@@ -585,7 +623,7 @@ pub(super) fn split_body(
 }
 
 /// The room the Problems dock takes under the source.
-const DOCK_HEIGHT: f32 = 112.0;
+const DOCK_HEIGHT: f32 = 146.0;
 /// Folded, it keeps the room of its header alone.
 const DOCK_HEADER: f32 = 30.0;
 /// The least height the source keeps: a short window gives the dock's room to
@@ -606,6 +644,25 @@ pub(super) enum DockTab {
     References,
 }
 
+impl DockTab {
+    /// Its name in the settings, where the reader's order is kept.
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            DockTab::Problems => "problems",
+            DockTab::Outline => "outline",
+            DockTab::Search => "search",
+            DockTab::References => "references",
+        }
+    }
+
+    /// The tab a name of the settings stands for.
+    pub(super) fn from_name(name: &str) -> Option<Self> {
+        [DockTab::Problems, DockTab::Outline, DockTab::Search, DockTab::References]
+            .into_iter()
+            .find(|tab| tab.name() == name)
+    }
+}
+
 /// What a click in the dock asked for.
 pub(super) enum DockClick {
     /// A row of the diagnostics, by its place in the list.
@@ -620,6 +677,8 @@ pub(super) enum DockClick {
     Rename,
     /// Check every script of the window's object.
     Check,
+    /// The tabs of the dock, dragged into another order.
+    Reorder([DockTab; 4]),
 }
 
 /// The Search tab's state for one frame: the query being typed and the hits
@@ -676,19 +735,139 @@ pub(super) fn go_to_line(ctx: &egui::Context, e: &mut Editor, id: Id, line: usiz
     e.tools.scroll_to_cursor = true;
 }
 
+/// The columns of the dock's tables, the same in every tab: the script, the
+/// line, then what the row says.
+const DOCK_SOURCE: f32 = 140.0;
+const DOCK_LINE: f32 = 54.0;
+/// The height of a row, and the text of a row and of its columns' header.
+const DOCK_ROW: f32 = 16.0;
+const DOCK_TEXT: f32 = 11.0;
+const DOCK_HEAD: f32 = 10.5;
+/// The status of the object's check, smaller than the rows it stands for.
+const DOCK_STATUS: f32 = 10.0;
+
+/// One cell of a tab's table: the text takes its room and starts at its left
+/// edge (a sized label would centre).
+fn cell(ui: &mut egui::Ui, width: f32, height: f32, text: RichText, truncate: bool) {
+    ui.allocate_ui_with_layout(Vec2::new(width, height), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        let label = egui::Label::new(text);
+        ui.add(if truncate { label.truncate() } else { label });
+    });
+}
+
+/// The header of a dock table: the script, the line, and what the tab lists.
+fn table_head(ui: &mut egui::Ui, p: &Palette, third: &str) {
+    let text = (ui.available_width() - DOCK_SOURCE - DOCK_LINE - 16.0).max(60.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        for (label, width) in [
+            (aurora_i18n::tr!("script-problems-source").to_string(), DOCK_SOURCE),
+            (aurora_i18n::tr!("script-problems-line").to_string(), DOCK_LINE),
+            (third.to_owned(), text),
+        ] {
+            cell(ui, width, DOCK_ROW, RichText::new(label).size(DOCK_HEAD).color(p.muted), false);
+        }
+    });
+}
+
+/// One row of a dock table, lit under the pointer: a click goes to its line.
+/// `danger` writes what it says in the diagnostic red (a problem), `mono` in
+/// the code's font (a problem or a line of a script).
+fn table_row(ui: &mut egui::Ui, p: &Palette, source: &str, line: &str, text: &str, danger: bool, mono: bool) -> egui::Response {
+    let width = (ui.available_width() - DOCK_SOURCE - DOCK_LINE - 16.0).max(60.0);
+    // the highlight goes behind the row's text
+    let beneath = ui.painter().add(egui::Shape::Noop);
+    let row = ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        cell(ui, DOCK_SOURCE, DOCK_ROW, RichText::new(source).size(DOCK_TEXT).color(p.ink), true);
+        cell(ui, DOCK_LINE, DOCK_ROW, RichText::new(line).size(DOCK_TEXT).color(p.muted), false);
+        let mut said = if mono {
+            RichText::new(text).monospace()
+        } else {
+            RichText::new(text)
+        }
+        .size(DOCK_TEXT);
+        said = said.color(if danger { p.danger } else { p.muted });
+        cell(ui, width, DOCK_ROW, said, true);
+    });
+    let hit = ui.interact(row.response.rect, row.response.id.with("row"), egui::Sense::click());
+    if hit.hovered() {
+        ui.painter().set(
+            beneath,
+            egui::Shape::rect_filled(
+                row.response.rect.expand2(Vec2::new(2.0, 0.0)),
+                ui.visuals().widgets.inactive.corner_radius,
+                p.raised.gamma_multiply(0.25),
+            ),
+        );
+    }
+    hit
+}
+
+/// What a table says while it has nothing to list.
+fn table_none(ui: &mut egui::Ui, p: &Palette, text: &str) {
+    ui.add_space(2.0);
+    ui.label(RichText::new(text).size(DOCK_TEXT).color(p.muted));
+}
+
+/// The scope of the list shown, at the right of the dock's header: the same
+/// choice in every tab, in the same place.
+fn scope_dropdown(ui: &mut egui::Ui, id: &str, all: &mut bool, off: &str, on: &str) {
+    egui::ComboBox::from_id_salt(id)
+        .width(124.0)
+        .selected_text(if *all { on } else { off })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(all, false, off);
+            ui.selectable_value(all, true, on);
+        });
+}
+
+/// The name of a tab in the dock's header, with the count of the problems.
+fn tab_label(tab: DockTab, problems: usize) -> String {
+    match tab {
+        DockTab::Problems => aurora_i18n::tr!("script-problems-count", count = problems as i64).to_string(),
+        DockTab::Outline => aurora_i18n::tr!("script-dock-outline").to_string(),
+        DockTab::Search => aurora_i18n::tr!("script-dock-search").to_string(),
+        DockTab::References => aurora_i18n::tr!("script-dock-references").to_string(),
+    }
+}
+
+/// The whole order of the tabs once `moved` is dropped on `onto`: before it
+/// when it comes from its right, after it when it comes from its left.
+fn reorder_tabs(order: [DockTab; 4], moved: DockTab, onto: DockTab) -> [DockTab; 4] {
+    let from = order.iter().position(|tab| *tab == moved);
+    let at = order.iter().position(|tab| *tab == onto);
+    let (Some(from), Some(at)) = (from, at) else {
+        return order;
+    };
+    if from == at {
+        return order;
+    }
+    let mut rest: Vec<DockTab> = order.into_iter().filter(|tab| *tab != moved).collect();
+    let anchor = rest.iter().position(|tab| *tab == onto).unwrap_or(rest.len().saturating_sub(1));
+    let slot = if from < at { anchor + 1 } else { anchor };
+    rest.insert(slot.min(rest.len()), moved);
+    let mut next = order;
+    for (slot, tab) in rest.into_iter().take(4).enumerate() {
+        next[slot] = tab;
+    }
+    next
+}
+
 /// The outline list of the dock: each state, event, function and global of the
 /// script in front with its line, a click away from it.
 fn outline_dock(ui: &mut egui::Ui, p: &Palette, e: &Editor) -> Option<DockClick> {
     let items = outline_items(e);
     let mut clicked = None;
     let first = e.first_line();
+    ui.add_space(4.0);
     egui::ScrollArea::vertical()
         .id_salt("script_outline")
         .max_height(ui.available_height().max(0.0))
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
             if items.is_empty() {
-                ui.label(RichText::new(aurora_i18n::tr!("script-outline-none")).size(11.0).color(p.muted));
+                table_none(ui, p, aurora_i18n::tr!("script-outline-none").as_ref());
                 return;
             }
             for (index, item) in items.iter().enumerate() {
@@ -714,38 +893,15 @@ fn outline_dock(ui: &mut egui::Ui, p: &Palette, e: &Editor) -> Option<DockClick>
     clicked
 }
 
-/// One cell of a tab's table: the text takes its room and starts at its left
-/// edge (a sized label would centre).
-fn cell(ui: &mut egui::Ui, width: f32, text: RichText, truncate: bool) {
-    ui.allocate_ui_with_layout(Vec2::new(width, 14.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-        let label = egui::Label::new(text);
-        ui.add(if truncate { label.truncate() } else { label });
-    });
-}
-
 /// The Search tab of the dock: a field and the word's hits in the window's
-/// scripts, a click away from each. `query` is the window's own.
+/// scripts, a click away from each. `query` is the window's own; the scope of
+/// the search is the dock's header.
 fn search_dock(ui: &mut egui::Ui, p: &Palette, search: SearchDock<'_>) -> Option<DockClick> {
-    let SearchDock { query, hits, object } = search;
+    let SearchDock { query, hits, .. } = search;
     let mut clicked = None;
     let width = ui.available_width();
     let clear = !query.is_empty();
-    // the window's own scripts, or every script of the object
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        if ui
-            .selectable_label(!*object, RichText::new(aurora_i18n::tr!("script-search-scope-window")).size(11.0))
-            .clicked()
-        {
-            *object = false;
-        }
-        if ui
-            .selectable_label(*object, RichText::new(aurora_i18n::tr!("script-search-scope-object")).size(11.0))
-            .clicked()
-        {
-            *object = true;
-        }
-    });
+    ui.add_space(4.0);
     let (_, cleared) = inventory::tree::search_field(
         ui,
         p,
@@ -758,48 +914,31 @@ fn search_dock(ui: &mut egui::Ui, p: &Palette, search: SearchDock<'_>) -> Option
     if cleared {
         query.clear();
     }
-    let (name_width, line_width) = (140.0, 54.0);
-    let text_width = (ui.available_width() - name_width - line_width - 16.0).max(60.0);
+    ui.add_space(4.0);
+    table_head(ui, p, aurora_i18n::tr!("script-dock-text").as_ref());
     egui::ScrollArea::vertical()
         .id_salt("script_search")
         .max_height(ui.available_height().max(0.0))
         .show(ui, |ui| {
             if hits.is_empty() {
-                ui.label(RichText::new(aurora_i18n::tr!("script-search-none")).size(11.0).color(p.muted));
+                table_none(ui, p, aurora_i18n::tr!("script-search-none").as_ref());
                 return;
             }
             for (index, hit) in hits.iter().enumerate() {
-                // the highlight goes behind the row's text
-                let beneath = ui.painter().add(egui::Shape::Noop);
                 let row = ui
                     .push_id(("search", index), |ui| {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 8.0;
-                            cell(ui, name_width, RichText::new(&hit.name).size(11.0).color(p.ink), true);
-                            cell(
-                                ui,
-                                line_width,
-                                RichText::new(format!("{}:{}", hit.line + hit.first, hit.column))
-                                    .size(11.0)
-                                    .color(p.muted),
-                                false,
-                            );
-                            cell(ui, text_width, RichText::new(&hit.text).monospace().size(11.0).color(p.muted), true);
-                        })
+                        table_row(
+                            ui,
+                            p,
+                            &hit.name,
+                            &format!("{}:{}", hit.line + hit.first, hit.column),
+                            &hit.text,
+                            false,
+                            true,
+                        )
                     })
                     .inner;
-                let hit_response = ui.interact(row.response.rect, row.response.id.with("row"), egui::Sense::click());
-                if hit_response.hovered() {
-                    ui.painter().set(
-                        beneath,
-                        egui::Shape::rect_filled(
-                            row.response.rect.expand2(Vec2::new(2.0, 0.0)),
-                            ui.visuals().widgets.inactive.corner_radius,
-                            p.raised.gamma_multiply(0.25),
-                        ),
-                    );
-                }
-                if hit_response.clicked() {
+                if row.clicked() {
                     clicked = Some(DockClick::Search(index));
                 }
             }
@@ -815,16 +954,24 @@ fn references_dock(ui: &mut egui::Ui, p: &Palette, dock: ReferencesDock<'_>) -> 
     let ReferencesDock { word, name, hits } = dock;
     let mut clicked = None;
     let width = ui.available_width();
+    ui.add_space(4.0);
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        ui.label(RichText::new(word).monospace().size(11.0).color(p.ink));
-        let field = ui.add(
-            egui::TextEdit::singleline(name)
-                .desired_width((width - 260.0).clamp(80.0, 200.0))
-                .hint_text(aurora_i18n::tr!("script-references-new-name"))
-                .font(egui::TextStyle::Monospace),
-        );
+        ui.spacing_mut().item_spacing.x = 8.0;
+        // the new name, as the Search tab's field is drawn
         let ready = !name.trim().is_empty() && name.trim() != word;
+        let field_width = (width - 250.0).clamp(80.0, 220.0);
+        let (field, cleared) = inventory::tree::search_field(
+            ui,
+            p,
+            name,
+            aurora_i18n::tr!("script-references-new-name"),
+            field_width,
+            !name.is_empty(),
+            aurora_i18n::tr!("script-linkset-filter-clear"),
+        );
+        if cleared {
+            name.clear();
+        }
         if field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) && ready {
             clicked = Some(DockClick::Rename);
         }
@@ -837,35 +984,34 @@ fn references_dock(ui: &mut egui::Ui, p: &Palette, dock: ReferencesDock<'_>) -> 
         }
         ui.label(
             RichText::new(aurora_i18n::tr!("script-references-count", count = hits.len() as i64))
-                .size(11.0)
+                .size(DOCK_TEXT)
                 .color(p.muted),
         );
     });
-    let (name_width, line_width) = (140.0, 54.0);
-    let text_width = (ui.available_width() - name_width - line_width - 16.0).max(60.0);
+    ui.add_space(4.0);
+    table_head(ui, p, aurora_i18n::tr!("script-dock-text").as_ref());
     egui::ScrollArea::vertical()
         .id_salt("script_references")
         .max_height(ui.available_height().max(0.0))
         .show(ui, |ui| {
             if hits.is_empty() {
-                ui.label(RichText::new(aurora_i18n::tr!("script-references-none")).size(11.0).color(p.muted));
+                table_none(ui, p, aurora_i18n::tr!("script-references-none").as_ref());
                 return;
             }
             for (index, hit) in hits.iter().enumerate() {
-                let row = ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    cell(ui, name_width, RichText::new(&hit.name).size(11.0).color(p.ink), true);
-                    cell(
-                        ui,
-                        line_width,
-                        RichText::new(format!("{}:{}", hit.line + hit.first, hit.column))
-                            .size(11.0)
-                            .color(p.muted),
-                        false,
-                    );
-                    cell(ui, text_width, RichText::new(&hit.text).monospace().size(11.0).color(p.muted), true);
-                });
-                let row = ui.interact(row.response.rect, row.response.id.with("row"), egui::Sense::click());
+                let row = ui
+                    .push_id(("reference", index), |ui| {
+                        table_row(
+                            ui,
+                            p,
+                            &hit.name,
+                            &format!("{}:{}", hit.line + hit.first, hit.column),
+                            &hit.text,
+                            false,
+                            true,
+                        )
+                    })
+                    .inner;
                 if row.clicked() {
                     clicked = Some(DockClick::Reference(index));
                 }
@@ -874,9 +1020,11 @@ fn references_dock(ui: &mut egui::Ui, p: &Palette, dock: ReferencesDock<'_>) -> 
     clicked
 }
 
-/// The dock under the source: the diagnostics of the scripts the window shows
-/// (each one a click away from its line) or, on its other tab, the outline of
-/// the script in front. Returns what a click asked for.
+/// The dock under the source: what the window has to show of the object and of
+/// the script in front -- the problems, the outline, a word's hits or a name's
+/// places -- with the same tabs, the same fields and the same table in every
+/// one of them. Returns what a click asked for.
+#[allow(clippy::too_many_arguments)]
 fn dock(
     ui: &mut egui::Ui,
     p: &Palette,
@@ -884,220 +1032,188 @@ fn dock(
     rows: &[Problem],
     all_sources: Option<&mut bool>,
     folded: &mut bool,
+    height: f32,
     tab: &mut DockTab,
-    search: Option<SearchDock<'_>>,
+    order: &[DockTab; 4],
+    mut search: Option<SearchDock<'_>>,
     references: Option<ReferencesDock<'_>>,
     check: Option<CheckDock>,
 ) -> Option<DockClick> {
     let mut clicked = None;
-    // Exactly the room reserved for it, whatever the list holds: the dock
-    // stays, saying "No problems." when everything compiles.
-    let height = if *folded { DOCK_HEADER } else { DOCK_HEIGHT };
-    ui.allocate_ui_with_layout(
-        Vec2::new(ui.available_width(), height),
-        egui::Layout::top_down(egui::Align::Min),
-        |ui| {
-            egui::Frame::new()
-                .fill(p.field.gamma_multiply(0.72))
-                .corner_radius(ui.visuals().window_corner_radius)
-                // the sides of the status bar below, so the scope's right edge
-                // lines up with Save
-                .inner_margin(egui::Margin {
-                    left: 8,
-                    right: 8,
-                    top: 4,
-                    bottom: 4,
+    // Exactly the room reserved for it (`body` below), whatever the list holds
+    // and whatever the header measures: a dock that grew with its content grew
+    // the whole window with it, frame after frame.
+    let height = height.max(DOCK_HEADER);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), egui::Sense::hover());
+    let mut ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    let clip = rect.intersect(ui.clip_rect());
+    ui.set_clip_rect(clip);
+    egui::Frame::new()
+        .fill(p.field.gamma_multiply(0.72))
+        .corner_radius(ui.visuals().window_corner_radius)
+        // the sides of the status bar below, so the scope's right edge
+        // lines up with Save
+        .inner_margin(egui::Margin {
+            left: 8,
+            right: 8,
+            top: 4,
+            bottom: 4,
+        })
+        .show(&mut ui, |ui| {
+            ui.set_min_size(ui.available_size());
+            // the tabs, in the order the reader put them, and what the list
+            // they show looks at, at the right of the same row
+            let shown: Vec<DockTab> = order
+                .iter()
+                .copied()
+                .filter(|tab| match tab {
+                    DockTab::Search => search.is_some(),
+                    DockTab::References => references.is_some(),
+                    _ => true,
                 })
-                .show(ui, |ui| {
-                    ui.set_min_size(ui.available_size());
-                    ui.horizontal(|ui| {
-                        // The chevron folds the dock to its header, as an
-                        // IDE's problems view does.
-                        let (icon, tip) = if *folded {
-                            ("chevron-right", aurora_i18n::tr!("script-problems-unfold"))
-                        } else {
-                            ("chevron-down", aurora_i18n::tr!("script-problems-fold"))
-                        };
-                        if icon_button(ui, p, icon, tip, true) {
-                            *folded = !*folded;
-                        }
-                        // the two lists, as tabs of the dock
-                        let problems = aurora_i18n::tr!("script-problems-count", count = rows.len() as i64);
-                        if ui
-                            .selectable_label(*tab == DockTab::Problems, RichText::new(problems).size(11.0))
-                            .clicked()
-                        {
-                            *tab = DockTab::Problems;
-                        }
-                        if ui
-                            .selectable_label(
-                                *tab == DockTab::Outline,
-                                RichText::new(aurora_i18n::tr!("script-dock-outline")).size(11.0),
-                            )
-                            .clicked()
-                        {
-                            *tab = DockTab::Outline;
-                        }
-                        // a window of a linkset finds a word in every script it
-                        // has open; one script's own search is Ctrl+F
-                        if search.is_some()
-                            && ui
-                                .selectable_label(
-                                    *tab == DockTab::Search,
-                                    RichText::new(aurora_i18n::tr!("script-dock-search")).size(11.0),
-                                )
-                                .clicked()
-                        {
-                            *tab = DockTab::Search;
-                        }
-                        // the places a name is used, and a new name for them
-                        if references.is_some()
-                            && ui
-                                .selectable_label(
-                                    *tab == DockTab::References,
-                                    RichText::new(aurora_i18n::tr!("script-dock-references")).size(11.0),
-                                )
-                                .clicked()
-                        {
-                            *tab = DockTab::References;
-                        }
-                        // the object's every script, as the editor sees it, with
-                        // nothing to press: what it is reading, then what it found
-                        if *tab == DockTab::Problems
-                            && let Some(check) = &check
-                        {
-                            if check.reading > 0 {
-                                ui.label(
-                                    RichText::new(aurora_i18n::tr!("script-check-reading", count = check.reading as i64))
-                                        .size(11.0)
-                                        .color(p.muted),
-                                );
-                            } else {
-                                let text = if check.found == 0 {
-                                    aurora_i18n::tr!("script-check-clean").to_string()
-                                } else {
-                                    aurora_i18n::tr!("script-check-findings", count = check.found as i64).to_string()
-                                };
-                                ui.label(RichText::new(text).size(11.0).color(p.muted));
-                                // a script the region would not give: try again
-                                if check.retry
-                                    && crate::ui::widgets::icon_button(ui, p, "refresh", aurora_i18n::tr!("script-check-again"), true)
-                                {
-                                    clicked = Some(DockClick::Check);
-                                }
-                            }
-                        }
-                        if *tab == DockTab::Problems
-                            && let Some(all) = all_sources
-                        {
-                            ui.allocate_ui_with_layout(
-                                Vec2::new(ui.available_width(), 20.0),
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    egui::ComboBox::from_id_salt("script_problems_scope")
-                                        .selected_text(if *all {
-                                            aurora_i18n::tr!("script-problems-all")
-                                        } else {
-                                            aurora_i18n::tr!("script-problems-this")
-                                        })
-                                        .show_ui(ui, |ui| {
-                                            ui.selectable_value(all, false, aurora_i18n::tr!("script-problems-this"));
-                                            ui.selectable_value(all, true, aurora_i18n::tr!("script-problems-all"));
-                                        });
-                                },
-                            );
-                        }
-                    });
-                    if *folded {
-                        return;
-                    }
-                    if *tab == DockTab::Outline {
-                        clicked = outline_dock(ui, p, e);
-                        return;
-                    }
-                    if *tab == DockTab::Search
-                        && let Some(search) = search
-                    {
-                        clicked = search_dock(ui, p, search);
-                        return;
-                    }
-                    if *tab == DockTab::References
-                        && let Some(references) = references
-                    {
-                        clicked = references_dock(ui, p, references);
-                        return;
-                    }
-                    // Columns: the message takes what the other two leave, and each
-                    // cell starts at its left edge (a sized label would centre).
-                    let (source_width, line_width) = (118.0, 48.0);
-                    let message_width = (ui.available_width() - source_width - line_width - 16.0).max(60.0);
-                    let cell = |ui: &mut egui::Ui, width: f32, text: RichText, truncate: bool| {
-                        ui.allocate_ui_with_layout(Vec2::new(width, 14.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            let label = egui::Label::new(text);
-                            ui.add(if truncate { label.truncate() } else { label });
-                        });
+                .collect();
+            let labels: Vec<(String, bool)> = shown.iter().map(|tab| (tab_label(*tab, rows.len()), true)).collect();
+            let labels: Vec<(&str, bool)> = labels.iter().map(|(label, enabled)| (label.as_str(), *enabled)).collect();
+            // the status of the object's check and the scope's room, so that
+            // the tabs take what is left of the row
+            let status = (*tab == DockTab::Problems).then(|| match &check {
+                Some(check) if check.reading > 0 => aurora_i18n::tr!("script-check-reading", count = check.reading as i64).to_string(),
+                Some(check) if check.found == 0 => aurora_i18n::tr!("script-check-clean").to_string(),
+                Some(check) => aurora_i18n::tr!("script-check-findings", count = check.found as i64).to_string(),
+                None => String::new(),
+            });
+            let status = status.filter(|text| !text.is_empty());
+            let retry = *tab == DockTab::Problems && check.as_ref().is_some_and(|check| check.retry);
+            let font = crate::ui::widgets::control_font(ui, DOCK_STATUS);
+            let status_width = status.as_ref().map_or(0.0, |text| {
+                ui.fonts_mut(|fonts| fonts.layout_no_wrap(text.clone(), font.clone(), p.muted).size().x)
+            });
+            let reserved = status_width + if status.is_some() { 24.0 } else { 0.0 } + 132.0;
+            let row = 24.0f32.max(ui.spacing().interact_size.y);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                // The chevron folds the dock to its header, as an IDE's
+                // problems view does.
+                let left = (ui.available_width() - reserved).max(140.0);
+                ui.allocate_ui_with_layout(Vec2::new(left, row), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let (icon, tip) = if *folded {
+                        ("chevron-right", aurora_i18n::tr!("script-problems-unfold"))
+                    } else {
+                        ("chevron-down", aurora_i18n::tr!("script-problems-fold"))
                     };
-                    ui.horizontal(|ui| {
+                    if icon_button(ui, p, icon, tip, true) {
+                        *folded = !*folded;
+                    }
+                    let current = shown.iter().position(|shown| shown == tab).unwrap_or(0);
+                    let mut selected = current;
+                    if let Some((from, to)) = widgets::tabs_reorderable(ui, p, &mut selected, &labels) {
+                        clicked = Some(DockClick::Reorder(reorder_tabs(*order, shown[from], shown[to])));
+                    } else if selected != current {
+                        *tab = shown[selected];
+                    }
+                });
+                ui.allocate_ui_with_layout(
+                    Vec2::new(ui.available_width(), row),
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
                         ui.spacing_mut().item_spacing.x = 8.0;
-                        for (text, width) in [
-                            (aurora_i18n::tr!("script-problems-message"), message_width),
-                            (aurora_i18n::tr!("script-problems-source"), source_width),
-                            (aurora_i18n::tr!("script-problems-line"), line_width),
-                        ] {
-                            cell(ui, width, RichText::new(text).size(11.0).color(p.muted), false);
-                        }
-                    });
-                    egui::ScrollArea::vertical()
-                        .id_salt("script_problems")
-                        .max_height(ui.available_height().max(0.0))
-                        .show(ui, |ui| {
-                            if rows.is_empty() {
-                                ui.label(RichText::new(aurora_i18n::tr!("script-problems-none")).size(11.0).color(p.muted));
-                                return;
-                            }
-                            for (index, row) in rows.iter().enumerate() {
-                                // the highlight goes behind the row's text
-                                let beneath = ui.painter().add(egui::Shape::Noop);
-                                let response = ui
-                                    .push_id(("problem", index), |ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.spacing_mut().item_spacing.x = 8.0;
-                                            cell(
-                                                ui,
-                                                message_width,
-                                                RichText::new(&row.message).monospace().size(11.0).color(p.danger),
-                                                true,
-                                            );
-                                            cell(ui, source_width, RichText::new(&row.source).size(11.0).color(p.muted), true);
-                                            cell(
-                                                ui,
-                                                line_width,
-                                                RichText::new(format!("{}:{}", row.line, row.column)).size(11.0).color(p.muted),
-                                                false,
-                                            );
-                                        })
-                                    })
-                                    .inner;
-                                let hit = ui.interact(response.response.rect, response.response.id.with("row"), egui::Sense::click());
-                                if hit.hovered() {
-                                    ui.painter().set(
-                                        beneath,
-                                        egui::Shape::rect_filled(
-                                            response.response.rect.expand2(Vec2::new(2.0, 0.0)),
-                                            ui.visuals().widgets.inactive.corner_radius,
-                                            p.raised.gamma_multiply(0.25),
-                                        ),
+                        // the scope of the list shown: the script in front or
+                        // the object, the window's scripts or the object's
+                        match *tab {
+                            DockTab::Problems => {
+                                if let Some(all) = all_sources {
+                                    scope_dropdown(
+                                        ui,
+                                        "script_problems_scope",
+                                        all,
+                                        aurora_i18n::tr!("script-problems-this").as_ref(),
+                                        aurora_i18n::tr!("script-problems-all").as_ref(),
                                     );
                                 }
-                                if hit.clicked() {
-                                    clicked = Some(DockClick::Problem(index));
+                            }
+                            DockTab::Search => {
+                                if let Some(search) = search.as_mut() {
+                                    scope_dropdown(
+                                        ui,
+                                        "script_search_scope",
+                                        search.object,
+                                        aurora_i18n::tr!("script-search-scope-window").as_ref(),
+                                        aurora_i18n::tr!("script-search-scope-object").as_ref(),
+                                    );
                                 }
                             }
-                        });
+                            _ => {}
+                        }
+                        if let Some(text) = status {
+                            ui.label(RichText::new(text).size(DOCK_STATUS).color(p.muted));
+                        }
+                        // a script the region would not give: try again
+                        if retry && widget_retry(ui, p) {
+                            clicked = Some(DockClick::Check);
+                        }
+                    },
+                );
+            });
+            if *folded {
+                return;
+            }
+            if *tab == DockTab::Outline {
+                clicked = outline_dock(ui, p, e);
+                return;
+            }
+            if *tab == DockTab::Search
+                && let Some(search) = search
+            {
+                clicked = search_dock(ui, p, search);
+                return;
+            }
+            if *tab == DockTab::References
+                && let Some(references) = references
+            {
+                clicked = references_dock(ui, p, references);
+                return;
+            }
+            ui.add_space(4.0);
+            table_head(ui, p, aurora_i18n::tr!("script-problems-message").as_ref());
+            egui::ScrollArea::vertical()
+                .id_salt("script_problems")
+                .max_height(ui.available_height().max(0.0))
+                .show(ui, |ui| {
+                    if rows.is_empty() {
+                        table_none(ui, p, aurora_i18n::tr!("script-problems-none").as_ref());
+                        return;
+                    }
+                    for (index, row) in rows.iter().enumerate() {
+                        let hit = ui
+                            .push_id(("problem", index), |ui| {
+                                table_row(
+                                    ui,
+                                    p,
+                                    &row.source,
+                                    &format!("{}:{}", row.line, row.column),
+                                    &row.message,
+                                    true,
+                                    true,
+                                )
+                            })
+                            .inner;
+                        if hit.clicked() {
+                            clicked = Some(DockClick::Problem(index));
+                        }
+                    }
                 });
-        },
-    );
+        });
     clicked
+}
+
+/// The button that reads the object's scripts again, beside what the check
+/// says of them.
+fn widget_retry(ui: &mut egui::Ui, p: &Palette) -> bool {
+    icon_button(ui, p, "refresh", aurora_i18n::tr!("script-check-again"), true)
 }
 
 /// The File, Edit and Help menus of the editor. A window of the linkset's
@@ -2702,6 +2818,25 @@ pub(super) fn poll_files(ctx: &egui::Context, e: &mut Editor, id: Id, settings: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tab dragged onto another takes its place: before it when it comes
+    /// from its right, after it when it comes from its left.
+    #[test]
+    fn a_dragged_tab_takes_the_place_of_the_one_it_is_dropped_on() {
+        use DockTab::{Outline, Problems, References, Search};
+        let order = [Problems, Outline, Search, References];
+        assert_eq!(
+            reorder_tabs(order, Search, Outline),
+            [Problems, Search, Outline, References],
+            "from the right, before it"
+        );
+        assert_eq!(
+            reorder_tabs(order, Outline, References),
+            [Problems, Search, References, Outline],
+            "from the left, after it"
+        );
+        assert_eq!(reorder_tabs(order, Problems, Problems), order, "dropped on itself");
+    }
 
     #[test]
     fn the_changed_lines_are_the_region_between_the_saved_and_the_edited_text() {

@@ -10040,6 +10040,7 @@ script-problems-unfold = 問題を表示
 script-dock-outline = アウトライン
 script-dock-search = 検索
 script-dock-references = 参照
+script-dock-text = テキスト
 script-search-scope-window = 開いているスクリプト
 script-search-scope-object = このオブジェクト
 script-check-again = オブジェクトのスクリプトを読み直す

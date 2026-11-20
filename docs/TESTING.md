@@ -2877,8 +2877,13 @@ what the viewer sees in them under each script's name -- a block a script
 never closes, a `}` that closes none, a string or a comment left open -- and
 the scripts it could not read (a click on such a row opens the script). The
 header says "Reading 2 scripts…" while it waits, then "Checked the object: 3
-findings" or "nothing to report", with a refresh button when a script could
-not be read. The script in front keeps its own structure in that list beside
+findings" or "nothing to report", small, just left of the scope's dropdown,
+with a refresh button when a script could not be read. The dock's tabs look
+alike: the columns of the table (the script, the line, then what the row
+says), the text of its rows and headers, the padding, and a field drawn as
+the Search tab's; a tab drags into another order, kept in the settings
+(`dock_tabs`), and the dock takes at most a third of the window, folding to
+its header alone. The script in front keeps its own structure in that list beside
 its lints, so a block left open shows as it is typed. Those lints are read
 off the code too (`ui/scripts/lints.rs`): a timer under 0.1 s, `llSleep`, a
 listener with an empty name and message, a sensor repeating under a second,

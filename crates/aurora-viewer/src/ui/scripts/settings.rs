@@ -1,6 +1,7 @@
 //! LLFloaterScriptEdPrefs / app_settings/settings.xml (Firestorm, LGPL 2.1).
 //! Defaults follow Firestorm's options; color defaults follow Aurora's skin.
 
+use super::view::DockTab;
 use crate::theme::Palette;
 use egui::Color32;
 use serde::{Deserialize, Serialize};
@@ -103,6 +104,10 @@ pub struct ScriptSettings {
     /// The room of the tree beside the source, as the reader dragged its edge:
     /// 0 for the default.
     pub tree_width: u16,
+    /// The tabs of the dock under the source, in the order the reader dragged
+    /// them into, by name; empty or partial, the rest keep the default order.
+    #[serde(default)]
+    pub dock_tabs: String,
     pub search_prefer_left: bool,
     pub search_inline: bool,
     pub convert_tabs: bool,
@@ -128,6 +133,38 @@ pub struct ScriptSettings {
     pub websocket_forward_debug: bool,
 }
 
+impl ScriptSettings {
+    /// The dock's four tabs, in the order they are shown: what the reader
+    /// dragged, then the tabs it does not name, in the default order.
+    pub(super) fn dock_order(&self) -> [DockTab; 4] {
+        const ALL: [DockTab; 4] = [DockTab::Problems, DockTab::Outline, DockTab::Search, DockTab::References];
+        let mut order: Vec<DockTab> = Vec::with_capacity(4);
+        for name in self.dock_tabs.split(',').map(str::trim) {
+            if let Some(tab) = DockTab::from_name(name)
+                && !order.contains(&tab)
+            {
+                order.push(tab);
+            }
+        }
+        for tab in ALL {
+            if !order.contains(&tab) {
+                order.push(tab);
+            }
+        }
+        let mut out = ALL;
+        for (at, tab) in order.into_iter().take(4).enumerate() {
+            out[at] = tab;
+        }
+        out
+    }
+
+    /// Keep the order the reader dragged the dock's tabs into.
+    pub(super) fn set_dock_order(&mut self, order: [DockTab; 4]) {
+        let names: Vec<&str> = order.iter().map(|tab| tab.name()).collect();
+        self.dock_tabs = names.join(",");
+    }
+}
+
 /// ExternalWebsocketSyncPort's default.
 pub const WEBSOCKET_PORT: u16 = 9020;
 
@@ -139,6 +176,7 @@ impl Default for ScriptSettings {
             word_wrap: true,
             minimap: true,
             tree_width: 0,
+            dock_tabs: String::new(),
             search_prefer_left: false,
             search_inline: false,
             convert_tabs: true,

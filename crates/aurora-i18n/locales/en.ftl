@@ -10106,6 +10106,7 @@ script-problems-unfold = Show the problems
 script-dock-outline = Outline
 script-dock-search = Search
 script-dock-references = References
+script-dock-text = Text
 script-search-scope-window = Open scripts
 script-search-scope-object = This object
 script-check-again = Read the object's scripts again
