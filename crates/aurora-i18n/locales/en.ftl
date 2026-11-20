@@ -10105,6 +10105,18 @@ script-problems-fold = Fold the problems
 script-problems-unfold = Show the problems
 script-dock-outline = Outline
 script-dock-search = Search
+script-dock-references = References
+script-references-new-name = New name
+script-references-rename = Rename all
+script-references-count = { $count ->
+    [one] { $count } place
+   *[other] { $count } places
+    }
+script-references-none = Nothing uses this name.
+script-references-renamed = { $count ->
+    [one] { $count } place renamed.
+   *[other] { $count } places renamed.
+    }
 script-search-in-scripts = Find in the windows scripts
 script-search-none = Nothing found.
 script-goto-definition = Go to the definition

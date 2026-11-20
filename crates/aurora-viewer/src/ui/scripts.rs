@@ -129,6 +129,14 @@ struct QuickOpen {
     focus: bool,
 }
 
+/// The References tab of one window: the name it is renaming, and the new name
+/// the reader is typing.
+#[derive(Default)]
+struct ReferenceState {
+    word: String,
+    name: String,
+}
+
 struct PendingSave {
     request: Uuid,
     source: String,
@@ -256,6 +264,23 @@ impl Editor {
     }
 }
 
+/// Renames every reference of the References tab: each name is replaced in its
+/// own document, the last place first so that the ones before it stay true, as
+/// an edit each document's undoer knows.
+fn rename_references(ctx: &egui::Context, documents: &mut [Editor], hits: &[navigate::Reference], name: &str) {
+    let new = name.trim();
+    if new.is_empty() || !new.chars().all(|ch| ch == '_' || ch.is_alphanumeric()) {
+        return;
+    }
+    for hit in hits.iter().rev() {
+        let Some(e) = documents.get_mut(hit.document) else {
+            continue;
+        };
+        let id = egui::Id::unique((&Editors::document_id(e), "source_text"));
+        let _ = editing::replace(ctx, id, &mut e.source, hit.range.clone(), new);
+    }
+}
+
 #[derive(Default)]
 pub struct Editors {
     pub rlva_hidden: bool,
@@ -276,6 +301,9 @@ pub struct Editors {
     dock_tabs: std::collections::HashMap<Uuid, view::DockTab>,
     /// The word each window's dock searches its scripts for, by its root.
     dock_search: std::collections::HashMap<Uuid, String>,
+    /// The name each window's References tab renames, and the new name being
+    /// typed for it, by the window's root.
+    references: std::collections::HashMap<Uuid, ReferenceState>,
     /// The two scripts a window shows side by side, left then right, by its
     /// root. The one in front is one of them.
     splits: std::collections::HashMap<Uuid, (ScriptTarget, ScriptTarget)>,
@@ -1388,7 +1416,7 @@ impl Editors {
             .rename_title(e.name.clone(), e.can_edit && e.loaded && e.saving.is_none() && e.loading.is_none())
             .show(ctx, p, &mut open, |ui| {
                 clicked = view::body(
-                    ui, p, e, body_id, settings, panels, actions, true, &rows, None, folded, dock_tab, None,
+                    ui, p, e, body_id, settings, panels, actions, true, &rows, None, folded, dock_tab, None, None,
                 );
             });
         }
@@ -1408,8 +1436,8 @@ impl Editors {
                     view::go_to_line(ctx, e, body_id, line, 0);
                 }
             }
-            // only a window of a linkset has the Search tab
-            Some(view::DockClick::Search(_)) => {}
+            // only a window of a linkset has the Search and References tabs
+            Some(view::DockClick::Search(_) | view::DockClick::Reference(_) | view::DockClick::Rename) => {}
             None => {}
         }
         // Ctrl+click on a name: the declaration, in this script alone
@@ -1622,6 +1650,12 @@ impl Editors {
             .map(|(index, e)| (index, e.name.as_str(), e.source.as_str(), e.lua()))
             .collect();
         let hits = navigate::find(&scripts, dock_search);
+        // the References tab's places: the name in code, the whole name each
+        let reference_hits = self
+            .references
+            .get(&root)
+            .map(|state| navigate::references(&scripts, &state.word))
+            .unwrap_or_default();
         // Ctrl+P: the window's scripts in a quick open list, from the script in
         // front (the filter field when the listing is not there yet)
         let mut filter_focus = false;
@@ -1648,6 +1682,7 @@ impl Editors {
         }
         // Save All: every script this window has open that has something to save
         let save_all = self.documents.iter().any(|e| !e.closed && e.linkset == root && e.can_save());
+        let reference_word = self.references.get(&root).map(|state| state.word.clone()).unwrap_or_default();
         let mut open = true;
         let mut select = None;
         let mut close_one = None;
@@ -1812,6 +1847,11 @@ impl Editors {
                                     folded,
                                     dock_tab,
                                     search,
+                                    Some(view::ReferencesDock {
+                                        word: &reference_word,
+                                        name: &mut self.references.entry(root).or_default().name,
+                                        hits: &reference_hits,
+                                    }),
                                 );
                                 clicked_problem = dock;
                                 if let Some(target) = focus {
@@ -1834,6 +1874,11 @@ impl Editors {
                                     folded,
                                     dock_tab,
                                     search,
+                                    Some(view::ReferencesDock {
+                                        word: &reference_word,
+                                        name: &mut self.references.entry(root).or_default().name,
+                                        hits: &reference_hits,
+                                    }),
                                 );
                             }
                         }
@@ -1918,13 +1963,36 @@ impl Editors {
                         view::go_to_line(ctx, e, body_id, hit.line, hit.column);
                     }
                 }
+                view::DockClick::Reference(index) => {
+                    if let Some(hit) = reference_hits.get(index) {
+                        let e = &mut self.documents[hit.document];
+                        self.active.insert(root, e.target);
+                        let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
+                        view::go_to_line(ctx, e, body_id, hit.line, hit.column);
+                    }
+                }
+                view::DockClick::Rename => {
+                    let state = self.references.entry(root).or_default();
+                    let renamed = state.name.trim().to_owned();
+                    let count = reference_hits.len() as i64;
+                    rename_references(ctx, &mut self.documents, &reference_hits, &renamed);
+                    self.dock_tabs.insert(root, view::DockTab::References);
+                    self.documents[active_index].status = aurora_i18n::tr!("script-references-renamed", count = count);
+                    // the tab lists the new name's places from now on
+                    state.word = renamed;
+                    state.name.clear();
+                }
             }
         }
-        // the context menu's Find references: the dock's Search tab, on that
-        // word
+        // the context menu's Find references: the dock's References tab, on
+        // that name, with a new name to type
         if let Some(word) = self.documents[active_index].tools.references_word.take() {
-            self.dock_search.insert(root, word);
-            self.dock_tabs.insert(root, view::DockTab::Search);
+            let state = self.references.entry(root).or_default();
+            if state.word != word {
+                state.name.clear();
+            }
+            state.word = word;
+            self.dock_tabs.insert(root, view::DockTab::References);
         }
         // Ctrl+click on a name (or the menu's command): the window takes the
         // caret to where the name is declared
@@ -4875,6 +4943,69 @@ print(\"bye\")"
         // and stays opened afterwards
         let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
         assert!(row_drawn(&output), "the reader's shut group is open now");
+    }
+
+    /// Find references opens the References tab on the name, and "Rename all"
+    /// renames it in every script of the window at once.
+    #[test]
+    fn the_references_tab_renames_a_name_across_the_windows_scripts() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let (linkset, panel, door) = linkset_fixture();
+        let mut settings = settings::ScriptSettings::default();
+        for (target, name, source) in [
+            (panel, "Panel Script", "integer value = 1;\nvalue = value + 1;\n"),
+            (door, "Door Script", "value = 2;\n"),
+        ] {
+            let load = editors.open(target, name.into(), true, true, 0).unwrap();
+            editors.loaded(load, target, Ok(source.into()));
+            editors.documents.iter_mut().find(|e| e.target == target).unwrap().linkset = linkset.root;
+        }
+        let linksets = std::slice::from_ref(&linkset);
+        for _ in 0..3 {
+            frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        }
+        // the context menu's Find references on `value`
+        let active = *editors.active.get(&linkset.root).unwrap();
+        editors
+            .documents
+            .iter_mut()
+            .find(|e| e.target == active)
+            .unwrap()
+            .tools
+            .references_word = Some("value".into());
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        assert_eq!(
+            editors.dock_tabs.get(&linkset.root),
+            Some(&view::DockTab::References),
+            "the dock shows the references"
+        );
+        let state = editors.references.get(&linkset.root).expect("the name");
+        assert_eq!(state.word, "value");
+        // the tab lists the name's places in both scripts
+        let listed = |label: &str| {
+            output
+                .shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == label))
+        };
+        assert!(listed("Panel Script") && listed("Door Script"), "the places of both");
+        // the new name, and Rename all
+        editors.references.get_mut(&linkset.root).unwrap().name = "amount".into();
+        frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        let rename = text_at(&output, aurora_i18n::tr!("script-references-rename").as_ref());
+        click_at(&ctx, &mut editors, &mut settings, linksets, rename, egui::PointerButton::Primary);
+        frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+        for (target, expected) in [(panel, "integer amount = 1;\namount = amount + 1;\n"), (door, "amount = 2;\n")] {
+            let source = &editors.documents.iter().find(|e| e.target == target).unwrap().source;
+            assert_eq!(source, expected);
+        }
+        // the tab follows the new name
+        assert_eq!(
+            editors.references.get(&linkset.root).map(|state| state.word.as_str()),
+            Some("amount")
+        );
     }
 
     /// A script of the tree with no tab: the click asks the app for an editor

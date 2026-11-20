@@ -52,6 +52,62 @@ pub(super) fn find(scripts: &[(usize, &str, &str, bool)], query: &str) -> Vec<Hi
     hits
 }
 
+/// One place a name is used, for the References tab: the whole name in code,
+/// not in a comment or a string, ready to be renamed.
+pub(super) struct Reference {
+    /// The script's place in the window's list of documents.
+    pub document: usize,
+    pub name: String,
+    pub line: usize,
+    pub column: usize,
+    /// The document's first line number: 0 for LSL, 1 for SLua.
+    pub first: usize,
+    /// The line as it reads, trimmed, for the row.
+    pub text: String,
+    /// The name in the document's own characters, to rename it.
+    pub range: std::ops::Range<usize>,
+}
+
+/// Every use of `word` in the window's scripts (`(document, name, source,
+/// lua)`), the whole name once each, case-sensitively, in the code only: an
+/// occurrence in a comment or a string is not a reference to rename, and a
+/// longer name that holds the word is not one either.
+pub(super) fn references(scripts: &[(usize, &str, &str, bool)], word: &str) -> Vec<Reference> {
+    let needle = word.trim();
+    let name = needle.chars().all(|ch| ch == '_' || ch.is_alphanumeric());
+    if needle.chars().count() < 2 || !name {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    for (document, script, source, lua) in scripts {
+        let chars: Vec<char> = source.chars().collect();
+        let code = editing::code_mask(&chars);
+        let mut start = 0;
+        for (line, text) in source.lines().enumerate() {
+            for range in editing::matches_filtered(text, needle, false, true) {
+                let at = start + range.start..start + range.end;
+                if !at.clone().all(|index| code.get(index).copied().unwrap_or(false)) {
+                    continue;
+                }
+                found.push(Reference {
+                    document: *document,
+                    name: (*script).to_owned(),
+                    line,
+                    column: range.start,
+                    first: usize::from(*lua),
+                    text: text.trim().to_owned(),
+                    range: at,
+                });
+                if found.len() >= MAX_HITS {
+                    return found;
+                }
+            }
+            start += text.chars().count() + 1;
+        }
+    }
+    found
+}
+
 /// Where `word` is declared among the window's scripts (`(document, source,
 /// lua)`): the document's place in the list, the line, and the column of its
 /// name. The script the caret is in is searched first, then the others in the
@@ -106,6 +162,27 @@ mod tests {
         assert_eq!(find(&scripts, "x").len(), 0, "one letter is not a query");
         let source = "xx\n".repeat(MAX_HITS + 10);
         assert_eq!(find(&[(0, "Loop", source.as_str(), false)], "xx").len(), MAX_HITS);
+    }
+
+    #[test]
+    fn a_reference_is_the_whole_name_in_code_only() {
+        let door = "integer count = 0;\n// count\nllSay(0, \"count\");\ncount = counter + 1;\n";
+        let panel = "count = 2;\n";
+        let scripts = [(0usize, "Door Script", door, false), (1, "Panel Script", panel, false)];
+        let found = references(&scripts, "count");
+        let places: Vec<(usize, usize, usize)> = found.iter().map(|hit| (hit.document, hit.line, hit.column)).collect();
+        assert_eq!(
+            places,
+            vec![(0, 0, 8), (0, 3, 0), (1, 0, 0)],
+            "the comment, the string, the longer name"
+        );
+        assert_eq!(found[0].range, 8..13, "the name in the document's characters");
+        assert_eq!(found[1].range, 47..52, "on its own line");
+        assert_eq!(found[1].text, "count = counter + 1;");
+        assert_eq!(found[2].name, "Panel Script");
+        // a word that is not one, or one letter, has no reference
+        assert!(references(&scripts, "cou").is_empty());
+        assert!(references(&scripts, "c").is_empty());
     }
 
     #[test]

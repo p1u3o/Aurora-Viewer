@@ -10,14 +10,16 @@ use super::super::widgets;
 use super::super::{icons, inventory, menu};
 use crate::theme::Palette;
 use aurora_net::scripts::ScriptTarget;
-use egui::{FontId, Id, RichText, Sense, TextFormat, Vec2};
+use egui::{FontId, Id, RichText, TextFormat, Vec2};
 use uuid::Uuid;
 
 /// Room the tree keeps beside the source, and the least it may be dragged to.
 pub const TREE_WIDTH: f32 = 186.0;
 pub const TREE_MIN: f32 = 140.0;
-/// The row of the tree's foot (the settings).
+/// The row of the tree's foot (the settings), and the height of a row of the
+/// list: the inventory sidebar's own.
 const FOOT: f32 = 32.0;
+const ROW: f32 = 24.0;
 
 /// What the contents window's menu offers for one script of the tree, as the
 /// app decided it: the tree applies the contents window's own rules, it does
@@ -115,6 +117,64 @@ pub(super) fn reveal(ctx: &egui::Context, root: Uuid, prim: Uuid) {
     }
 }
 
+/// One row of the tree, drawn as the inventory sidebar draws its folders: 24
+/// points tall, the whole row -- icon and words -- lit when it is the chosen
+/// one or under the pointer, a caret before the icon when the row opens a
+/// group. Returns the row's response and the caret's, with its open state.
+#[allow(clippy::too_many_arguments)]
+fn row(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    icon: &str,
+    tint: egui::Color32,
+    mut label: egui::text::LayoutJob,
+    selected: bool,
+    left: f32,
+    caret: Option<bool>,
+) -> (egui::Response, Option<(egui::Response, bool)>) {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW), egui::Sense::click());
+    // the caret is registered after the row, so a click on it is the caret's
+    let caret = caret.map(|open| {
+        let hit = egui::Rect::from_center_size(egui::pos2(rect.left() + left + 7.0, rect.center().y), Vec2::splat(18.0));
+        (ui.interact(hit, response.id.with("caret"), egui::Sense::click()), open)
+    });
+    // the face of the row, behind everything it holds
+    let hot = response.hovered() || caret.as_ref().is_some_and(|(caret, _)| caret.hovered());
+    if selected || hot {
+        let fill = if selected { p.violet.gamma_multiply(0.28) } else { p.raised };
+        ui.painter().rect_filled(rect, ui.visuals().window_corner_radius, fill);
+    }
+    if let Some((caret, open)) = &caret {
+        let color = if caret.hovered() {
+            p.ink
+        } else if selected {
+            p.violet_pale
+        } else {
+            p.muted
+        };
+        widgets::paint_glyph(ui.painter(), widgets::disclosure_caret(*open), caret.rect.center(), 12.0, color);
+    }
+    let icon_left = rect.left() + left + if caret.is_some() { 20.0 } else { 0.0 };
+    if let Some(t) = icons::global(icon) {
+        ui.painter().image(
+            t.id(),
+            egui::Rect::from_center_size(egui::pos2(icon_left + 8.0, rect.center().y), Vec2::splat(16.0)),
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+            tint,
+        );
+    }
+    let text_left = icon_left + 20.0;
+    label.wrap = egui::text::TextWrapping {
+        max_width: (rect.right() - 8.0 - text_left).max(1.0),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    let galley = ui.painter().layout_job(label);
+    widgets::paint_row_text(ui.painter(), galley, text_left, rect.center().y, p.ink);
+    (response, caret)
+}
+
 /// The row icon of a name of the skin's set (Tabler and inventory icons
 /// alike), `16` points wide, or the room it takes when the set has none.
 pub(super) fn icon(ui: &mut egui::Ui, name: &str, tint: egui::Color32) {
@@ -201,16 +261,18 @@ pub(super) fn tree(
                     continue;
                 }
                 let open = filtering || !closed.contains(&prim.object);
-                let (caret, label) = ui
-                    .horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        let caret = inventory::tree::caret(ui, p, open);
-                        icon(ui, "Inv_Object", p.violet_light);
-                        let name = inventory::tree::name(&prim.name, p);
-                        (caret, inventory::tree::label(ui, name, false, Sense::click(), None))
-                    })
-                    .inner;
-                if caret.clicked() || label.clicked() {
+                let (label, caret) = row(
+                    ui,
+                    p,
+                    "Inv_Object",
+                    p.violet_light,
+                    inventory::tree::name(&prim.name, p),
+                    false,
+                    4.0,
+                    Some(open),
+                );
+                let caret_clicked = caret.is_some_and(|(caret, _)| caret.clicked());
+                if caret_clicked || label.clicked() {
                     if open {
                         closed.push(prim.object);
                     } else {
@@ -235,11 +297,8 @@ pub(super) fn tree(
                         object: prim.object,
                         item: script.item,
                     };
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        ui.add_space(ui.spacing().indent - 4.0);
+                    {
                         let tint = if script.running == Some(true) { p.teal } else { p.muted };
-                        icon(ui, inventory::item_icon(10, 10, script.flags), tint);
                         // the contents window's C/M/T letters, then the star of
                         // unsaved text (LLItemBridge::getLabelSuffix)
                         let mut name = widgets::name_with_suffix(&script.name, "", inventory::tree::font(), p.ink);
@@ -251,7 +310,7 @@ pub(super) fn tree(
                             name.append(" *", 0.0, TextFormat::simple(inventory::tree::font(), p.ink.gamma_multiply(0.85)));
                         }
                         let selected = active == Some(target);
-                        let response = inventory::tree::label(ui, name, selected, Sense::click(), None);
+                        let (response, _) = row(ui, p, inventory::item_icon(10, 10, script.flags), tint, name, selected, 22.0, None);
                         if response.clicked() {
                             chosen = Some(TreeAction::Open(target));
                         }
@@ -291,7 +350,7 @@ pub(super) fn tree(
                                 chosen = Some(TreeAction::Close(target));
                             }
                         });
-                    });
+                    }
                 }
             }
             if closed != collapsed(&ctx, linkset.root) {

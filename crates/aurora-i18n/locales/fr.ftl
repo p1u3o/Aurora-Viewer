@@ -10101,6 +10101,18 @@ script-problems-fold = Replier les problèmes
 script-problems-unfold = Afficher les problèmes
 script-dock-outline = Plan
 script-dock-search = Rechercher
+script-dock-references = Références
+script-references-new-name = Nouveau nom
+script-references-rename = Renommer tout
+script-references-count = { $count ->
+    [one] { $count } emplacement
+   *[other] { $count } emplacements
+    }
+script-references-none = Rien n’utilise ce nom.
+script-references-renamed = { $count ->
+    [one] { $count } emplacement renommé.
+   *[other] { $count } emplacements renommés.
+    }
 script-search-in-scripts = Chercher dans les scripts de la fenêtre
 script-search-none = Rien trouvé.
 script-goto-definition = Aller à la définition

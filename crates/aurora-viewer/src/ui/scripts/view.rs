@@ -396,6 +396,7 @@ pub(super) fn body(
     folded: &mut bool,
     tab: &mut DockTab,
     search: Option<SearchDock<'_>>,
+    references: Option<ReferencesDock<'_>>,
 ) -> Option<DockClick> {
     let ctx = ui.ctx().clone();
     e.tools.body_top = ui.cursor().top();
@@ -473,7 +474,7 @@ pub(super) fn body(
         crumbs_row(ui, p, e, id, settings, problems, tab, true);
     }
     let clicked = if dock_height > 0.0 {
-        dock(ui, p, e, problems, all_sources, folded, tab, search)
+        dock(ui, p, e, problems, all_sources, folded, tab, search, references)
     } else {
         None
     };
@@ -514,6 +515,7 @@ pub(super) fn split_body(
     folded: &mut bool,
     tab: &mut DockTab,
     search: Option<SearchDock<'_>>,
+    references: Option<ReferencesDock<'_>>,
 ) -> (Option<DockClick>, Option<ScriptTarget>) {
     // Two equal columns: egui splits the width exactly, and each column's own
     // layout keeps the two sources at the same height.
@@ -559,7 +561,7 @@ pub(super) fn split_body(
         Side::Right => &mut *right,
     };
     let clicked = if dock_height > 0.0 {
-        dock(ui, p, front, problems, all_sources, folded, tab, search)
+        dock(ui, p, front, problems, all_sources, folded, tab, search, references)
     } else {
         None
     };
@@ -589,6 +591,8 @@ pub(super) enum DockTab {
     Outline,
     /// A word found in every script of the window.
     Search,
+    /// Every use of a name in the window's scripts, to rename them at once.
+    References,
 }
 
 /// What a click in the dock asked for.
@@ -599,6 +603,10 @@ pub(super) enum DockClick {
     Outline(usize),
     /// A hit of the search, by its place in the list.
     Search(usize),
+    /// A reference of the References tab, by its place in the list.
+    Reference(usize),
+    /// Rename every reference of the tab to the new name.
+    Rename,
 }
 
 /// The Search tab's state for one frame: the query being typed and the hits
@@ -606,6 +614,14 @@ pub(super) enum DockClick {
 pub(super) struct SearchDock<'a> {
     pub query: &'a mut String,
     pub hits: &'a [super::navigate::Hit],
+}
+
+/// The References tab's state for one frame: the name the window is renaming,
+/// the new name being typed and every place the name is used.
+pub(super) struct ReferencesDock<'a> {
+    pub word: &'a str,
+    pub name: &'a mut String,
+    pub hits: &'a [super::navigate::Reference],
 }
 
 /// The outline of a document, as the text on screen declares it.
@@ -750,6 +766,73 @@ fn search_dock(ui: &mut egui::Ui, p: &Palette, search: SearchDock<'_>) -> Option
     clicked
 }
 
+/// The References tab of the dock: the name the window is renaming, a field for
+/// the new one and the button that renames every place at once, then the places
+/// themselves, a click away from each. `word` is the name the context menu
+/// asked about.
+fn references_dock(ui: &mut egui::Ui, p: &Palette, dock: ReferencesDock<'_>) -> Option<DockClick> {
+    let ReferencesDock { word, name, hits } = dock;
+    let mut clicked = None;
+    let width = ui.available_width();
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.label(RichText::new(word).monospace().size(11.0).color(p.ink));
+        let field = ui.add(
+            egui::TextEdit::singleline(name)
+                .desired_width((width - 260.0).clamp(80.0, 200.0))
+                .hint_text(aurora_i18n::tr!("script-references-new-name"))
+                .font(egui::TextStyle::Monospace),
+        );
+        let ready = !name.trim().is_empty() && name.trim() != word;
+        if field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) && ready {
+            clicked = Some(DockClick::Rename);
+        }
+        if ui
+            .add_enabled_ui(ready, |ui| flat_button(ui, p, aurora_i18n::tr!("script-references-rename")))
+            .inner
+            .clicked()
+        {
+            clicked = Some(DockClick::Rename);
+        }
+        ui.label(
+            RichText::new(aurora_i18n::tr!("script-references-count", count = hits.len() as i64))
+                .size(11.0)
+                .color(p.muted),
+        );
+    });
+    let (name_width, line_width) = (140.0, 54.0);
+    let text_width = (ui.available_width() - name_width - line_width - 16.0).max(60.0);
+    egui::ScrollArea::vertical()
+        .id_salt("script_references")
+        .max_height(ui.available_height().max(0.0))
+        .show(ui, |ui| {
+            if hits.is_empty() {
+                ui.label(RichText::new(aurora_i18n::tr!("script-references-none")).size(11.0).color(p.muted));
+                return;
+            }
+            for (index, hit) in hits.iter().enumerate() {
+                let row = ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    cell(ui, name_width, RichText::new(&hit.name).size(11.0).color(p.ink), true);
+                    cell(
+                        ui,
+                        line_width,
+                        RichText::new(format!("{}:{}", hit.line + hit.first, hit.column))
+                            .size(11.0)
+                            .color(p.muted),
+                        false,
+                    );
+                    cell(ui, text_width, RichText::new(&hit.text).monospace().size(11.0).color(p.muted), true);
+                });
+                let row = ui.interact(row.response.rect, row.response.id.with("row"), egui::Sense::click());
+                if row.clicked() {
+                    clicked = Some(DockClick::Reference(index));
+                }
+            }
+        });
+    clicked
+}
+
 /// The dock under the source: the diagnostics of the scripts the window shows
 /// (each one a click away from its line) or, on its other tab, the outline of
 /// the script in front. Returns what a click asked for.
@@ -762,6 +845,7 @@ fn dock(
     folded: &mut bool,
     tab: &mut DockTab,
     search: Option<SearchDock<'_>>,
+    references: Option<ReferencesDock<'_>>,
 ) -> Option<DockClick> {
     let mut clicked = None;
     // Exactly the room reserved for it, whatever the list holds: the dock
@@ -824,6 +908,17 @@ fn dock(
                         {
                             *tab = DockTab::Search;
                         }
+                        // the places a name is used, and a new name for them
+                        if references.is_some()
+                            && ui
+                                .selectable_label(
+                                    *tab == DockTab::References,
+                                    RichText::new(aurora_i18n::tr!("script-dock-references")).size(11.0),
+                                )
+                                .clicked()
+                        {
+                            *tab = DockTab::References;
+                        }
                         if *tab == DockTab::Problems
                             && let Some(all) = all_sources
                         {
@@ -856,6 +951,12 @@ fn dock(
                         && let Some(search) = search
                     {
                         clicked = search_dock(ui, p, search);
+                        return;
+                    }
+                    if *tab == DockTab::References
+                        && let Some(references) = references
+                    {
+                        clicked = references_dock(ui, p, references);
                         return;
                     }
                     // Columns: the message takes what the other two leave, and each
@@ -2795,6 +2896,7 @@ mod tests {
                                     None,
                                     &mut false,
                                     &mut DockTab::default(),
+                                    None,
                                     None,
                                 );
                                 bottom = ui.min_rect().bottom();

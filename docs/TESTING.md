@@ -2865,7 +2865,11 @@ dock's second tab, Outline, lists the states, events, functions and globals
 the script declares with their lines, and a click goes to one
 (`ui/scripts/outline.rs`). The dock's third tab, Search, finds a word in every
 script the window has open, with its script, line and text, and a click opens
-that script on the hit. In the source, Ctrl+click on a name (or the context
+that script on the hit. Its fourth, References, opens on a name (the context
+menu's Find references): every place the name is used in the window's scripts,
+the whole name in code only, a click away from each, with a field for a new
+name and Rename all, which rewrites them in every script at once (each document
+keeps its own undo history). In the source, Ctrl+click on a name (or the context
 menu's Go to the definition) takes the window to where the name is declared,
 in this script or another one of the linkset, and Find references fills the
 Search tab with it. The top of the source carries a sticky line, the state and
