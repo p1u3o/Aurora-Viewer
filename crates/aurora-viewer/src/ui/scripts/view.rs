@@ -507,7 +507,7 @@ pub(super) fn body(
     } else {
         None
     };
-    let footer = ui.scope(|ui| footer(ui, p, e, actions));
+    let footer = ui.scope(|ui| footer(ui, p, e));
     if (e.tools.footer_height - footer.response.rect.height()).abs() > 0.5 {
         e.tools.footer_height = footer.response.rect.height();
         ctx.request_repaint();
@@ -538,7 +538,6 @@ pub(super) fn split_body(
     focused: Side,
     settings: &ScriptSettings,
     prefs: &mut Panels,
-    actions: &mut Vec<Action>,
     problems: &[Problem],
     all_sources: Option<&mut bool>,
     folded: &mut bool,
@@ -614,7 +613,7 @@ pub(super) fn split_body(
     } else {
         None
     };
-    let footer = ui.scope(|ui| footer(ui, p, front, actions));
+    let footer = ui.scope(|ui| footer(ui, p, front));
     if (front.tools.footer_height - footer.response.rect.height()).abs() > 0.5 {
         front.tools.footer_height = footer.response.rect.height();
         ui.ctx().request_repaint();
@@ -1193,20 +1192,22 @@ fn dock(
             if *folded {
                 return;
             }
+            // what the edge above the dock asked for keeps its place: the list
+            // under it may have nothing to say
             if *tab == DockTab::Outline {
-                clicked = outline_dock(ui, p, e);
+                clicked = clicked.take().or(outline_dock(ui, p, e));
                 return;
             }
             if *tab == DockTab::Search
                 && let Some(search) = search
             {
-                clicked = search_dock(ui, p, search);
+                clicked = clicked.take().or(search_dock(ui, p, search));
                 return;
             }
             if *tab == DockTab::References
                 && let Some(references) = references
             {
-                clicked = references_dock(ui, p, references);
+                clicked = clicked.take().or(references_dock(ui, p, references));
                 return;
             }
             ui.add_space(4.0);
@@ -1356,6 +1357,11 @@ fn insertion_menu(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id) {
 /// scripts draws it once, under the menus, for the script in front.
 /// The width the experience selector takes at the right of the toolbar.
 const EXPERIENCE_WIDTH: f32 = 180.0;
+/// The room of the compile target's combo, at the left of the experience, and
+/// of the script's own commands when a window of its own keeps them in the
+/// toolbar.
+const COMPILE_WIDTH: f32 = 136.0;
+pub(super) const RUN_WIDTH: f32 = 96.0;
 
 pub(super) fn toolbar(
     ui: &mut egui::Ui,
@@ -1372,7 +1378,9 @@ pub(super) fn toolbar(
     let mut chosen = None;
     let row = ui.horizontal(|ui| {
         let left = ui.cursor().left();
-        let mut buttons = vec![(Command::Save, "device-floppy-filled", aurora_i18n::tr!("common-save"))];
+        // Save sits above the source, with the script's other commands
+        // (`run_buttons`), not among the tools here
+        let mut buttons = Vec::new();
         if let Some(all) = save_all {
             buttons.push((Command::SaveAll, "files-filled", aurora_i18n::tr!("script-save-all")));
             let _ = all;
@@ -1417,33 +1425,54 @@ pub(super) fn toolbar(
         // At the right of this row: the Find controls when they are inline (in
         // the window of a linkset's scripts; a window of its own puts them
         // beside the body's header), then the experience of the script.
+        // At the right of this row, right to left: the script's own commands
+        // when it is a window of its own, the experience of the script, the
+        // compile target, and the Find controls when they are inline.
+        let own = save_all.is_none();
         let experience = (!e.target.object.is_nil()).then_some(EXPERIENCE_WIDTH);
         let find = with_search
             .then(|| Search::inline_width(ui))
             .filter(|_| settings.search_inline && prefs.search.owns(id) && !ui.is_sizing_pass());
-        let reserved = experience.unwrap_or(0.0) + find.unwrap_or(0.0);
-        if let Some(width) = find
-            && ui.available_width() >= width + reserved.min(0.0)
-        {
-            ui.add_space((ui.available_width() - width - reserved).max(0.0));
-            let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 24.0), egui::Sense::hover());
-            e.tools.search_slot = Some(
-                ui.new_child(
-                    egui::UiBuilder::new()
-                        .id_salt("inline_search")
-                        .max_rect(rect)
-                        .layout(egui::Layout::top_down(egui::Align::Min)),
-                ),
-            );
-        }
-        if let Some(width) = experience.filter(|width| ui.available_width() >= *width) {
-            ui.add_space((ui.available_width() - width).max(0.0));
-            ui.allocate_ui_with_layout(Vec2::new(width, 24.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                let editable = e.can_edit && e.loaded && e.saving.is_none();
-                if e.experience.combo(ui, p, editable)
-                    && let Some(request) = e.experience.begin()
-                {
-                    actions.push(Action::Experiences { request, target: e.target });
+        let run = if own { RUN_WIDTH } else { 0.0 };
+        let right = experience.unwrap_or(0.0) + COMPILE_WIDTH + run + find.unwrap_or(0.0);
+        if ui.available_width() >= right {
+            ui.add_space(ui.available_width() - right);
+            ui.allocate_ui_with_layout(Vec2::new(right, 24.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                if own {
+                    run_buttons(ui, p, e, actions);
+                }
+                if let Some(width) = experience {
+                    ui.allocate_ui_with_layout(Vec2::new(width, 24.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        let editable = e.can_edit && e.loaded && e.saving.is_none();
+                        if e.experience.combo(ui, p, editable)
+                            && let Some(request) = e.experience.begin()
+                        {
+                            actions.push(Action::Experiences { request, target: e.target });
+                        }
+                    });
+                }
+                // the compile target, at the left of the experience
+                ui.add_enabled_ui(
+                    e.can_edit && e.loaded && e.saving.is_none() && (e.target.object.is_nil() || e.running.is_some()),
+                    |ui| {
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(COMPILE_WIDTH, 24.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| compile_target(ui, e),
+                        );
+                    },
+                );
+                if let Some(width) = find {
+                    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 24.0), egui::Sense::hover());
+                    e.tools.search_slot = Some(
+                        ui.new_child(
+                            egui::UiBuilder::new()
+                                .id_salt("inline_search")
+                                .max_rect(rect)
+                                .layout(egui::Layout::top_down(egui::Align::Min)),
+                        ),
+                    );
                 }
             });
         }
@@ -1513,6 +1542,44 @@ fn header(
 /// The compile target picker (panel_script_ed.xml `compile_target`, in its
 /// order). The Lua targets need a region with SLua, as
 /// LLScriptEdCore::postBuild enables them from LuaScriptsEnabled.
+/// Which of a script's commands its window offers: Save when the source has
+/// something to save, Reset when the script may be reset (`LLLiveLSLEditor::
+/// onReset`, indra/newview/llpreviewscript.cpp: neither access to the source
+/// nor a running reply is needed), and the running state when it has one to
+/// flip -- a window of the inventory has neither Reset nor a running state.
+fn run_state(e: &Editor) -> (bool, bool, Option<bool>) {
+    let object = !e.target.object.is_nil();
+    let reset = object && e.can_reset && e.saving.is_none();
+    let running = (object && e.can_edit && e.running.is_some() && e.saving.is_none()).then(|| e.running.unwrap_or(false));
+    (e.can_save(), reset, running)
+}
+
+/// The commands of the script, as icons above the source: save at the right,
+/// then reset, then pause or resume, which says what a click does.
+pub(super) fn run_buttons(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, actions: &mut Vec<Action>) {
+    let (save, reset, running) = run_state(e);
+    if icon_button(ui, p, "device-floppy-filled", aurora_i18n::tr!("common-save"), save) {
+        actions.extend(e.save());
+    }
+    if reset && icon_button(ui, p, "reload", aurora_i18n::tr!("script-reset"), true) {
+        actions.push(Action::Reset(e.target));
+    }
+    if let Some(running) = running {
+        // the icon says what pressing it does
+        let (icon, label) = if running {
+            ("player-pause", aurora_i18n::tr!("script-pause"))
+        } else {
+            ("player-play", aurora_i18n::tr!("script-resume"))
+        };
+        if icon_button(ui, p, icon, label, true) {
+            actions.push(Action::Running {
+                target: e.target,
+                running: !running,
+            });
+        }
+    }
+}
+
 fn compile_target(ui: &mut egui::Ui, e: &mut Editor) {
     use aurora_net::scripts::CompileTarget;
     let label = |t: CompileTarget| match t {
@@ -1538,17 +1605,16 @@ fn compile_target(ui: &mut egui::Ui, e: &mut Editor) {
         .on_hover_text(aurora_i18n::tr!("script-target-hint"));
 }
 
-fn footer(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, actions: &mut Vec<Action>) {
+fn footer(ui: &mut egui::Ui, p: &Palette, e: &mut Editor) {
     // The reason a script failed, when the notice over the source does not
     // say it already (it does unless the reader has put it away).
     let covered = notice(e).is_some_and(|kind| e.tools.notice_hidden != Some(kind));
     if !e.status.is_empty() && !covered {
         ui.label(RichText::new(&e.status).color(if e.compile_failed { p.danger } else { p.muted }));
     }
-    // The status bar under the source: where the cursor is on the left, the
-    // commands of the script on the right (Running, Reset, the compile target
-    // and Save, right to left). The row keeps its height: `with_layout` would
-    // take the room left below.
+    // The status bar under the source: where the cursor is, and what the script
+    // weighs. Its commands (save, reset, running, the compile target) are the
+    // icons above the source, beside its tabs.
     let bar = egui::Frame::new()
         .fill(p.bar)
         .corner_radius(ui.visuals().widgets.inactive.corner_radius)
@@ -1556,38 +1622,8 @@ fn footer(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, actions: &mut Vec<Acti
         .show(ui, |ui| {
             ui.allocate_ui_with_layout(
                 Vec2::new(ui.available_width(), ui.spacing().interact_size.y.max(26.0)),
-                egui::Layout::right_to_left(egui::Align::Center),
+                egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
-                    if ui
-                        .add_enabled_ui(e.can_save(), |ui| flat_button(ui, p, aurora_i18n::tr!("common-save")))
-                        .inner
-                        .clicked()
-                    {
-                        actions.extend(e.save());
-                    }
-                    ui.add_enabled_ui(
-                        e.can_edit && e.loaded && e.saving.is_none() && (e.target.object.is_nil() || e.running.is_some()),
-                        |ui| {
-                            compile_target(ui, e);
-                        },
-                    );
-                    if !e.target.object.is_nil() {
-                        // LLLiveLSLEditor::onReset (indra/newview/llpreviewscript.cpp):
-                        // resetting does not require access to the source or a running reply.
-                        ui.add_enabled_ui(e.can_reset && e.saving.is_none(), |ui| {
-                            if flat_button(ui, p, aurora_i18n::tr!("script-reset")).clicked() {
-                                actions.push(Action::Reset(e.target));
-                            }
-                        });
-                        ui.add_enabled_ui(e.can_edit && e.running.is_some() && e.saving.is_none(), |ui| {
-                            let mut running = e.running.unwrap_or(false);
-                            if crate::ui::widgets::checkbox(ui, p, &mut running, aurora_i18n::tr!("script-running")).changed() {
-                                actions.push(Action::Running { target: e.target, running });
-                            }
-                        });
-                    }
-                    // Added last in a right-to-left row: it takes the room on the left,
-                    // and its text starts there.
                     let position = aurora_i18n::tr!(
                         "script-position",
                         line = (e.tools.position.0 + e.first_line()) as i64,
@@ -1600,14 +1636,7 @@ fn footer(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, actions: &mut Vec<Acti
                         limit = size_label(aurora_net::scripts::MAX_SOURCE)
                     );
                     let readout = format!("{position}  ·  {spaces}  ·  {size}");
-                    let width = ui.available_width();
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(width, ui.spacing().interact_size.y.max(26.0)),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            ui.add(egui::Label::new(RichText::new(readout).small().color(p.muted)).truncate());
-                        },
-                    );
+                    ui.add(egui::Label::new(RichText::new(readout).small().color(p.muted)).truncate());
                 },
             );
         });
@@ -2486,55 +2515,60 @@ pub(super) fn crumbs_row(
     let read_only = e.loaded && !e.can_edit;
     let counted = problems.len();
     let mut jump = None;
+    // The bar of the path, under the source: a quiet face, and a chip per
+    // block that holds the caret, the one it is in lit.
+    let (bar, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), CRUMBS_HEIGHT), egui::Sense::hover());
+    ui.painter()
+        .rect_filled(bar, ui.visuals().widgets.inactive.corner_radius, p.bar.gamma_multiply(0.55));
+    let inner = egui::Rect::from_min_max(bar.min + Vec2::new(8.0, 0.0), bar.max - Vec2::new(6.0, 0.0));
+    let mut ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(inner)
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    // the trailer: what the script counts, then whether it can be changed (the
+    // pane in front alone says the count of the dock)
+    if trailer && counted > 0 {
+        let label = aurora_i18n::tr!("script-problems-count", count = counted as i64);
+        if flat_button(&mut ui, p, &label).clicked() {
+            *tab = DockTab::Problems;
+        }
+    }
+    if either {
+        // the two views, as words: the one shown in ink, the other dimmed (the
+        // bar is too thin for the pills of a tab strip)
+        let processed = e.tools.processed;
+        if switch_word(&mut ui, p, aurora_i18n::tr!("script-tab-processed"), processed) {
+            e.tools.processed = true;
+        }
+        if switch_word(&mut ui, p, aurora_i18n::tr!("script-tab-source"), !processed) {
+            e.tools.processed = false;
+        }
+    }
+    if trailer
+        && read_only
+        && let Some(t) = crate::ui::icons::global("lock-filled")
+    {
+        ui.add(egui::Image::new(&t).fit_to_exact_size(Vec2::splat(14.0)).tint(p.warn))
+            .on_hover_text(aurora_i18n::tr!("script-read-only"));
+    }
+    // the path, on the left, in the panes' order as the source is
+    let width = ui.available_width();
     ui.allocate_ui_with_layout(
-        Vec2::new(ui.available_width(), CRUMBS_HEIGHT),
-        egui::Layout::right_to_left(egui::Align::Center),
+        Vec2::new(width, CRUMBS_HEIGHT),
+        egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
-            // the trailer: what the script counts, then whether it can be
-            // changed (the pane in front alone says the count of the dock)
-            if trailer && counted > 0 {
-                let label = aurora_i18n::tr!("script-problems-count", count = counted as i64);
-                if flat_button(ui, p, &label).clicked() {
-                    *tab = DockTab::Problems;
+            ui.spacing_mut().item_spacing.x = 1.0;
+            crumb(ui, p, &name, false, false);
+            for (index, step) in path.iter().enumerate() {
+                if let Some(t) = crate::ui::icons::global("chevron-right") {
+                    ui.add(egui::Image::new(&t).fit_to_exact_size(Vec2::splat(10.0)).tint(p.muted_dim));
+                }
+                let last = index + 1 == path.len();
+                if crumb(ui, p, &step.text, last, true).clicked() {
+                    jump = Some(step.line);
                 }
             }
-            if either {
-                // the two views, as words: the one shown in ink, the other
-                // dimmed (the bar is too thin for the pills of a tab strip)
-                let processed = e.tools.processed;
-                if switch_word(ui, p, aurora_i18n::tr!("script-tab-processed"), processed) {
-                    e.tools.processed = true;
-                }
-                if switch_word(ui, p, aurora_i18n::tr!("script-tab-source"), !processed) {
-                    e.tools.processed = false;
-                }
-            }
-            if trailer
-                && read_only
-                && let Some(t) = crate::ui::icons::global("lock-filled")
-            {
-                ui.add(egui::Image::new(&t).fit_to_exact_size(Vec2::splat(14.0)).tint(p.warn))
-                    .on_hover_text(aurora_i18n::tr!("script-read-only"));
-            }
-            // the path, on the left, in the panes' order as the source is
-            let width = ui.available_width();
-            ui.allocate_ui_with_layout(
-                Vec2::new(width, CRUMBS_HEIGHT),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    crumb(ui, &name, p.muted_dim, false);
-                    for (index, step) in path.iter().enumerate() {
-                        if let Some(t) = crate::ui::icons::global("chevron-right") {
-                            ui.add(egui::Image::new(&t).fit_to_exact_size(Vec2::splat(11.0)).tint(p.muted_dim));
-                        }
-                        let last = index + 1 == path.len();
-                        if crumb(ui, &step.text, if last { p.ink } else { p.muted }, true).clicked() {
-                            jump = Some(step.line);
-                        }
-                    }
-                },
-            );
         },
     );
     if let Some(line) = jump {
@@ -2558,11 +2592,28 @@ fn switch_word(ui: &mut egui::Ui, p: &Palette, text: &str, on: bool) -> bool {
 }
 
 /// One step of the crumbs: its words, a click away from its line.
-fn crumb(ui: &mut egui::Ui, text: &str, color: egui::Color32, jumps: bool) -> egui::Response {
-    let response = ui.add(
-        egui::Label::new(RichText::new(text).size(11.0).color(color))
-            .truncate()
-            .sense(egui::Sense::click()),
+/// One word of the path: a chip, lit when it is the block the caret is in, and
+/// lit again under the pointer when a click goes to it.
+fn crumb(ui: &mut egui::Ui, p: &Palette, text: &str, current: bool, jumps: bool) -> egui::Response {
+    let font = crate::ui::widgets::control_font(ui, 11.0);
+    let room = (ui.available_width() - 160.0).max(48.0);
+    let galley = egui::WidgetText::from(text).into_galley(ui, Some(egui::TextWrapMode::Truncate), room, font);
+    let pad = Vec2::new(6.0, 1.0);
+    let (rect, response) = ui.allocate_exact_size(
+        galley.size() + pad * 2.0,
+        if jumps { egui::Sense::click() } else { egui::Sense::hover() },
+    );
+    let radius = ui.visuals().widgets.inactive.corner_radius;
+    if current {
+        ui.painter().rect_filled(rect, radius, p.violet.gamma_multiply(0.18));
+    } else if jumps && response.hovered() {
+        ui.painter().rect_filled(rect, radius, p.raised.gamma_multiply(0.30));
+    }
+    let color = if current { p.ink } else { p.muted };
+    ui.painter().galley(
+        egui::pos2(rect.left() + pad.x, rect.center().y - galley.size().y / 2.0),
+        galley,
+        color,
     );
     if jumps {
         response
@@ -2933,10 +2984,6 @@ mod tests {
             (true, true, true, true, true, false),
             (false, true, true, false, false, false),
         ] {
-            let ctx = egui::Context::default();
-            let theme = crate::theme::Theme::default();
-            theme.apply(&ctx, 1.0);
-            let p = theme.palette();
             let target = ScriptTarget {
                 object: if in_object { Uuid::from_u128(9) } else { Uuid::nil() },
                 item: Uuid::from_u128(10),
@@ -2954,53 +3001,15 @@ mod tests {
                     running: false,
                 });
             }
-            assert!(e.running.is_none());
-            let mut frame = |events| {
-                let mut actions = Vec::new();
-                let mut output = ctx.run_ui(
-                    egui::RawInput {
-                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(800.0, 600.0))),
-                        events,
-                        ..Default::default()
-                    },
-                    |ui| footer(ui, &p, e, &mut actions),
-                );
-                output.textures_delta.clear();
-                (output, actions)
-            };
-            for _ in 0..3 {
-                frame(Vec::new());
-            }
-            let (output, _) = frame(Vec::new());
-            let position = output.shapes.iter().find_map(|s| match &s.shape {
-                egui::Shape::Text(t) if t.galley.job.text == aurora_i18n::tr!("script-reset") => Some(t.pos + t.galley.size() * 0.5),
-                _ => None,
-            });
-            if !in_object {
-                assert!(position.is_none(), "inventory scripts have no Reset button");
-                continue;
-            }
-            let pos = position.expect("object script Reset button");
-            let mut reset = false;
-            for pressed in [true, false] {
-                let (_, actions) = frame(vec![
-                    egui::Event::PointerMoved(pos),
-                    egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ]);
-                reset |= actions.iter().any(|action| matches!(action, Action::Reset(t) if *t == target));
-                assert!(!actions.iter().any(|action| matches!(action, Action::Save { .. })));
-            }
+            assert!(e.running.is_none(), "the reply has not come");
+            let (save, reset, running) = run_state(e);
             assert_eq!(
                 reset, expected,
                 "readable={readable}, editable={editable}, available={available}, saving={saving}"
             );
+            assert_eq!(running, None, "no running state to flip without the reply");
+            assert!(!save, "nothing to save");
             assert!(e.source.is_empty());
-            assert!(!e.can_save());
         }
     }
 

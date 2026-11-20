@@ -2009,73 +2009,12 @@ impl Editors {
                     .unwrap_or("")
             };
             ui.scope(|ui| {
-                // The tabs of the open scripts start where the source does, and
-                // the tree, its filter inside its panel, starts under them,
-                // level with the source; its bottom lands on the source's
-                // status bar.
+                // The tree's panel, its filter inside it at the top, and the
+                // tabs of the open scripts start on the same line: the panel
+                // runs down to the source's status bar, the tabs over the
+                // source alone.
                 ui.spacing_mut().item_spacing.y = 0.0;
                 let header = ui.spacing().interact_size.y.max(24.0);
-                ui.horizontal_top(|ui| {
-                    // the tree's room, then the same gap the source takes: the
-                    // first tab's left edge lines up with the text box's
-                    ui.allocate_exact_size(Vec2::new(tree_width, header), egui::Sense::hover());
-                    ui.add_space(gap);
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(ui.available_width(), header),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| {
-                            let mut tabs: Vec<linkset::Tab> = self
-                                .documents
-                                .iter()
-                                .filter(|e| !e.closed && e.linkset == root)
-                                .map(|e| linkset::Tab {
-                                    target: e.target,
-                                    name: &e.name,
-                                    prim: prim_of(e.target.object),
-                                    lua: e.lua(),
-                                    dirty: e.dirty(),
-                                })
-                                .collect();
-                            // in the order the reader dragged them into; the
-                            // rest keep the order they were opened in
-                            if let Some(order) = self.tab_order.get(&root) {
-                                tabs.sort_by_key(|tab| order.iter().position(|target| *target == tab.target).unwrap_or(usize::MAX));
-                            }
-                            match linkset::tabs(
-                                ui,
-                                p,
-                                &tabs,
-                                Some(active),
-                                settings.color(settings::ColorRole::Background, p),
-                                self.splits.get(&root).copied(),
-                            ) {
-                                linkset::Tabs::Select(target) => select = Some(target),
-                                linkset::Tabs::Reorder { from, to } => {
-                                    let current: Vec<ScriptTarget> = self
-                                        .documents
-                                        .iter()
-                                        .filter(|e| !e.closed && e.linkset == root)
-                                        .map(|e| e.target)
-                                        .collect();
-                                    let order = self.tab_order.entry(root).or_insert_with(|| current.clone());
-                                    order.retain(|target| current.contains(target));
-                                    reorder_targets(order, from, to);
-                                    for target in current {
-                                        if !order.contains(&target) {
-                                            order.push(target);
-                                        }
-                                    }
-                                }
-                                linkset::Tabs::Close(target) => close_one = Some(target),
-                                linkset::Tabs::CloseOthers(target) => close_others = Some(target),
-                                linkset::Tabs::CloseAll => close_all = true,
-                                linkset::Tabs::Split(target) => split_open_at = Some(target),
-                                linkset::Tabs::Unsplit => unsplit = true,
-                                linkset::Tabs::None => {}
-                            }
-                        },
-                    );
-                });
                 // the notice of the script in front, over the window's body:
                 // the tree and the sources start level under it
                 if let Some(e) = self.documents.get_mut(active_index) {
@@ -2108,6 +2047,73 @@ impl Editors {
                     ui.add_space(gap);
                     let width = ui.available_width();
                     ui.allocate_ui_with_layout(Vec2::new(width, height), egui::Layout::top_down(egui::Align::Min), |ui| {
+                        ui.horizontal_top(|ui| {
+                            // the tabs of the open scripts, at the top of the source's
+                            // column: the tree's panel starts at their top, to the left
+                            // the script's own commands at the right of the strip: save,
+                            // reset and the running state, as icons
+                            let strip = (ui.available_width() - view::RUN_WIDTH).max(120.0);
+                            ui.allocate_ui_with_layout(Vec2::new(strip, header), egui::Layout::top_down(egui::Align::Min), |ui| {
+                                let mut tabs: Vec<linkset::Tab> = self
+                                    .documents
+                                    .iter()
+                                    .filter(|e| !e.closed && e.linkset == root)
+                                    .map(|e| linkset::Tab {
+                                        target: e.target,
+                                        name: &e.name,
+                                        prim: prim_of(e.target.object),
+                                        lua: e.lua(),
+                                        dirty: e.dirty(),
+                                    })
+                                    .collect();
+                                // in the order the reader dragged them into; the
+                                // rest keep the order they were opened in
+                                if let Some(order) = self.tab_order.get(&root) {
+                                    tabs.sort_by_key(|tab| order.iter().position(|target| *target == tab.target).unwrap_or(usize::MAX));
+                                }
+                                match linkset::tabs(
+                                    ui,
+                                    p,
+                                    &tabs,
+                                    Some(active),
+                                    settings.color(settings::ColorRole::Background, p),
+                                    self.splits.get(&root).copied(),
+                                ) {
+                                    linkset::Tabs::Select(target) => select = Some(target),
+                                    linkset::Tabs::Reorder { from, to } => {
+                                        let current: Vec<ScriptTarget> = self
+                                            .documents
+                                            .iter()
+                                            .filter(|e| !e.closed && e.linkset == root)
+                                            .map(|e| e.target)
+                                            .collect();
+                                        let order = self.tab_order.entry(root).or_insert_with(|| current.clone());
+                                        order.retain(|target| current.contains(target));
+                                        reorder_targets(order, from, to);
+                                        for target in current {
+                                            if !order.contains(&target) {
+                                                order.push(target);
+                                            }
+                                        }
+                                    }
+                                    linkset::Tabs::Close(target) => close_one = Some(target),
+                                    linkset::Tabs::CloseOthers(target) => close_others = Some(target),
+                                    linkset::Tabs::CloseAll => close_all = true,
+                                    linkset::Tabs::Split(target) => split_open_at = Some(target),
+                                    linkset::Tabs::Unsplit => unsplit = true,
+                                    linkset::Tabs::None => {}
+                                }
+                            });
+                            ui.allocate_ui_with_layout(
+                                Vec2::new(ui.available_width(), header),
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if let Some(e) = self.documents.get_mut(active_index) {
+                                        view::run_buttons(ui, p, e, actions);
+                                    }
+                                },
+                            );
+                        });
                         if let Some(index) = self.documents.iter().position(|e| e.target == active && !e.closed) {
                             // Ctrl+F belongs to the script in front
                             focus::claim(ctx, egui::LayerId::new(egui::Order::Middle, egui::Id::unique(&window)), source_id);
@@ -2137,7 +2143,6 @@ impl Editors {
                                     side,
                                     settings,
                                     &mut self.panels,
-                                    actions,
                                     &problems,
                                     scope,
                                     folded,
@@ -4203,11 +4208,9 @@ print(\"bye\")"
         assert_eq!(boxes, 2, "the two other occurrences of alpha");
     }
 
-    /// The tree shows the contents window's C/M/T letters on each script, the
-    /// tab strip starts over the source, its first tab lined up with the text,
-    /// and the filter of the scripts sits at the top of the tree's own panel:
-    /// its row is level with the editor's first line, the panel starting where
-    /// the source does.
+    /// The tree shows the contents window's C/M/T letters on each script; its
+    /// panel, its filter at the top, starts on the line of the first tab and
+    /// runs down beside the source.
     #[test]
     fn the_tree_shows_the_rights_under_tabs_that_span_the_window() {
         let ctx = egui::Context::default();
@@ -4245,26 +4248,37 @@ print(\"bye\")"
         let filter = of("Filter scripts").expect("the tree's filter");
         let prim = of("Control Panel").expect("the tree's first prim");
         let source = of("door source").expect("the source");
-        assert!(tab.y < filter.y - 10.0, "the tabs sit above the panel: {} and {}", tab.y, filter.y);
+        assert!(
+            (tab.y - filter.y).abs() <= 6.0,
+            "the first tab and the tree's panel start on one line: {} and {}",
+            tab.y,
+            filter.y
+        );
         assert!(
             first.x > filter.x + 150.0 && first.x < source.x,
             "the strip starts over the source, past the tree: {} and {}",
             first.x,
             filter.x
         );
-        // the filter is the panel's first row, level with the editor's first
-        // line: the tree and the source start on the same line
+        // the filter is the panel's first row, on the line of the first tab
         assert!(
-            (filter.y - source.y).abs() <= 6.0,
-            "the filter and the source start on one line: {} and {}",
+            (filter.y - first.y).abs() <= 8.0,
+            "the filter and the first tab start on one line: {} and {}",
             filter.y,
-            source.y
+            first.y
         );
         assert!(
             prim.y > filter.y + 10.0,
             "the tree's rows come under its filter: {} and {}",
             prim.y,
             filter.y
+        );
+        // and the panel's rows start beside the source's first line
+        assert!(
+            (prim.y - source.y).abs() <= 26.0,
+            "the tree's rows and the source start close together: {} and {}",
+            prim.y,
+            source.y
         );
     }
 

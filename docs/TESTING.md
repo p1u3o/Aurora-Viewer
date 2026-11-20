@@ -2848,9 +2848,13 @@ another order. The source shows the current line,
 indent guides, change bars against the saved script, and the status readout
 (Line, column, Spaces, size); a failing compile fills the Problems dock under
 it, whose rows go to their line and which stays with "No problems." when
-everything compiles. The bottom right of the window holds Reset, Running, the
-compile target and Save, and the object's experience selector is at the right
-end of the toolbar. Clicking a tree row or a tab opens that script (or brings
+everything compiles. The bar under the source gives the caret's line and column, the tab size and
+the size of the script; the path of the caret (the script, then the blocks that
+hold the line, the one it is in lit) is a strip of chips under it. Above the
+source, at the right of the tabs, are Save, Reset and the script's running
+state as icons -- the last a pause button while it runs, a play button while it
+does not -- and the compile target sits at the right end of the toolbar, left of
+the object's experience selector. Clicking a tree row or a tab opens that script (or brings
 it to the front); the window keeps every document, so switching loses no
 text.
 Right-clicking a script's row opens the contents window's menu for it (Open,
