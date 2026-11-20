@@ -118,6 +118,7 @@ pub(super) enum Command {
     Keyword,
     Library,
     Debug,
+    Shortcuts,
     Indent,
     Outdent,
     LineComment,
@@ -236,6 +237,11 @@ pub(super) fn run(
         }
         Command::Find => prefs.search.begin(ctx, owner, id, text(e)),
         Command::Goto => e.tools.goto = true,
+        Command::Shortcuts => {
+            prefs.shortcuts = true;
+            // the windows are drawn before this one: bring it over them
+            crate::ui::widgets::bring_floater_front(ctx, super::dialogs::Shortcuts::WINDOW);
+        }
         Command::Help => ctx.open_url(egui::OpenUrl::new_tab(reference::url("", e.lua()))),
         Command::Keyword => {
             e.tools.help.open = true;
@@ -1127,6 +1133,7 @@ pub(super) fn menus(ui: &mut egui::Ui, p: &Palette, e: &mut Editor, id: Id, chos
                 (Command::Keyword, "book-filled", aurora_i18n::tr!("script-help-keyword")),
                 (Command::Library, "library-filled", aurora_i18n::tr!("script-help-library")),
                 (Command::Debug, "bug-filled", aurora_i18n::tr!("script-debug-title")),
+                (Command::Shortcuts, "keyboard-filled", aurora_i18n::tr!("script-help-shortcuts")),
             ] {
                 if menu::item_if(ui, p, icon, label, enabled(command, e, &ctx, id)) {
                     *chosen = Some(command);

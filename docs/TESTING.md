@@ -2835,7 +2835,7 @@ tests compare the complete physical trajectories at 30–500 fps, variable
 rates, the smoothing between steps, the anchoring, the change of origin and
 the catch-up after a long frame.
 
-**`AURORA_DEMO_SCRIPTS=inventory|object|object-readonly|both|save|object-save|error|readonly|syntax|object-syntax|syntax-readonly|indent|object-indent|tabstops|object-tabstops|close-brace|object-close-brace|colors|color-picker|color-accept|color-cancel|comment-lines|comment-block|multiline-indent|multiline-outdent|folding|object-folding|word-wrap|no-word-wrap|word-wrap-preferences|experience|experience-save|workbench|object-workbench|insert-filter|insert-empty|search|search-left|search-inline|search-overlay|search-outside|preferences|help|preprocessor|object-preprocessor|processed|preprocessor-error|lua|slua|linkset|quit`**:
+**`AURORA_DEMO_SCRIPTS=inventory|object|object-readonly|both|save|object-save|error|readonly|syntax|object-syntax|syntax-readonly|indent|object-indent|tabstops|object-tabstops|close-brace|object-close-brace|colors|color-picker|color-accept|color-cancel|comment-lines|comment-block|multiline-indent|multiline-outdent|folding|object-folding|word-wrap|no-word-wrap|word-wrap-preferences|experience|experience-save|workbench|object-workbench|insert-filter|insert-empty|search|search-left|search-inline|search-overlay|search-outside|preferences|help|preprocessor|object-preprocessor|processed|preprocessor-error|lua|slua|linkset|shortcuts|quit`**:
 `linkset` adds three linked prims beside the plaza at frame 280, names their
 scripts ("Panel Script", "Door Script", "Lamp Flicker", "Lamp Sparkle") and
 opens the first and the last: the window shows the tree of the linkset on the
@@ -2860,7 +2860,11 @@ the keyboard in the source, Ctrl+Tab and Ctrl+Shift+Tab cycle the window's
 scripts, Ctrl+W closes the script in front (asking about its text),
 Ctrl+Shift+S saves every script of the window, and F8 / Shift+F8 walk the
 diagnostics of the dock in turn; Ctrl+P opens the window's scripts in a quick
-open list (typing narrows it, Enter opens the first, Escape closes it). The
+open list (typing narrows it, Enter opens the first, Escape closes it). Help ›
+**Shortcuts** opens a window that lists what each key does in a script's
+window, in three groups -- files and windows, finding your way, writing code
+-- each row a keycap and its action (`ui/scripts/dialogs.rs`;
+`AURORA_DEMO_SCRIPTS=shortcuts` opens it). The
 dock's second tab, Outline, lists the states, events, functions and globals
 the script declares with their lines, and a click goes to one
 (`ui/scripts/outline.rs`). The dock's third tab, Search, finds a word in every

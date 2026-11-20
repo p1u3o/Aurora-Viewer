@@ -364,6 +364,7 @@ impl App {
                 | "word-wrap"
                 | "no-word-wrap"
                 | "word-wrap-preferences"
+                | "shortcuts"
                 | "slua"
         );
         if self.frame_count == 280 {
@@ -552,6 +553,7 @@ impl App {
                     | "processed"
                     | "object-preprocessor"
                     | "preprocessor-error"
+                    | "shortcuts"
             )
             && let Some(target) = self.script_editors.documents.first().map(|e| e.target)
         {

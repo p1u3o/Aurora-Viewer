@@ -7,7 +7,7 @@ use super::{
 };
 use crate::{
     theme::Palette,
-    ui::widgets::{Floater, flat_button, icon_button},
+    ui::widgets::{Floater, flat_button, icon_button, keycap},
 };
 use egui::{Id, RichText, Vec2};
 
@@ -15,6 +15,8 @@ use egui::{Id, RichText, Vec2};
 pub(super) struct Panels {
     pub preferences: Preferences,
     pub search: Search,
+    /// The Shortcuts window, as the Help menu opens it.
+    pub shortcuts: bool,
 }
 
 #[derive(Default)]
@@ -365,6 +367,156 @@ impl Search {
         self.current = None;
         self.status = aurora_i18n::tr!("script-search-replaced", count = count as i64);
     }
+}
+
+/// The editor's shortcuts, under Help: what each key does in a script's window.
+pub(super) struct Shortcuts;
+
+impl Shortcuts {
+    pub const WINDOW: &'static str = "script_shortcuts";
+
+    pub fn show(open: &mut bool, ctx: &egui::Context, p: &Palette) {
+        if !*open {
+            return;
+        }
+        crate::ui::widgets::Floater::new(
+            Self::WINDOW,
+            aurora_i18n::tr!("script-help-shortcuts"),
+            ctx.content_rect().center() - Vec2::new(260.0, 365.0),
+            Vec2::new(520.0, 730.0),
+        )
+        .show(ctx, p, open, |ui| {
+            // the keys of every row first: one column for all the groups, so
+            // that what they do lines up from one group to the next
+            let groups = groups();
+            let caps: Vec<Vec<Vec<keycap::Keycap>>> = groups
+                .iter()
+                .map(|(_, _, rows)| rows.iter().map(|(binding, _)| keycap::caps(ui, binding, p.panel)).collect())
+                .collect();
+            let column = caps.iter().flatten().map(|caps| keycap::row_width(caps)).fold(0.0, f32::max);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                // a row is one line tall whatever its font, as `keycap::legend`
+                // draws them, so that the three groups fit the window
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for (at, ((icon, heading, rows), caps)) in groups.iter().zip(&caps).enumerate() {
+                    ui.add_space(if at == 0 { 6.0 } else { 12.0 });
+                    crate::ui::widgets::section_header(ui, p, icon, heading);
+                    for (caps, (_, label)) in caps.iter().zip(rows) {
+                        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), egui::Sense::hover());
+                        keycap::paint_row(ui, p, caps, rect.left_center(), p.panel);
+                        ui.painter().text(
+                            egui::pos2(rect.left() + column + 10.0, rect.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            label,
+                            crate::ui::widgets::control_font(ui, 13.0),
+                            p.ink,
+                        );
+                    }
+                }
+            });
+        });
+    }
+}
+
+/// One key of the table: a physical key code, and whether Ctrl and Shift come
+/// with it.
+fn key(code: &str, ctrl: bool, shift: bool) -> crate::keybinds::Binding {
+    crate::keybinds::Binding {
+        input: crate::keybinds::Input::Key(code.into()),
+        ctrl,
+        shift,
+        alt: false,
+    }
+}
+
+/// A mouse button: the left one, under Ctrl, is "Ctrl+click".
+fn click(button: &str, ctrl: bool) -> crate::keybinds::Binding {
+    crate::keybinds::Binding {
+        input: crate::keybinds::Input::Mouse(button.into()),
+        ctrl,
+        shift: false,
+        alt: false,
+    }
+}
+
+/// A group of the table: its icon, its heading, and one row per key.
+type Group = (&'static str, String, Vec<(crate::keybinds::Binding, String)>);
+
+/// The table, grouped: what a script's window does with its files, how to find
+/// one's way in a script, and what helps write it.
+fn groups() -> Vec<Group> {
+    vec![
+        (
+            "files-filled",
+            aurora_i18n::tr!("script-shortcuts-files").to_string(),
+            vec![
+                (key("S", true, false), aurora_i18n::tr!("script-shortcuts-save").to_string()),
+                (key("S", true, true), aurora_i18n::tr!("script-shortcuts-save-all").to_string()),
+                (key("O", true, false), aurora_i18n::tr!("script-shortcuts-open").to_string()),
+                (key("W", true, false), aurora_i18n::tr!("script-shortcuts-close").to_string()),
+                (key("Tab", true, false), aurora_i18n::tr!("script-shortcuts-next").to_string()),
+                (key("Tab", true, true), aurora_i18n::tr!("script-shortcuts-previous").to_string()),
+                (key("P", true, false), aurora_i18n::tr!("script-shortcuts-quick-open").to_string()),
+            ],
+        ),
+        (
+            "search-filled",
+            aurora_i18n::tr!("script-shortcuts-find").to_string(),
+            vec![
+                (key("F", true, false), aurora_i18n::tr!("script-shortcuts-find-key").to_string()),
+                (key("G", true, false), aurora_i18n::tr!("script-shortcuts-goto").to_string()),
+                (
+                    key("F8", false, false),
+                    aurora_i18n::tr!("script-shortcuts-problem-next").to_string(),
+                ),
+                (
+                    key("F8", false, true),
+                    aurora_i18n::tr!("script-shortcuts-problem-previous").to_string(),
+                ),
+                (
+                    key("F2", false, false),
+                    aurora_i18n::tr!("script-shortcuts-bookmark-next").to_string(),
+                ),
+                (
+                    key("F2", false, true),
+                    aurora_i18n::tr!("script-shortcuts-bookmark-previous").to_string(),
+                ),
+                (
+                    key("F2", true, false),
+                    aurora_i18n::tr!("script-shortcuts-bookmark-mark").to_string(),
+                ),
+                (click("Left", true), aurora_i18n::tr!("script-shortcuts-definition").to_string()),
+            ],
+        ),
+        (
+            "pencil-filled",
+            aurora_i18n::tr!("script-shortcuts-code").to_string(),
+            vec![
+                (key("K", true, false), aurora_i18n::tr!("script-shortcuts-comment").to_string()),
+                (
+                    key("Slash", true, false),
+                    aurora_i18n::tr!("script-shortcuts-line-comment").to_string(),
+                ),
+                (key("K", true, true), aurora_i18n::tr!("script-shortcuts-block-comment").to_string()),
+                (key("Tab", false, false), aurora_i18n::tr!("script-shortcuts-indent").to_string()),
+                (key("Tab", false, true), aurora_i18n::tr!("script-shortcuts-outdent").to_string()),
+                (key("Z", true, false), aurora_i18n::tr!("script-shortcuts-undo").to_string()),
+                (key("Y", true, false), aurora_i18n::tr!("script-shortcuts-redo").to_string()),
+                (
+                    key("ArrowDown", false, false),
+                    aurora_i18n::tr!("script-shortcuts-list").to_string(),
+                ),
+                (
+                    key("Enter", false, false),
+                    aurora_i18n::tr!("script-shortcuts-list-take").to_string(),
+                ),
+                (
+                    key("Escape", false, false),
+                    aurora_i18n::tr!("script-shortcuts-dismiss").to_string(),
+                ),
+            ],
+        ),
+    ]
 }
 
 #[derive(Default)]

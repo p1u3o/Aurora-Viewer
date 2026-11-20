@@ -499,6 +499,9 @@ pub(super) fn window_icon(id: &str) -> &'static str {
     if id.ends_with("_help") {
         return "help-circle-filled";
     }
+    if id.ends_with("_shortcuts") {
+        return "keyboard-filled";
+    }
     if id.ends_with("_library") {
         return "library-filled";
     }

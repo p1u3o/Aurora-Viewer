@@ -698,6 +698,7 @@ impl Editors {
                 self.panels.search.find(ctx, text_id, &e.source);
             }
             "preferences" | "word-wrap-preferences" => self.panels.preferences.open = true,
+            "shortcuts" => self.panels.shortcuts = true,
             "help" => {
                 e.tools.help.open = true;
                 e.tools.help.visit("llSay");
@@ -1218,6 +1219,7 @@ impl Editors {
         if self.panels.preferences.show(ctx, p, settings) {
             actions.push(Action::SettingsChanged);
         }
+        dialogs::Shortcuts::show(&mut self.panels.shortcuts, ctx, p);
         // The window commands of the script in front, before its source is
         // drawn: Ctrl+Tab and Ctrl+Shift+Tab cycle the scripts of its window,
         // Ctrl+W closes it. Consumed here so the text edit never sees the Tab.
@@ -5337,6 +5339,42 @@ print(\"bye\")"
             output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text)
                 if text.galley.job.text.starts_with("Door Script"))),
             "under the script's name"
+        );
+    }
+
+    /// Help › Shortcuts opens a window that tells what each key does in a
+    /// script's window, in groups.
+    #[test]
+    fn the_shortcuts_window_lists_what_the_keys_do() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::default();
+        let target = target(41);
+        let load = editors.open(target, "Keys".into(), true, true, 0).unwrap();
+        editors.loaded(load, target, Ok("default { }".into()));
+        settle(&ctx, &mut editors);
+        // the Help menu's item: the window, open (a floater lays itself out on
+        // the frame that opens it)
+        editors.panels.shortcuts = true;
+        let mut output = frame(&ctx, &mut editors, vec![]);
+        for _ in 0..2 {
+            output = frame(&ctx, &mut editors, vec![]);
+        }
+        let drawn = |text: &str| {
+            output
+                .shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape, egui::Shape::Text(galley) if galley.galley.job.text == text))
+        };
+        assert!(drawn(aurora_i18n::tr!("script-help-shortcuts").as_ref()), "its title");
+        assert!(drawn(aurora_i18n::tr!("script-shortcuts-files").as_ref()), "the first group");
+        assert!(drawn(aurora_i18n::tr!("script-shortcuts-quick-open").as_ref()), "a row of it");
+        assert!(
+            drawn(aurora_i18n::tr!("script-shortcuts-definition").as_ref()),
+            "a row of the second group"
+        );
+        assert!(
+            drawn(aurora_i18n::tr!("script-shortcuts-code").as_ref()) && drawn(aurora_i18n::tr!("script-shortcuts-dismiss").as_ref()),
+            "the third group and its last row, the window tall enough for all of them"
         );
     }
 
