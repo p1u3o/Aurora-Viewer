@@ -1431,12 +1431,13 @@ fn shortcut_claims_focus(
 
 /// The Ctrl chords a focused script editor keeps over the viewer's
 /// shortcuts: the comment toggles on Ctrl+K and Ctrl+Shift+K
-/// (ui/scripts/editing.rs), and its Save, Goto and Open on plain
-/// Ctrl+S, Ctrl+G and Ctrl+O (ui/scripts/view.rs), before Gestures (Ctrl+G)
-/// and Appearance (Ctrl+O). The letter is the one egui reads.
+/// (ui/scripts/editing.rs), and its Save, Goto, Open and quick open on plain
+/// Ctrl+S, Ctrl+G, Ctrl+O and Ctrl+P (ui/scripts/view.rs), before Gestures
+/// (Ctrl+G), Appearance (Ctrl+O) and the Preferences (Ctrl+P). The letter is
+/// the one egui reads; Ctrl+Shift+P and Ctrl+Alt+P stay the viewer's.
 fn script_editor_keeps(logical: &winit::keyboard::Key, shift: bool, alt: bool) -> bool {
     matches!(logical, winit::keyboard::Key::Character(c)
-        if c.eq_ignore_ascii_case("k") || (["s", "g", "o"].iter().any(|l| c.eq_ignore_ascii_case(l)) && !shift && !alt))
+        if c.eq_ignore_ascii_case("k") || (["s", "g", "o", "p"].iter().any(|l| c.eq_ignore_ascii_case(l)) && !shift && !alt))
 }
 
 /// The interface scale, or AURORA_UI_SCALE for this launch (brought into
@@ -25629,22 +25630,23 @@ mod tests {
         ));
     }
 
-    /// Ctrl+O (Appearance) and Ctrl+G (Gestures) open the focused script
-    /// editor's Open and Goto, as Ctrl+S is its Save; with Shift (People on
-    /// Groups is Ctrl+Shift+G) the viewer's shortcut runs.
+    /// Ctrl+O (Appearance), Ctrl+G (Gestures) and Ctrl+P (the Preferences)
+    /// open the focused script editor's Open, Goto and quick open, as Ctrl+S
+    /// is its Save; with Shift (People on Groups is Ctrl+Shift+G) or Alt the
+    /// viewer's shortcut runs.
     #[test]
     fn the_script_editor_keeps_its_own_ctrl_letters() {
         use super::script_editor_keeps;
         let key = |s: &str| winit::keyboard::Key::Character(s.into());
-        for letter in ["s", "g", "o", "O", "k"] {
+        for letter in ["s", "g", "o", "p", "O", "P", "k"] {
             assert!(script_editor_keeps(&key(letter), false, false), "Ctrl+{letter}");
         }
         assert!(script_editor_keeps(&key("k"), true, false), "Ctrl+Shift+K comments a block");
-        for letter in ["s", "g", "o"] {
+        for letter in ["s", "g", "o", "p"] {
             assert!(!script_editor_keeps(&key(letter), true, false), "Ctrl+Shift+{letter}");
             assert!(!script_editor_keeps(&key(letter), false, true), "Ctrl+Alt+{letter}");
         }
-        for letter in ["p", "q", "i"] {
+        for letter in ["q", "i"] {
             assert!(!script_editor_keeps(&key(letter), false, false), "Ctrl+{letter} is the viewer's");
         }
         assert!(!script_editor_keeps(
