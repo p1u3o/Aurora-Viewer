@@ -2390,7 +2390,14 @@ impl BuildTool {
                     self.send(c);
                 }
             }
-            Tool::Create | Tool::Focus => self.drag_rect(world, cursor),
+            Tool::Create | Tool::Focus => {
+                // Build view: the Focus tool's press took a prim (app.rs), so
+                // the cursor keeps moving it until the button comes up.
+                if self.grab.state.is_some() {
+                    self.grab_hover(world, cursor, mods);
+                }
+                self.drag_rect(world, cursor);
+            }
         }
     }
 
@@ -2409,15 +2416,6 @@ impl BuildTool {
                 .is_some_and(|idx| select_type(world, idx) != self.select_type(world));
             if !extend || other_space {
                 self.deselect_all(world);
-            Tool::Create | Tool::Focus => {
-                // Build view: the Focus tool's press took a prim (app.rs), so
-                // the cursor keeps moving it until the button comes up.
-                if self.grab.state.is_some() {
-                    self.grab_hover(world, cursor, mods);
-                }
-                if let Some(r) = self.rect.as_mut() {
-                    r.1 = cursor;
-                }
             }
         }
     }

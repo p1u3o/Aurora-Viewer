@@ -259,12 +259,7 @@ impl BuildView {
     /// a pixel at the focus, from the lens and the window's height, the eye
     /// going the other way. The heading, the tilt and the distance stay.
     pub fn pan(&mut self, dx: f32, dy: f32, fov_y: f32, viewport_height: f32) {
-        if !dx.is_finite()
-            || !dy.is_finite()
-            || !fov_y.is_finite()
-            || !viewport_height.is_finite()
-            || viewport_height <= 0.0
-        {
+        if !dx.is_finite() || !dy.is_finite() || !fov_y.is_finite() || !viewport_height.is_finite() || viewport_height <= 0.0 {
             return;
         }
         let per_pixel = 2.0 * self.distance * (fov_y * 0.5).tan().max(0.0) / viewport_height;
@@ -458,10 +453,7 @@ mod tests {
         assert_eq!(v.distance, distance);
         let after = v.pose().0;
         assert!((after - eye).truncate().length() > 1.0, "the eye stayed put");
-        assert!(
-            ((after - v.focus).length() - distance).abs() < 1e-4,
-            "the eye left its circle"
-        );
+        assert!(((after - v.focus).length() - distance).abs() < 1e-4, "the eye left its circle");
         // down the screen raises the eye over the work, a pixel for a pixel
         let tilt = v.tilt;
         v.orbit(0.0, 50.0, 1.0);

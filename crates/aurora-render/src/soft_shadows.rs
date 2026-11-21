@@ -791,6 +791,7 @@ mod tests {
     fn the_culling_planes_are_unchanged_without_soft_shadows() {
         use crate::shadow_cull::{ReceiverView, cascade_caster_planes, lookup_margin};
         let view = ReceiverView {
+            ortho: None,
             inv_view: Mat4::from_translation(Vec3::new(10.0, -4.0, 25.0)) * Mat4::from_rotation_x(1.2),
             tan_x: 1.2,
             tan_y: 0.7,

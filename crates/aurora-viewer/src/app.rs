@@ -9415,6 +9415,7 @@ impl App {
             // Route the first walking frame through steering as well.
             self.camera.fold_orbit(&mut self.world.agent);
             self.begin_mouse_steer();
+        }
         if self.build_view_holds() {
             // Aurora's builder camera takes the movement keys the same way:
             // the avatar stays where it is, and the view pans over the work.
@@ -9430,7 +9431,7 @@ impl App {
             self.lr_since = None;
             self.up_since = None;
             self.turn_since = None;
-            self.cam_key_since = [None; 10];
+            self.cam_key_since = [None; 12];
             return;
         }
         if self.mouse_mode == MouseMode::Steer {

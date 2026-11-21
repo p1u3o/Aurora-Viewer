@@ -318,6 +318,9 @@ pub fn cascade_caster_planes(
     reach: f32,
 ) -> [[[f32; 4]; SHADOW_PLANES]; 3] {
     let (tan_x, tan_y) = (view.tan_x * 1.02, view.tan_y * 1.02);
+    // a distance from the camera is the shortest depth along the view's
+    // corner rays
+    let corner_cos = 1.0 / (1.0 + tan_x * tan_x + tan_y * tan_y).sqrt();
     std::array::from_fn(|k| {
         let far = far[k] * 1.05 + 1.0;
         let corners = match view.ortho {
@@ -612,7 +615,7 @@ mod tests {
         let texel = [0.007, 0.025, 0.08];
         let light = Vec3::new(0.3, -0.2, -0.8).normalize();
         let (near, far) = cascade_reach(splits, true);
-        let planes = cascade_caster_planes(&view, light, near, far, texel);
+        let planes = cascade_caster_planes(&view, light, near, far, texel, 0.0);
         for k in 0..3 {
             for i in 0..441 {
                 // a pixel of the box, at a depth its cascade is read at
