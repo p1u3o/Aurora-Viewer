@@ -15919,3 +15919,5 @@ ui-inventory-auto-image-wear = 写真のために装着する
 ui-inventory-auto-image-preparing = 写真を準備中…
 ui-inventory-auto-image-no-object = アイテムが装着オブジェクトとして表示されませんでした。
 ui-inventory-auto-image-saved = 写真を保存しました。
+ui-inventory-auto-image-rotate = 回転
+ui-inventory-auto-image-zoom = ズーム

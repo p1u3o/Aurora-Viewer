@@ -7541,9 +7541,11 @@ failure. Grid validation and any paid upload are performed by the human.
   photo and at 2100 it uses it. Capture after frame 2200. The body and all other
   objects are gone, the chosen attachment alone is in the picture (a linkset's
   children come with it), and its local down is image-down even though the
-  backpack sits on the tilted Spine point 9. The camera, isolation and picture
-  upload are local; on the grid the item is really attached and taken off
-  afterwards unless it was already worn.
+  backpack sits on the tilted Spine point 9. The Rotate and Zoom sliders move
+  the view before the shot; a rigged garment is framed from its posed bounds.
+  The camera, isolation and picture upload are local; on the grid the item is
+  really attached and taken off afterwards unless it was already worn. The
+  command is in the item's Image popup, not the right-click menu.
 - **`AURORA_DEMO_INVENTORY=locked|aurora-locked`**: locks the demo folder
   holding the demo object, in the Legacy or Aurora inventory. Check its
   "Locked" tag after the name; the folder itself refuses Delete, Cut and a

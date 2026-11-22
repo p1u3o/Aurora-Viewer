@@ -83,6 +83,9 @@ impl ThumbnailUi {
         }
         let asset = image(&world.inventory, item);
         let ready = self.pending.is_none() && !mutation_pending && rules::mutable(&world.inventory, item);
+        // The automatic picture lives here, after Image on the item's menu:
+        // only an attachable object can be worn for it.
+        let auto_ok = ready && world.inventory.items.get(&item).is_some_and(|it| it.asset_type == 6);
         let position = ctx.content_rect().center() - egui::vec2(360.0, 200.0);
         let mut open = true;
         let mut caption = String::new();
@@ -124,6 +127,16 @@ impl ThumbnailUi {
                 ) {
                     self.photo_open = true;
                     self.request(item, Input::Capture, actions);
+                }
+                if toolbar_button(
+                    ui,
+                    p,
+                    "camera-filled",
+                    aurora_i18n::tr!("ui-inventory-auto-image-command"),
+                    auto_ok,
+                    &mut caption,
+                ) {
+                    actions.push(InvAction::AutoImage(item));
                 }
                 if toolbar_button(
                     ui,

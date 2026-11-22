@@ -16068,3 +16068,5 @@ ui-inventory-auto-image-wear = Le porter pour la photo
 ui-inventory-auto-image-preparing = Préparation de la photo…
 ui-inventory-auto-image-no-object = L'objet n'est pas apparu comme accessoire.
 ui-inventory-auto-image-saved = Photo enregistrée.
+ui-inventory-auto-image-rotate = Rotation
+ui-inventory-auto-image-zoom = Zoom

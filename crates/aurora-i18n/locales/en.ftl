@@ -16062,3 +16062,5 @@ ui-inventory-auto-image-wear = Wear it for the picture
 ui-inventory-auto-image-preparing = Preparing the picture…
 ui-inventory-auto-image-no-object = The item did not appear as an attachment.
 ui-inventory-auto-image-saved = Picture saved.
+ui-inventory-auto-image-rotate = Rotate
+ui-inventory-auto-image-zoom = Zoom

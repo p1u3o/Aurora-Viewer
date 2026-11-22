@@ -67,6 +67,10 @@ pub(super) struct Session {
     fixed: Option<FixedView>,
     isolation: Isolation,
     wait: Option<Instant>,
+    /// The user's framing, in degrees around the wearer and as a distance
+    /// multiplier on the automatic fit.
+    yaw: f32,
+    zoom: f32,
     preview_at: Option<Instant>,
     preview: Option<egui::TextureHandle>,
     shot: Option<Shot>,
@@ -110,6 +114,8 @@ impl App {
             fixed: self.camera.fixed_view,
             isolation: self.world.photo_isolation.clone(),
             wait: None,
+            yaw: 0.0,
+            zoom: 1.0,
             preview_at: None,
             preview: None,
             shot: None,
@@ -278,14 +284,27 @@ impl App {
             return;
         };
         let rigged = crate::scene::Scene::skeleton_owner(&self.world, index).is_some();
+        let (yaw, zoom) = (s.yaw, s.zoom);
         let now = Instant::now();
-        let Some((center, object_rot, _)) = crate::scene::Scene::object_transform(&self.world, index, now, 0) else {
+        let Some((_, object_rot, _)) = crate::scene::Scene::object_transform(&self.world, index, now, 0) else {
             return;
         };
-        let scale = self.world.objects.get(index).map(|o| o.scale).unwrap_or(Vec3::ONE);
-        let radius = scale.abs().max_element().max(0.05) * 0.75;
+        // A rigged garment's vertices are posed from the skeleton, so its
+        // scale and attachment-point position say nothing about its size.
+        // The scene keeps the posed bounds of such meshes (`wide`), updated
+        // with each animation frame; fall back to the cull sphere, then to
+        // the prim's scale before the geometry arrives.
+        let g = self.scene.gpu.get(index);
+        let (center, radius) = g.and_then(|g| g.wide).or_else(|| g.map(|g| g.sphere())).unwrap_or_else(|| {
+            let pos = crate::scene::Scene::object_transform(&self.world, index, now, 0)
+                .map(|(p, _, _)| p)
+                .unwrap_or_default();
+            let scale = self.world.objects.get(index).map(|o| o.scale).unwrap_or(Vec3::ONE);
+            (pos, scale.abs().max_element().max(0.05) * 0.75)
+        });
+        let radius = radius.max(0.05);
         let fov = self.camera.fov_y.max(0.1);
-        let distance = (radius / (fov * 0.5).tan() * FRAMING_MARGIN).max(0.4);
+        let distance = (radius / (fov * 0.5).tan() * FRAMING_MARGIN * zoom).max(0.2);
         // Look at it from the side it was authored facing: the avatar's
         // forward, or the world's +Y when there is no useful pose.
         let wearer = isolate::wearer_of(&self.world, index).map(|(i, _)| i);
@@ -299,6 +318,7 @@ impl App {
         } else {
             Vec3::Y
         };
+        let direction = Quat::from_rotation_z(yaw.to_radians()) * direction;
         let eye = center + direction * distance + Vec3::Z * radius * 0.25;
         let facing = (center - eye).normalize();
         // SL prim local -Z is down. A non-rigged attachment carries the
@@ -355,14 +375,16 @@ impl App {
     }
 
     pub(super) fn inventory_auto_image_use(&mut self) {
-        let Some((item, mut shot)) = self
-            .inventory_auto_image
-            .as_mut()
-            .and_then(|s| s.shot.take().map(|shot| (s.item, shot)))
-        else {
+        let Some(s) = self.inventory_auto_image.as_ref() else {
             return;
         };
-        let saved = self.item_photo_pixels(item, shot.size, std::mem::take(&mut shot.pixels));
+        let Some(shot) = s.shot.as_ref() else {
+            return;
+        };
+        // Keep the shot in the session: it is the flattened, opaque picture
+        // the window keeps showing after the photo part is over.
+        let (item, size, pixels) = (s.item, shot.size, shot.pixels.clone());
+        let saved = self.item_photo_pixels(item, size, pixels);
         if let Some(s) = &mut self.inventory_auto_image {
             s.saved = saved;
             if !saved {
@@ -386,6 +408,8 @@ impl App {
         let has_shot = s.shot.is_some();
         let shot = s.shot.as_ref().map(|shot| shot.texture.clone());
         let preview = s.preview.clone();
+        let (mut yaw, mut zoom) = (s.yaw, s.zoom);
+        let restored = s.restored;
         let name = crate::world::inventory::actions::name(&self.world.inventory, item);
         let mut start = false;
         let mut shoot = false;
@@ -426,6 +450,21 @@ impl App {
                 );
             }
             ui.add_space(8.0);
+            let adjustable = !confirming && !saved && !restored;
+            ui.add_enabled(
+                adjustable,
+                egui::Slider::new(&mut yaw, -180.0..=180.0)
+                    .suffix("°")
+                    .text(aurora_i18n::tr!("ui-inventory-auto-image-rotate")),
+            );
+            ui.add_enabled(
+                adjustable,
+                egui::Slider::new(&mut zoom, 0.5..=3.0)
+                    .suffix("×")
+                    .step_by(0.05)
+                    .text(aurora_i18n::tr!("ui-inventory-auto-image-zoom")),
+            );
+            ui.add_space(8.0);
             if !error.is_empty() {
                 ui.label(egui::RichText::new(&error).color(p.warn));
             }
@@ -458,6 +497,12 @@ impl App {
         }
         if let Some(s) = &mut self.inventory_auto_image {
             s.open = open;
+            if s.yaw != yaw || s.zoom != zoom {
+                s.yaw = yaw;
+                s.zoom = zoom;
+                // The next preview follows the new view right away.
+                s.preview_at = None;
+            }
         }
         if !open {
             self.close_inventory_auto_image();
