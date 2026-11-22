@@ -628,7 +628,7 @@ impl App {
                 // the frame asked never came back (the render thread is gone)
                 log::warn!("photo: the frame of part {} was not drawn", job.next + 1);
                 s.job = None;
-                s.message = Some((aurora_i18n::tr!("photo-draw-failed").to_owned(), true));
+                self.photo_draw_failed();
                 return None;
             }
             // the GPU still had the frame before (the photo quality just
@@ -645,7 +645,7 @@ impl App {
                 );
                 renderer.drop_snapshot();
                 s.job = None;
-                s.message = Some((aurora_i18n::tr!("photo-draw-failed").to_owned(), true));
+                self.photo_draw_failed();
                 return None;
             }
             if job.waited == 0 {
@@ -758,7 +758,7 @@ impl App {
         let Some((_, _, pixels)) = answer.filter(|(w, h, _)| (*w, *h) == (pass.draw.width, pass.draw.height)) else {
             log::warn!("photo: part {} of {} not drawn", job.next + 1, job.tiles.len());
             self.snapshots.job = None;
-            self.snapshots.message = Some((aurora_i18n::tr!("photo-draw-failed").to_owned(), true));
+            self.photo_draw_failed();
             return;
         };
         // the device lost under the pass: nothing it read back is the photo
@@ -769,7 +769,7 @@ impl App {
                 job.tiles.len()
             );
             self.snapshots.job = None;
-            self.snapshots.message = Some((aurora_i18n::tr!("photo-draw-failed").to_owned(), true));
+            self.photo_draw_failed();
             return;
         }
         // a pass the driver ended (the GPU reset under it, past its time
@@ -1256,6 +1256,17 @@ impl App {
         let resolved = looks::resolve_stack(&stack, &settings, self.photo_luts());
         if let Some(job) = &mut self.snapshots.job {
             job.looks = resolved;
+        }
+    }
+
+    /// A photo that could not be drawn. The ordinary destinations say it in
+    /// the photo window; an item's auto image has its own window and also
+    /// needs its scene and outfit back rather than waiting for a shot.
+    fn photo_draw_failed(&mut self) {
+        let text = aurora_i18n::tr!("photo-draw-failed").to_owned();
+        self.snapshots.message = Some((text.clone(), true));
+        if self.inventory_auto_image.as_ref().is_some_and(|s| s.is_shooting()) {
+            self.inventory_auto_image_photo_failed(&text);
         }
     }
 

@@ -4637,9 +4637,12 @@ impl App {
             }
             NetEvent::TeleportLocal { .. } | NetEvent::TeleportStarted { .. } => {
                 self.vr_rebase_after_travel();
+                // an item worn for its picture is put back before we travel
+                self.close_inventory_auto_image();
             }
             NetEvent::TeleportFinished { .. } => {
                 self.vr_rebase_after_travel();
+                self.close_inventory_auto_image();
                 self.stop_local_typing();
                 // (TeleportFinish is the arrival in another region)
                 self.start_draw_stepping("teleport");
@@ -7309,6 +7312,8 @@ impl App {
         if !self.exit_prompt.confirm(action, Instant::now()) {
             return;
         }
+        // never leave the grid with an item worn only for a picture
+        self.close_inventory_auto_image();
         if action == ui::exit::Action::Quit {
             self.hide_windows_for_exit();
         }
@@ -7326,6 +7331,7 @@ impl App {
     /// Log out, save the window, layout, inventory cache and settings, exit.
     fn shutdown(&mut self, event_loop: &ActiveEventLoop) {
         self.hide_windows_for_exit();
+        self.close_inventory_auto_image();
         self.instances.leave();
         // closed while the graphics card still holds a frame, from its
         // notice or not: reported, and the next start offers the safe

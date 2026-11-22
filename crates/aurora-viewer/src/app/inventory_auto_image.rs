@@ -74,9 +74,19 @@ pub(super) struct Session {
     shooting: bool,
     error: String,
     saved: bool,
+    /// The camera, isolation and the temporary wear are back as they were;
+    /// the window stays open only to show the result or the error.
+    restored: bool,
     /// The window's first step: the item has not been worn yet.
     confirming: bool,
     open: bool,
+}
+
+impl Session {
+    /// A shot of this session is still waiting for the renderer.
+    pub(super) fn is_shooting(&self) -> bool {
+        self.shooting && !self.restored
+    }
 }
 
 impl App {
@@ -107,6 +117,7 @@ impl App {
             shooting: false,
             error: String::new(),
             saved: false,
+            restored: false,
             confirming: true,
             open: true,
         });
@@ -114,7 +125,9 @@ impl App {
     }
 
     pub(super) fn inventory_auto_image_active(&self) -> bool {
-        self.inventory_auto_image.as_ref().is_some_and(|s| !s.confirming && !s.saved)
+        self.inventory_auto_image
+            .as_ref()
+            .is_some_and(|s| !s.confirming && !s.saved && !s.restored)
     }
 
     /// The isolation stays open for the picture with the photo mode closed.
@@ -147,19 +160,38 @@ impl App {
         }
     }
 
-    pub(super) fn close_inventory_auto_image(&mut self) {
-        let Some(s) = self.inventory_auto_image.take() else {
+    /// The camera, the isolation and the temporary wear back as they were.
+    /// The window stays for the result, so this is not the session's end.
+    fn end_inventory_auto_image_photo(&mut self) {
+        let Some(s) = &mut self.inventory_auto_image else {
             return;
         };
-        self.camera = s.camera;
-        self.camera.fixed_view = s.fixed;
-        let version = self.world.photo_isolation.version;
-        self.world.photo_isolation = s.isolation;
-        self.world.photo_isolation.version = version.wrapping_add(1);
-        if !s.was_worn && !s.confirming && !self.demo {
-            self.apply_appearance_action(crate::world::appearance::Action::Remove(s.item));
+        if s.restored {
+            return;
         }
-        log::info!("inventory auto image: closed");
+        s.restored = true;
+        s.shot_wanted = false;
+        s.shooting = false;
+        s.wait = None;
+        let (camera, fixed, isolation) = (s.camera.clone(), s.fixed, s.isolation.clone());
+        let (item, was_worn, confirming) = (s.item, s.was_worn, s.confirming);
+        self.camera = camera;
+        self.camera.fixed_view = fixed;
+        // Bumped past the current version: the scene re-flags every object.
+        let version = self.world.photo_isolation.version;
+        self.world.photo_isolation = isolation;
+        self.world.photo_isolation.version = version.wrapping_add(1);
+        if !was_worn && !confirming && !self.demo {
+            self.apply_appearance_action(crate::world::appearance::Action::Remove(item));
+        }
+        log::info!("inventory auto image: camera, isolation and outfit restored");
+    }
+
+    pub(super) fn close_inventory_auto_image(&mut self) {
+        self.end_inventory_auto_image_photo();
+        if self.inventory_auto_image.take().is_some() {
+            log::info!("inventory auto image: closed");
+        }
     }
 
     /// The picture's pixels, once the renderer has drawn them.
@@ -190,19 +222,37 @@ impl App {
         s.shooting = false;
     }
 
-    /// The upload has answered: the window says whether it worked.
+    /// The upload has answered: the window says whether it worked. A failed
+    /// picture is not left with the item worn and the scene isolated.
     pub(super) fn inventory_auto_image_upload_done(&mut self, error: Option<String>) {
+        let error = error.unwrap_or_default();
         if let Some(s) = &mut self.inventory_auto_image {
-            s.error = error.unwrap_or_default();
-            s.saved = s.error.is_empty();
+            s.saved = error.is_empty();
+            s.error = error;
+        } else {
+            return;
         }
+        self.end_inventory_auto_image_photo();
+    }
+
+    /// The renderer could not draw the photo: say so here, and put the scene
+    /// and the outfit back instead of waiting for a shot that never comes.
+    pub(super) fn inventory_auto_image_photo_failed(&mut self, error: &str) {
+        if let Some(s) = &mut self.inventory_auto_image
+            && s.shooting
+        {
+            s.error = error.to_owned();
+        } else {
+            return;
+        }
+        self.end_inventory_auto_image_photo();
     }
 
     pub(super) fn inventory_auto_image_frame(&mut self, renderer: &Renderer) {
         let Some(s) = &self.inventory_auto_image else {
             return;
         };
-        if s.confirming || s.saved {
+        if s.confirming || s.saved || s.restored {
             return;
         }
         if s.attachment.is_none() {
@@ -214,11 +264,12 @@ impl App {
                     s.attachment = Some(id);
                     s.wait = None;
                 }
-            } else if s.wait.is_some_and(|at| at.elapsed() > DRESS_WAIT)
-                && let Some(s) = &mut self.inventory_auto_image
-            {
-                s.error = aurora_i18n::tr!("ui-inventory-auto-image-no-object").to_owned();
-                s.wait = None;
+            } else if s.wait.is_some_and(|at| at.elapsed() > DRESS_WAIT) {
+                if let Some(s) = &mut self.inventory_auto_image {
+                    s.error = aurora_i18n::tr!("ui-inventory-auto-image-no-object").to_owned();
+                    s.wait = None;
+                }
+                self.end_inventory_auto_image_photo();
             }
             return;
         }
@@ -318,6 +369,9 @@ impl App {
                 s.error = aurora_i18n::tr!("app-inventory-thumbnail-an-edit-is-already-in-progress-or-the-item").to_owned();
             }
         }
+        // The photo part is over: do not keep the scene isolated while the
+        // picture is encoded and uploaded.
+        self.end_inventory_auto_image_photo();
     }
 
     pub(super) fn inventory_auto_image_window(&mut self, ctx: &egui::Context, p: &crate::theme::Palette) {
