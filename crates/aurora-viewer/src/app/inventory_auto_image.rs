@@ -16,12 +16,18 @@
 use super::App;
 use super::snapshot::Purpose;
 use crate::camera::FixedView;
+use crate::scene::textures::PreviewSource;
 use crate::snapshot::isolate::{self, Isolation, Mode};
 use crate::snapshot::portrait;
 use crate::ui::widgets::{Floater, flat_button, primary_button_sized};
+use crate::wearable_editor::preview::{self as bake_preview, Reply as BakeReply};
+use aurora_assets::wearable::Wearable;
 use aurora_render::Renderer;
 use egui::Vec2;
 use glam::{Quat, Vec3};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -35,7 +41,17 @@ const PREVIEW_EVERY: Duration = Duration::from_millis(500);
 /// Only an object item that the simulator can attach. Wearables and
 /// textures are not objects the viewer can photograph this way.
 fn eligible(item: &aurora_net::inventory::InvItem) -> bool {
-    item.asset_type == 6
+    matches!(item.asset_type, 5 | 6 | 13)
+}
+
+/// A system wearable photographed from locally composed bakes on a white
+/// base: the avatar is not undressed and nothing is sent to the grid.
+struct WearablePhoto {
+    value: Wearable,
+    sources: HashMap<Uuid, PreviewSource>,
+    rx: Option<crossbeam_channel::Receiver<BakeReply>>,
+    prepared: HashMap<usize, (Uuid, u32)>,
+    done: bool,
 }
 
 /// World "up" for the photo. A non-rigged attachment carries the point's
@@ -61,6 +77,10 @@ pub(super) struct Session {
     item: Uuid,
     /// The worn attachment's root prim, once it arrives.
     attachment: Option<Uuid>,
+    /// Set for a system wearable: no object is worn for it.
+    wearable: Option<WearablePhoto>,
+    /// The local T-pose held for the photo, on this screen only.
+    pose: Option<Arc<crate::ik_edit::poser::SubjectPose>>,
     /// The item was already worn: do not take it off at the end.
     was_worn: bool,
     camera: crate::camera::Camera,
@@ -106,12 +126,17 @@ impl App {
             return;
         }
         // An item already on the avatar is photographed as it is: no second
-        // wear, and nothing to take off at the end.
+        // wear, and nothing to take off at the end. A system wearable never
+        // needs wearing: its textures are baked onto a white avatar locally.
         let was_worn = self.world.worn_attachment_items().contains(&item);
-        log::info!("inventory auto image: opened for {item}, worn {was_worn}");
+        let wearable = it.asset_type == 5 || it.asset_type == 13;
+        let record = it.clone();
+        log::info!("inventory auto image: opened for {item}, worn {was_worn}, wearable {wearable}");
         self.inventory_auto_image = Some(Session {
             item,
             attachment: None,
+            wearable: None,
+            pose: None,
             was_worn,
             camera: self.camera.clone(),
             fixed: self.camera.fixed_view,
@@ -127,12 +152,14 @@ impl App {
             error: String::new(),
             saved: false,
             restored: false,
-            confirming: !was_worn,
+            confirming: !was_worn && !wearable,
             open: true,
         });
         crate::ui::widgets::open_floater(&self.egui_ctx, WINDOW, &mut true);
         if was_worn {
             self.begin_inventory_auto_image();
+        } else if wearable {
+            self.start_wearable_photo(record);
         }
     }
 
@@ -172,6 +199,31 @@ impl App {
         }
     }
 
+    /// A local T-pose for the picture, after the ordinary pose layers have
+    /// been built (as the outfit portrait does). Nothing is sent to the grid.
+    pub(super) fn inventory_auto_image_pose(&mut self) {
+        let Some(s) = self.inventory_auto_image.as_ref() else {
+            return;
+        };
+        if s.confirming || s.saved || s.restored {
+            return;
+        }
+        let id = self.world.agent_id;
+        if self.scene.poser.contains_key(&id) {
+            // the user's own pose stays their own
+            return;
+        }
+        if s.pose.is_none()
+            && let Some(pose) = crate::ik_edit::poser::standing_pose(&self.world, id, 0.0)
+            && let Some(s) = &mut self.inventory_auto_image
+        {
+            s.pose = Some(pose);
+        }
+        if let Some(pose) = self.inventory_auto_image.as_ref().and_then(|s| s.pose.clone()) {
+            self.scene.poser.insert(id, pose);
+        }
+    }
+
     /// The camera, the isolation and the temporary wear back as they were.
     /// The window stays for the result, so this is not the session's end.
     fn end_inventory_auto_image_photo(&mut self) {
@@ -182,11 +234,21 @@ impl App {
             return;
         }
         s.restored = true;
+        let pose = s.pose.take();
         s.shot_wanted = false;
         s.shooting = false;
         s.wait = None;
         let (camera, fixed, isolation) = (s.camera.clone(), s.fixed, s.isolation.clone());
-        let (item, was_worn, confirming) = (s.item, s.was_worn, s.confirming);
+        let (item, was_worn, confirming, had_wearable) = (s.item, s.was_worn, s.confirming, s.wearable.is_some());
+        if let Some(pose) = pose {
+            let id = self.world.agent_id;
+            if self.scene.poser.get(&id).is_some_and(|held| Arc::ptr_eq(held, &pose)) {
+                self.scene.poser.remove(&id);
+            }
+        }
+        if had_wearable {
+            self.world.preview_bakes(HashMap::new());
+        }
         self.camera = camera;
         self.camera.fixed_view = fixed;
         // Bumped past the current version: the scene re-flags every object.
@@ -260,14 +322,260 @@ impl App {
         self.end_inventory_auto_image_photo();
     }
 
-    pub(super) fn inventory_auto_image_frame(&mut self, renderer: &Renderer) {
+    /// Fetch the LLWearable text asset. In demo mode we make one locally, as
+    /// the wearable editor does; on the grid the region's ViewerAsset cap
+    /// answers with the ordinary permission check.
+    fn start_wearable_photo(&mut self, record: aurora_net::inventory::InvItem) {
+        let item = record.id;
+        if self.demo {
+            let kind = 4; // a system shirt, as the demo wearable editor uses
+            let bytes = crate::world::inventory::wearable::create(kind, "Demo wearable", record.owner).unwrap_or_default();
+            self.wearable_loaded(item, Ok(bytes));
+        } else {
+            self.send(aurora_net::NetCommand::PreviewInventoryItem(record));
+        }
+    }
+
+    /// Whether this preview reply belongs to a wearable picture in progress.
+    pub(super) fn wearable_photo_pending(&self, item: Uuid) -> bool {
+        self.inventory_auto_image
+            .as_ref()
+            .is_some_and(|s| s.item == item && !s.restored && s.wearable.is_none())
+    }
+
+    /// The wearable's text and its texture slots are here: prepare the white
+    /// bakes once all referenced textures are decoded.
+    pub(super) fn wearable_loaded(&mut self, item: Uuid, result: Result<Vec<u8>, String>) {
+        if self
+            .inventory_auto_image
+            .as_ref()
+            .is_none_or(|s| s.item != item || s.wearable.is_none() && s.confirming)
+        {
+            return;
+        }
+        let bytes = match result {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                if let Some(s) = &mut self.inventory_auto_image {
+                    s.error = error;
+                }
+                self.end_inventory_auto_image_photo();
+                return;
+            }
+        };
+        let value = match Wearable::parse(&bytes) {
+            Ok(value) => value,
+            Err(error) => {
+                if let Some(s) = &mut self.inventory_auto_image {
+                    s.error = format!("invalid wearable: {error}");
+                }
+                self.end_inventory_auto_image_photo();
+                return;
+            }
+        };
+        let affected = crate::wearable_editor::affected_bakes(value.kind);
+        let ids: Vec<Uuid> = value
+            .textures
+            .iter()
+            .filter_map(|(slot, id)| {
+                crate::wearable_editor::slot_bake(*slot)
+                    .filter(|te| affected.contains(te))
+                    .map(|_| *id)
+            })
+            .filter(|id| {
+                !id.is_nil()
+                    && *id != aurora_prim::te::BLANK_TEXTURE
+                    && *id != crate::scene::avatar::IMG_DEFAULT_AVATAR
+                    && *id != crate::scene::avatar::IMG_INVISIBLE
+            })
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let mut sources = HashMap::new();
+        for id in ids {
+            self.scene.textures.note_usage_boosted(&id, f32::MAX);
+            sources.insert(id, self.scene.textures.preview_source(&id));
+        }
+        log::info!(
+            "inventory auto image: wearable {} kind {}, {} texture source(s)",
+            item,
+            value.kind,
+            sources.len()
+        );
+        if let Some(s) = &mut self.inventory_auto_image {
+            s.wearable = Some(WearablePhoto {
+                value,
+                sources,
+                rx: None,
+                prepared: HashMap::new(),
+                done: false,
+            });
+        }
+    }
+
+    /// Drive the bake job and apply its textures to our own avatar.
+    fn wearable_frame(&mut self, renderer: &mut Renderer) {
+        let (rx, ready, kind, value, sources) = {
+            let Some(s) = self.inventory_auto_image.as_ref() else {
+                return;
+            };
+            let Some(w) = s.wearable.as_ref() else {
+                return;
+            };
+            (
+                w.rx.clone(),
+                w.sources.iter().all(|(id, source)| source.bake_ready(*id)),
+                w.value.kind,
+                w.value.clone(),
+                w.sources.clone(),
+            )
+        };
+        if rx.is_none() {
+            if !ready {
+                return;
+            }
+            let Some(pool) = self.scene.textures.staging.clone() else {
+                log::warn!("inventory auto image: no staging pool for the wearable bake");
+                return;
+            };
+            let lib = self.world.avatar_lib.clone();
+            let base = self.world.server_visual_params().to_vec();
+            let (tx, rx) = crossbeam_channel::unbounded();
+            let token = Arc::new(AtomicU64::new(1));
+            self.scene.jobs.execute(move || {
+                match bake_preview::prepare(1, &token, &pool, &lib, &base, kind, vec![value], sources, &tx, None, true) {
+                    Ok(()) => {
+                        let _ = tx.send(BakeReply::Done(1));
+                    }
+                    Err(error) => {
+                        log::warn!("inventory auto image: wearable bake failed: {error}");
+                        let _ = tx.send(BakeReply::Failed(1, error));
+                    }
+                }
+            });
+            if let Some(s) = &mut self.inventory_auto_image
+                && let Some(w) = &mut s.wearable
+            {
+                w.rx = Some(rx);
+            }
+            return;
+        }
+        let mut done = false;
+        let mut failed = None;
+        while let Ok(reply) = rx.as_ref().expect("bake receiver").try_recv() {
+            match reply {
+                BakeReply::Texture(upload) => {
+                    let Some(slot) = renderer.textures.create_placeholder() else {
+                        failed = Some("out of texture slots".to_owned());
+                        break;
+                    };
+                    if renderer.replace_texture_staged(slot, &upload.texture.staged) {
+                        self.scene
+                            .textures
+                            .register_local_image(upload.id, slot, upload.texture.alpha, upload.texture.has_alpha);
+                        if let Some(s) = &mut self.inventory_auto_image
+                            && let Some(w) = &mut s.wearable
+                        {
+                            w.prepared.insert(upload.te, (upload.id, slot));
+                        }
+                    } else {
+                        renderer.free_texture(slot);
+                        failed = Some("could not upload a bake".to_owned());
+                        break;
+                    }
+                }
+                BakeReply::Done(_) => done = true,
+                BakeReply::Failed(_, error) => failed = Some(error),
+            }
+        }
+        if let Some(error) = failed {
+            if let Some(s) = &mut self.inventory_auto_image {
+                s.error = error;
+            }
+            self.end_inventory_auto_image_photo();
+            return;
+        }
+        if !done {
+            return;
+        }
+        let ready = self
+            .inventory_auto_image
+            .as_ref()
+            .and_then(|s| s.wearable.as_ref())
+            .is_some_and(|w| w.prepared.len() == crate::wearable_editor::affected_bakes(w.value.kind).len());
+        if !ready {
+            return;
+        }
+        let bakes = self
+            .inventory_auto_image
+            .as_ref()
+            .and_then(|s| s.wearable.as_ref())
+            .map(|w| w.prepared.iter().map(|(te, (id, _))| (*te, *id)).collect())
+            .unwrap_or_default();
+        self.world.preview_bakes(bakes);
+        if let Some(s) = &mut self.inventory_auto_image
+            && let Some(w) = &mut s.wearable
+        {
+            w.done = true;
+        }
+    }
+
+    pub(super) fn inventory_auto_image_frame(&mut self, renderer: &mut Renderer) {
         let Some(s) = &self.inventory_auto_image else {
             return;
         };
         if s.confirming || s.saved || s.restored {
             return;
         }
-        if s.attachment.is_none() {
+        let wearable = s.wearable.is_some();
+        let (yaw, zoom) = (s.yaw, s.zoom);
+        if wearable {
+            self.wearable_frame(renderer);
+            let ready = self
+                .inventory_auto_image
+                .as_ref()
+                .and_then(|s| s.wearable.as_ref())
+                .is_some_and(|w| w.done);
+            if !ready {
+                return;
+            }
+            let iso = &mut self.world.photo_isolation;
+            iso.set_picking(false);
+            iso.set_mode(Mode::AvatarOnly);
+            iso.set_transparent(true);
+            let fov = self.camera.fov_y.max(0.1);
+            if let Some(joints) = self.portrait_joints() {
+                let (eye, target) = portrait::frame(&joints, portrait::Framing::Body, portrait::Angle::Front, fov);
+                let base = (target - eye).normalize();
+                let direction = Quat::from_rotation_z(yaw.to_radians()) * base;
+                let radius = (eye - target).length() * zoom;
+                let eye = target - direction * radius;
+                self.camera.fixed_view = Some(FixedView {
+                    eye,
+                    forward: (target - eye).normalize(),
+                    up: Vec3::Z,
+                    fov_y: fov,
+                });
+            }
+            if self.snapshots.drawing() {
+                return;
+            }
+            let now = Instant::now();
+            if let Some(s) = &mut self.inventory_auto_image {
+                if s.shot_wanted {
+                    s.shot_wanted = false;
+                    s.shooting = true;
+                    self.photo_job(Purpose::InventoryImage { preview: false }, renderer);
+                    return;
+                }
+                let due = s.preview_at.is_none_or(|at| at.elapsed() >= PREVIEW_EVERY);
+                if s.shot.is_none() && !s.shooting && due {
+                    s.preview_at = Some(now);
+                    self.photo_job(Purpose::InventoryImage { preview: true }, renderer);
+                }
+            }
+            return;
+        } else if s.attachment.is_none() {
             if let Some((index, _)) = self.world.objects.iter().find(|(_, o)| o.attachment_item_id() == Some(s.item)) {
                 let root = isolate::attachment_root_of(&self.world, index);
                 if let Some((_, id)) = root
@@ -374,7 +682,7 @@ impl App {
 
     pub(super) fn inventory_auto_image_shoot(&mut self) {
         if let Some(s) = &mut self.inventory_auto_image
-            && s.attachment.is_some()
+            && (s.attachment.is_some() || s.wearable.as_ref().is_some_and(|w| w.done))
         {
             s.shot_wanted = true;
         }
@@ -390,7 +698,7 @@ impl App {
         // Keep the shot in the session: it is the flattened, opaque picture
         // the window keeps showing after the photo part is over.
         let (item, size, pixels) = (s.item, shot.size, shot.pixels.clone());
-        let saved = self.item_photo_pixels(item, size, pixels);
+        let saved = self.item_photo_pixels(item, size, pixels).is_some();
         if let Some(s) = &mut self.inventory_auto_image {
             s.saved = saved;
             if !saved {
@@ -538,13 +846,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_object_items_can_be_photographed() {
+    fn attachable_objects_system_wearables_and_nothing_else_are_photographed() {
         let mut item = aurora_net::inventory::InvItem {
             asset_type: 6,
             ..Default::default()
         };
         assert!(eligible(&item));
-        for other in [0, 5, 7, 13, 20, 24, 49, 57] {
+        for kind in [5, 13] {
+            item.asset_type = kind;
+            assert!(eligible(&item), "asset type {kind}");
+        }
+        for other in [0, 7, 15, 20, 24, 49, 57] {
             item.asset_type = other;
             assert!(!eligible(&item), "asset type {other}");
         }

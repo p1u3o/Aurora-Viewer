@@ -6586,7 +6586,7 @@ before (`amis`, `groupes`, `repere`, `historique`…) are still accepted.
 | `AURORA_DEMO_PHYSICS_EDIT=1\|new\|drag` | Physics layer editor: a worn layer, "New physics", sliders moving |
 | `AURORA_DEMO_AVATAR_HEALTH=undeform\|refresh` | Me › Avatar health's Undeform avatar or Refresh attachments at frame 600 |
 | `AURORA_DEMO_RELOAD_AVATAR=other\|self` | "Reload avatar" of the right-click menu, on the other avatar or ours |
-| `AURORA_DEMO_INVENTORY=<mode>` | Synthetic inventory, animation playback previews, link type icons, lost inventory recovery, menus, layout notecards, filters, drag feedback, windows, keyboard, search selection and advanced search; `aurora…` modes show Aurora's window at each width; `auto-image` runs the attachable item's automatic picture offline |
+| `AURORA_DEMO_INVENTORY=<mode>` | Synthetic inventory, animation playback previews, link type icons, lost inventory recovery, menus, layout notecards, filters, drag feedback, windows, keyboard, search selection and advanced search; `aurora…` modes show Aurora's window at each width; `auto-image` runs the attachable item's automatic picture offline, `auto-image-wearable` the white-avatar wearable picture |
 | `AURORA_DEMO_INVENTORY_FAULT=<mode>` | The `big:…,fetch` demo's intended AIS failures: `transient[=<n>]`, `too-big`, `limit=<n>` |
 | `AURORA_DEMO_GESTURES=manager\|editor\|numpad\|chat-keys\|play\|replay\|once\|channel\|channel-replace\|completion\|completion-send\|list\|communicate\|communicate-open\|delete` | Gesture manager, editor, numeric and focused-chat shortcuts, playback, back-to-back replays, commands to worn scripts and replacements on a channel, completion, the chat bar's list of gestures and menu access |
 | `AURORA_DEMO_IMPORTS=<mode>` | Import window and synthetic assets; `launcher` / `settings` open empty tabs; `icon-bar` opens the quick import bar; `type-*` opens independent type windows |
@@ -7547,7 +7547,14 @@ failure. Grid validation and any paid upload are performed by the human.
   really attached and taken off afterwards unless it was already worn. The
   command is in the item's Image popup, not the right-click menu, with a wand
   icon. An item already worn goes straight to the picture: it is never worn
-  again or taken off at the end.
+  again or taken off at the end. A folder's wand button composes its picture
+  from up to four of its children's pictures.
+  `AURORA_DEMO_INVENTORY=auto-image-wearable` photographs a demo system shirt
+  on a white avatar: its wearable text is made locally, its texture layers
+  are baked on a white base and applied to our own avatar for the photo, then
+  removed. Nothing is worn and nothing is sent to the grid. The avatar is held
+  in a local T-pose for the picture (a poser layer on this screen only) unless
+  the user already has a pose.
 - **`AURORA_DEMO_INVENTORY=locked|aurora-locked`**: locks the demo folder
   holding the demo object, in the Legacy or Aurora inventory. Check its
   "Locked" tag after the name; the folder itself refuses Delete, Cut and a

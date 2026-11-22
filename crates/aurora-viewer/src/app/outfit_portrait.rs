@@ -252,7 +252,7 @@ impl App {
     }
 
     /// Where our avatar's joints are drawn.
-    fn portrait_joints(&self) -> Option<portrait::Joints> {
+    pub(super) fn portrait_joints(&self) -> Option<portrait::Joints> {
         let now = Instant::now();
         let id = self.world.agent_id;
         let at = |name: &str| self.scene.joint_world(&self.world, &id, name, now);

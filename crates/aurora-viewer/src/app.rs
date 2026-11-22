@@ -111,6 +111,7 @@ mod inspect;
 mod inventory;
 mod inventory_auto_image;
 mod inventory_drag;
+mod inventory_folder_image;
 mod inventory_hover;
 mod inventory_thumbnail;
 mod joystick;
@@ -4253,6 +4254,12 @@ impl App {
                 return;
             }
             self.script_saved(request, target, result);
+            return;
+        }
+        if let NetEvent::InventoryPreview { item, ref result, .. } = ev
+            && self.wearable_photo_pending(item)
+        {
+            self.wearable_loaded(item, result.clone());
             return;
         }
         if let NetEvent::InventoryThumbnailSource {
@@ -11275,7 +11282,8 @@ impl App {
         self.capture_360_frame(&mut gfx.renderer);
         self.outfit_batch_frame();
         self.outfit_portrait_frame(&gfx.renderer);
-        self.inventory_auto_image_frame(&gfx.renderer);
+        self.inventory_auto_image_frame(&mut gfx.renderer);
+        self.folder_image_frame(&mut gfx.renderer);
         self.photo_update(&mut gfx.renderer);
         self.studio_photo_frame(&mut gfx.renderer);
         self.viewfinder_frame(&mut gfx.renderer);
@@ -11831,6 +11839,7 @@ impl App {
                 .pose_layers_with_base(&self.world, |id| self.scene.skeleton_base(&id));
             self.scene.poser = poser;
             self.outfit_portrait_pose();
+            self.inventory_auto_image_pose();
             self.ik_editor.tick_pose_storage(&self.scene.jobs, &self.egui_ctx, &self.world);
             if !self.scene.poser.is_empty() {
                 self.scene.ik_edit = Default::default();
@@ -13994,11 +14003,34 @@ impl App {
         }
         // AURORA_DEMO_INVENTORY=auto-image: the whole flow without a grid —
         // the demo's worn backpack stands in for the item being attached.
-        if self.demo && std::env::var("AURORA_DEMO_INVENTORY").is_ok_and(|v| v.starts_with("auto-image")) {
+        if self.demo && std::env::var("AURORA_DEMO_INVENTORY").is_ok_and(|v| v == "auto-image") {
             match self.frame_count {
                 1500 => self.open_inventory_auto_image(uuid::Uuid::from_u128(8100)),
                 1700 => self.begin_inventory_auto_image(),
                 1900 => self.inventory_auto_image_shoot(),
+                2100 => self.inventory_auto_image_use(),
+                _ => {}
+            }
+        }
+        // AURORA_DEMO_INVENTORY=auto-image-wearable: a system shirt on a white
+        // avatar, with no simulator and no change to the real outfit.
+        if self.demo && std::env::var("AURORA_DEMO_INVENTORY").is_ok_and(|v| v == "auto-image-wearable") {
+            const SHIRT: uuid::Uuid = uuid::Uuid::from_u128(84_000);
+            if self.frame_count == 1500 {
+                self.world.inventory.add_items(vec![aurora_net::inventory::InvItem {
+                    id: SHIRT,
+                    parent: self.world.inventory.root,
+                    name: "Demo shirt".into(),
+                    asset_type: 5,
+                    inv_type: 18,
+                    flags: 4,
+                    owner: self.world.agent_id,
+                    ..Default::default()
+                }]);
+                self.open_inventory_auto_image(SHIRT);
+            }
+            match self.frame_count {
+                1700 | 1900 => self.inventory_auto_image_shoot(),
                 2100 => self.inventory_auto_image_use(),
                 _ => {}
             }

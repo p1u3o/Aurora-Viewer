@@ -16064,3 +16064,5 @@ ui-inventory-auto-image-no-object = The item did not appear as an attachment.
 ui-inventory-auto-image-saved = Picture saved.
 ui-inventory-auto-image-rotate = Rotate
 ui-inventory-auto-image-zoom = Zoom
+ui-inventory-auto-image-folder = Picture from the contents
+ui-inventory-auto-image-folder-empty = This folder has no picture or texture to compose a picture from.

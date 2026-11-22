@@ -16070,3 +16070,5 @@ ui-inventory-auto-image-no-object = L'objet n'est pas apparu comme accessoire.
 ui-inventory-auto-image-saved = Photo enregistrée.
 ui-inventory-auto-image-rotate = Rotation
 ui-inventory-auto-image-zoom = Zoom
+ui-inventory-auto-image-folder = Image à partir du contenu
+ui-inventory-auto-image-folder-empty = Ce dossier n'a ni image ni texture pour composer une image.

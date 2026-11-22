@@ -284,6 +284,8 @@ pub enum InvAction {
     },
     /// Take an automatic picture of an attachable item.
     AutoImage(Uuid),
+    /// Compose a folder's picture from its children's pictures.
+    FolderImage(Uuid),
     /// An action of the dual-panel layout's right pane (`DUAL_PANE`): the
     /// app answers in that pane (messages, documents, created items).
     Panel {

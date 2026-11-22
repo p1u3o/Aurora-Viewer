@@ -39,7 +39,11 @@ pub(super) struct ImageJobs {
     /// one the user has open on another item is left as it is.
     outfit: Option<Uuid>,
     /// The same for an attachable item's automatic picture.
-    auto_image: Option<Uuid>,
+    pub(super) auto_image: Option<Uuid>,
+    /// A folder's picture being composed from its children's pictures.
+    pub(super) folder: Option<super::inventory_folder_image::FolderJob>,
+    /// The upload of that composed picture, for its confirmation.
+    pub(super) folder_upload: Option<Uuid>,
     /// The outfit's paid HD picture (`outfit_hd`).
     pub hd: super::outfit_hd::OutfitHd,
 }
@@ -58,6 +62,8 @@ impl Default for ImageJobs {
             photo: None,
             outfit: None,
             auto_image: None,
+            folder: None,
+            folder_upload: None,
             hd: Default::default(),
         }
     }
@@ -260,15 +266,15 @@ impl App {
     /// An attachable item's picture, confirmed: its pixels go the gallery
     /// snapshot's way, reduced to the free square thumbnail. False when
     /// another image job is still on its way.
-    pub(super) fn item_photo_pixels(&mut self, item: Uuid, (w, h): (u32, u32), pixels: Vec<u8>) -> bool {
+    pub(super) fn item_photo_pixels(&mut self, item: Uuid, (w, h): (u32, u32), pixels: Vec<u8>) -> Option<Uuid> {
         if self.inventory_images.outfit.is_some() || self.inventory_images.auto_image.is_some() {
-            return false;
+            return None;
         }
         let request = Uuid::new_v4();
         self.inventory_images.auto_image = Some(request);
         self.inventory_images.requests.insert(request, item);
         self.prepare_inventory_photo(request, w, h, pixels);
-        true
+        Some(request)
     }
 
     /// An outfit's picture is still being drawn, encoded or sent.
@@ -331,8 +337,15 @@ impl App {
             st.finish_thumbnail_upload(request, error.as_deref(), std::time::Instant::now());
         }
         let auto = self.inventory_images.auto_image == Some(request);
+        let folder = self.inventory_images.folder_upload == Some(request);
         self.finish_inventory_image(request, error.clone());
-        if auto && error.is_none() {
+        if folder {
+            self.inventory_images.folder_upload = None;
+            self.inventory_ui.message = match error {
+                Some(error) => error,
+                None => aurora_i18n::tr!("ui-inventory-auto-image-saved").to_owned(),
+            };
+        } else if auto && error.is_none() {
             self.inventory_auto_image_upload_done(None);
         }
     }

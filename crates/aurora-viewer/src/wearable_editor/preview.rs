@@ -23,13 +23,13 @@ use std::{
 };
 use uuid::Uuid;
 
-struct Upload {
-    generation: u64,
-    te: usize,
-    id: Uuid,
-    texture: crate::imports::local::Texture,
+pub(crate) struct Upload {
+    pub(crate) generation: u64,
+    pub(crate) te: usize,
+    pub(crate) id: Uuid,
+    pub(crate) texture: crate::imports::local::Texture,
 }
-enum Reply {
+pub(crate) enum Reply {
     Texture(Upload),
     Done(u64),
     Failed(u64, String),
@@ -243,7 +243,19 @@ impl Preview {
         let wake = ctx.cloned();
         scene.jobs.execute(move || {
             let start = Instant::now();
-            let result = prepare(generation, &token, &pool, &lib, &base, kind, values, sources, &tx, wake.as_ref());
+            let result = prepare(
+                generation,
+                &token,
+                &pool,
+                &lib,
+                &base,
+                kind,
+                values,
+                sources,
+                &tx,
+                wake.as_ref(),
+                false,
+            );
             if token.load(Ordering::Relaxed) == generation {
                 if let Err(reason) = result {
                     let _ = tx.send(Reply::Failed(generation, reason));
@@ -361,7 +373,7 @@ impl Preview {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn prepare(
+pub(crate) fn prepare(
     generation: u64,
     token: &AtomicU64,
     pool: &aurora_render::StagingPool,
@@ -372,6 +384,7 @@ fn prepare(
     sources: HashMap<Uuid, PreviewSource>,
     tx: &crossbeam_channel::Sender<Reply>,
     wake: Option<&egui::Context>,
+    neutral: bool,
 ) -> Result<(), String> {
     use rayon::prelude::*;
     let defs = bake::definitions()?;
@@ -417,7 +430,11 @@ fn prepare(
         // A low-memory staging pool holds a 2048² base level but not its
         // RGBA mip chain. Compose at 1024 there; no large frame-thread copy.
         let size = region.size.min(if pool.max_region_bytes() < 24 << 20 { 1024 } else { 2048 });
-        let rgba = bake::compose(defs, region, size, &worn, &global, &images)?;
+        let rgba = if neutral {
+            bake::compose_neutral(defs, region, size, &worn, &global, &images)?
+        } else {
+            bake::compose(defs, region, size, &worn, &global, &images)?
+        };
         let alpha = crate::scene::jobs::classify_alpha(&rgba);
         let mips = aurora_render::build_mips(size, size, rgba, 12);
         let refs: Vec<_> = mips.iter().map(|(w, h, data)| (*w, *h, data.as_slice())).collect();

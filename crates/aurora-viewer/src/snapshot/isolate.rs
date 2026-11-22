@@ -34,6 +34,9 @@ pub enum Mode {
     /// [`View::Unseen`] — it is a skeleton owner and a light caster, and a
     /// rigged garment is drawn through its pose. Everything else is gone.
     Attachment,
+    /// Our avatar's body alone, with no wearable objects: a system wearable
+    /// photographed from its locally composed bakes.
+    AvatarOnly,
 }
 
 /// The isolation of the photo session.
@@ -110,7 +113,7 @@ impl Isolation {
         }
         match self.mode {
             Mode::Off => true,
-            Mode::Own => *root == self.own,
+            Mode::Own | Mode::AvatarOnly => *root == self.own,
             Mode::Chosen | Mode::Attachment => self.chosen.contains(root),
             Mode::OthersHidden => !avatar || *root == self.own,
         }
@@ -168,7 +171,7 @@ impl Isolation {
     pub fn set_own(&mut self, own: Uuid) {
         if self.own != own {
             self.own = own;
-            if self.applied() && matches!(self.mode, Mode::Own | Mode::OthersHidden | Mode::Attachment) {
+            if self.applied() && matches!(self.mode, Mode::Own | Mode::OthersHidden | Mode::Attachment | Mode::AvatarOnly) {
                 self.bump();
             }
         }
@@ -359,6 +362,15 @@ pub fn object_view(world: &crate::world::World, index: usize) -> View {
         return View::Drawn;
     };
     let avatar = world.objects.get(root_index).is_some_and(|o| o.is_avatar());
+    if iso.mode == Mode::AvatarOnly {
+        // The wearer's system body is the subject; everything worn and every
+        // other object is gone, so only the composed bakes show.
+        return if avatar && root == world.agent_id {
+            View::Drawn
+        } else {
+            View::Gone
+        };
+    }
     if iso.hide_avatars && avatar {
         return View::Gone;
     }

@@ -749,6 +749,15 @@ camera from the attachment's own down axis — the point rotation for a
 non-rigged object, the wearer's for a rigged one. The square photo goes through
 `app/inventory_thumbnail.rs`'s upload path, and the previous outfit is restored.
 
+`app/inventory_folder_image.rs` makes a folder's picture from up to four of
+its children's existing pictures: the streamer decodes those images and the
+app composes a square on a worker-free path, then uses the ordinary thumbnail
+upload. `app/inventory_auto_image.rs` also covers system clothing and body
+parts: `wearable_editor::bake::compose_neutral` puts the item's texture layers
+on a white base, the local bakes are applied to our own avatar through
+`world.preview_bakes`, `snapshot::isolate::Mode::AvatarOnly` hides everything
+worn, and the bakes are removed afterwards. No outfit change is sent.
+
 `app/ui_image_cache.rs` bounds the other interface images: the profile pictures
 and `ui_images` that came from the streamer. A window keeps its texture only
 while it asks for it (5 seconds later `want_ui_image`'s interest lapses, the

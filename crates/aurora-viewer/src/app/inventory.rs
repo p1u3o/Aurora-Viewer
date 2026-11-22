@@ -773,6 +773,7 @@ impl App {
             }
             InvAction::Thumbnail { request, item, input } => self.inventory_image_action(request, item, input),
             InvAction::AutoImage(item) => self.open_inventory_auto_image(item),
+            InvAction::FolderImage(folder) => self.folder_auto_image(folder),
             InvAction::TeleportLandmark(_) => {}
             InvAction::Gesture(action) => self.gesture_action(action),
         }

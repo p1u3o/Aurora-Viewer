@@ -15921,3 +15921,5 @@ ui-inventory-auto-image-no-object = アイテムが装着オブジェクトと�
 ui-inventory-auto-image-saved = 写真を保存しました。
 ui-inventory-auto-image-rotate = 回転
 ui-inventory-auto-image-zoom = ズーム
+ui-inventory-auto-image-folder = 中身から画像を作成
+ui-inventory-auto-image-folder-empty = このフォルダーには画像を組み立てる画像やテクスチャがありません。
