@@ -741,28 +741,31 @@ impl App {
         .show(ctx, p, &mut open, |ui| {
             ui.label(egui::RichText::new(&name).color(p.ink));
             ui.add_space(8.0);
-            if let Some(texture) = shot.as_ref().or(preview.as_ref()) {
-                let (rect, _) = ui.allocate_exact_size(Vec2::splat(256.0), egui::Sense::hover());
-                ui.painter().image(
-                    texture.id(),
-                    rect,
-                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                    crate::ui::widgets::PICTURE_TINT,
-                );
-            } else {
-                let (rect, _) = ui.allocate_exact_size(Vec2::splat(256.0), egui::Sense::hover());
-                ui.painter().text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    if confirming {
-                        aurora_i18n::tr!("ui-inventory-auto-image-local")
-                    } else {
-                        aurora_i18n::tr!("ui-inventory-auto-image-preparing")
-                    },
-                    egui::FontId::proportional(13.0),
-                    p.muted,
-                );
-            }
+            let side = ui.available_width().min(288.0);
+            ui.vertical_centered(|ui| {
+                if let Some(texture) = shot.as_ref().or(preview.as_ref()) {
+                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(side), egui::Sense::hover());
+                    ui.painter().image(
+                        texture.id(),
+                        rect,
+                        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                        crate::ui::widgets::PICTURE_TINT,
+                    );
+                } else {
+                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(side), egui::Sense::hover());
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        if confirming {
+                            aurora_i18n::tr!("ui-inventory-auto-image-local")
+                        } else {
+                            aurora_i18n::tr!("ui-inventory-auto-image-preparing")
+                        },
+                        egui::FontId::proportional(13.0),
+                        p.muted,
+                    );
+                }
+            });
             ui.add_space(8.0);
             let adjustable = !confirming && !saved && !restored;
             ui.horizontal(|ui| {
