@@ -451,19 +451,21 @@ impl App {
             }
             ui.add_space(8.0);
             let adjustable = !confirming && !saved && !restored;
-            ui.add_enabled(
-                adjustable,
-                egui::Slider::new(&mut yaw, -180.0..=180.0)
-                    .suffix("°")
-                    .text(aurora_i18n::tr!("ui-inventory-auto-image-rotate")),
-            );
-            ui.add_enabled(
-                adjustable,
-                egui::Slider::new(&mut zoom, 0.5..=3.0)
-                    .suffix("×")
-                    .step_by(0.05)
-                    .text(aurora_i18n::tr!("ui-inventory-auto-image-zoom")),
-            );
+            ui.horizontal(|ui| {
+                let half = ui.available_width() / 2.0;
+                ui.allocate_ui(egui::vec2(half, 44.0), |ui| {
+                    ui.vertical(|ui| {
+                        ui.label(aurora_i18n::tr!("ui-inventory-auto-image-rotate"));
+                        ui.add_enabled(adjustable, egui::Slider::new(&mut yaw, -180.0..=180.0).suffix("°"));
+                    });
+                });
+                ui.allocate_ui(egui::vec2(half, 44.0), |ui| {
+                    ui.vertical(|ui| {
+                        ui.label(aurora_i18n::tr!("ui-inventory-auto-image-zoom"));
+                        ui.add_enabled(adjustable, egui::Slider::new(&mut zoom, 0.5..=3.0).suffix("×").step_by(0.05));
+                    });
+                });
+            });
             ui.add_space(8.0);
             if !error.is_empty() {
                 ui.label(egui::RichText::new(&error).color(p.warn));
