@@ -7545,7 +7545,9 @@ failure. Grid validation and any paid upload are performed by the human.
   the view before the shot; a rigged garment is framed from its posed bounds.
   The camera, isolation and picture upload are local; on the grid the item is
   really attached and taken off afterwards unless it was already worn. The
-  command is in the item's Image popup, not the right-click menu.
+  command is in the item's Image popup, not the right-click menu, with a wand
+  icon. An item already worn goes straight to the picture: it is never worn
+  again or taken off at the end.
 - **`AURORA_DEMO_INVENTORY=locked|aurora-locked`**: locks the demo folder
   holding the demo object, in the Legacy or Aurora inventory. Check its
   "Locked" tag after the name; the folder itself refuses Delete, Cut and a

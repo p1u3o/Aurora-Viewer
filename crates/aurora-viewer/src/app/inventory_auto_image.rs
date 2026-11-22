@@ -105,11 +105,14 @@ impl App {
         if !eligible(it) {
             return;
         }
-        log::info!("inventory auto image: opened for {item}");
+        // An item already on the avatar is photographed as it is: no second
+        // wear, and nothing to take off at the end.
+        let was_worn = self.world.worn_attachment_items().contains(&item);
+        log::info!("inventory auto image: opened for {item}, worn {was_worn}");
         self.inventory_auto_image = Some(Session {
             item,
             attachment: None,
-            was_worn: self.world.worn_attachment_items().contains(&item),
+            was_worn,
             camera: self.camera.clone(),
             fixed: self.camera.fixed_view,
             isolation: self.world.photo_isolation.clone(),
@@ -124,10 +127,13 @@ impl App {
             error: String::new(),
             saved: false,
             restored: false,
-            confirming: true,
+            confirming: !was_worn,
             open: true,
         });
         crate::ui::widgets::open_floater(&self.egui_ctx, WINDOW, &mut true);
+        if was_worn {
+            self.begin_inventory_auto_image();
+        }
     }
 
     pub(super) fn inventory_auto_image_active(&self) -> bool {

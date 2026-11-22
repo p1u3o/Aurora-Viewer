@@ -131,7 +131,7 @@ impl ThumbnailUi {
                 if toolbar_button(
                     ui,
                     p,
-                    "camera-filled",
+                    "wand",
                     aurora_i18n::tr!("ui-inventory-auto-image-command"),
                     auto_ok,
                     &mut caption,
