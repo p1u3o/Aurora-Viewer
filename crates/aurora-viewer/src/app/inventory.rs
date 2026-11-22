@@ -772,6 +772,7 @@ impl App {
                 self.thumbnail_copied(asset, clipboard);
             }
             InvAction::Thumbnail { request, item, input } => self.inventory_image_action(request, item, input),
+            InvAction::AutoImage(item) => self.open_inventory_auto_image(item),
             InvAction::TeleportLandmark(_) => {}
             InvAction::Gesture(action) => self.gesture_action(action),
         }

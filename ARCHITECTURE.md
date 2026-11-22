@@ -740,6 +740,15 @@ interest ends when an image is complete or its hover is abandoned; cache
 eviction drops the egui handle. Profile/editor interests survive those
 releases, and obsolete worker replies cannot recreate released copies.
 
+`app/inventory_auto_image.rs` takes an attachable inventory item's picture like
+the outfit's auto portrait, but for one object: it wears the item, opens a new
+`snapshot::isolate::Mode::Attachment` (only the worn root and its linkset are
+drawn, its wearer is `Unseen` so the skeleton poses a rigged garment and the
+avatar keeps its FULL cull state, everything else is `Gone`), and levels the
+camera from the attachment's own down axis — the point rotation for a
+non-rigged object, the wearer's for a rigged one. The square photo goes through
+`app/inventory_thumbnail.rs`'s upload path, and the previous outfit is restored.
+
 `app/ui_image_cache.rs` bounds the other interface images: the profile pictures
 and `ui_images` that came from the streamer. A window keeps its texture only
 while it asks for it (5 seconds later `want_ui_image`'s interest lapses, the

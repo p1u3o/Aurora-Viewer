@@ -38,6 +38,8 @@ pub(super) struct ImageJobs {
     /// encoded or sent: a job of its own, that no image editor shows, so
     /// one the user has open on another item is left as it is.
     outfit: Option<Uuid>,
+    /// The same for an attachable item's automatic picture.
+    auto_image: Option<Uuid>,
     /// The outfit's paid HD picture (`outfit_hd`).
     pub hd: super::outfit_hd::OutfitHd,
 }
@@ -55,6 +57,7 @@ impl Default for ImageJobs {
             auto_capture_pending: false,
             photo: None,
             outfit: None,
+            auto_image: None,
             hd: Default::default(),
         }
     }
@@ -254,6 +257,20 @@ impl App {
         true
     }
 
+    /// An attachable item's picture, confirmed: its pixels go the gallery
+    /// snapshot's way, reduced to the free square thumbnail. False when
+    /// another image job is still on its way.
+    pub(super) fn item_photo_pixels(&mut self, item: Uuid, (w, h): (u32, u32), pixels: Vec<u8>) -> bool {
+        if self.inventory_images.outfit.is_some() || self.inventory_images.auto_image.is_some() {
+            return false;
+        }
+        let request = Uuid::new_v4();
+        self.inventory_images.auto_image = Some(request);
+        self.inventory_images.requests.insert(request, item);
+        self.prepare_inventory_photo(request, w, h, pixels);
+        true
+    }
+
     /// An outfit's picture is still being drawn, encoded or sent.
     pub(super) fn outfit_photo_busy(&self) -> bool {
         self.inventory_images.outfit.is_some()
@@ -296,6 +313,13 @@ impl App {
             }
             return;
         }
+        if self.inventory_images.auto_image == Some(request) {
+            self.inventory_images.auto_image = None;
+            if error.is_some() {
+                self.inventory_auto_image_upload_done(error);
+            }
+            return;
+        }
         if let Some(st) = inventory_panel(self, request) {
             st.pending = None;
             st.error = error.unwrap_or_default();
@@ -306,7 +330,11 @@ impl App {
             st.thumbnail.saved = error.is_none();
             st.finish_thumbnail_upload(request, error.as_deref(), std::time::Instant::now());
         }
-        self.finish_inventory_image(request, error);
+        let auto = self.inventory_images.auto_image == Some(request);
+        self.finish_inventory_image(request, error.clone());
+        if auto && error.is_none() {
+            self.inventory_auto_image_upload_done(None);
+        }
     }
     /// The item image window's Copy: an id the asset id rule allows went on
     /// the system clipboard too; any other stays in the viewer, like the
@@ -335,7 +363,8 @@ impl App {
                 continue;
             };
             let outfit = self.inventory_images.outfit == Some(reply.request);
-            if !outfit && inventory_panel(self, reply.request).is_none_or(|st| st.item != Some(item)) {
+            let auto = self.inventory_images.auto_image == Some(reply.request);
+            if !outfit && !auto && inventory_panel(self, reply.request).is_none_or(|st| st.item != Some(item)) {
                 self.finish_inventory_image(reply.request, None);
                 continue;
             }
@@ -349,11 +378,16 @@ impl App {
                     }
                     self.finish_inventory_image(reply.request, None);
                 }
-                // the gallery's snapshot is saved at once, with no preview
-                Ok(Some(Prepared::Photo(pixels))) if outfit => {
+                // the gallery's snapshot and the item's auto image are saved
+                // at once, with no preview
+                Ok(Some(Prepared::Photo(pixels))) if outfit || auto => {
                     self.inventory_images.requests.remove(&reply.request);
                     let request = Uuid::new_v4();
-                    self.inventory_images.outfit = Some(request);
+                    if auto {
+                        self.inventory_images.auto_image = Some(request);
+                    } else {
+                        self.inventory_images.outfit = Some(request);
+                    }
                     self.inventory_image_action(request, item, ImageInput::Pixels(Arc::new(pixels)));
                 }
                 Ok(Some(Prepared::Photo(pixels))) => {

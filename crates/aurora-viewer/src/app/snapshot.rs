@@ -57,18 +57,27 @@ pub(super) enum Purpose {
     Portrait {
         preview: bool,
     },
+    /// An attachable inventory item's automatic picture
+    /// (`app::inventory_auto_image`): the small preview, or the photo shown
+    /// for confirmation.
+    InventoryImage {
+        preview: bool,
+    },
 }
 
 impl Purpose {
     /// A preview, drawn again and again: not logged, not "busy".
     fn quiet(&self) -> bool {
-        matches!(self, Purpose::Preview | Purpose::Portrait { preview: true })
+        matches!(
+            self,
+            Purpose::Preview | Purpose::Portrait { preview: true } | Purpose::InventoryImage { preview: true }
+        )
     }
 
     /// An outfit's picture: square, never the interface, the HUDs or the
-    /// photo quality.
+    /// photo quality. An item's picture follows the same rules.
     fn outfit(&self) -> bool {
-        matches!(self, Purpose::Outfit(_) | Purpose::Portrait { .. })
+        matches!(self, Purpose::Outfit(_) | Purpose::Portrait { .. } | Purpose::InventoryImage { .. })
     }
 }
 
@@ -847,6 +856,7 @@ impl App {
                 self.prepare_inventory_photo(request, job.size.0, job.size.1, job.pixels);
             }
             Purpose::Portrait { preview } => self.outfit_portrait_drawn(preview, job.size, job.pixels, job.cutout),
+            Purpose::InventoryImage { preview } => self.inventory_auto_image_drawn(preview, job.size, job.pixels, job.cutout),
         }
     }
 
@@ -1152,7 +1162,10 @@ impl App {
         }
         let window = renderer.size();
         let outfit = purpose.outfit();
-        let full = if purpose == (Purpose::Portrait { preview: false }) {
+        let full = if matches!(
+            purpose,
+            Purpose::Portrait { preview: false } | Purpose::InventoryImage { preview: false }
+        ) {
             // (the HD picture is chosen once the photo is shown)
             (snapshot::portrait::SHOT_SIDE, snapshot::portrait::SHOT_SIDE)
         } else if outfit {

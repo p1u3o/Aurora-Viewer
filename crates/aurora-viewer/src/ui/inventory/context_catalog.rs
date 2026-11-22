@@ -23,6 +23,7 @@ pub(super) enum Command {
     BulkPermissions(Vec<Uuid>),
     Rename(Uuid),
     Image(Uuid),
+    AutoImage(Uuid),
     Protect(Vec<Uuid>),
     FolderColor(Vec<Uuid>),
     Reload(Uuid),
@@ -965,6 +966,15 @@ fn build_mode(inv: &Inventory, id: Uuid, st: &InventoryUi, prefs: &InventoryPref
             ready && single && writable && !linked,
             Command::Image(id),
         );
+        let attachable = item.is_some_and(|it| it.asset_type == 6);
+        c.add(
+            "auto-image",
+            TEXT,
+            "camera-filled",
+            aurora_i18n::tr!("ui-inventory-auto-image-command"),
+            ready && single && writable && !linked && attachable,
+            Command::AutoImage(id),
+        );
     }
     if folder.is_some() || all {
         c.divider("folder-navigation", TEXT);
@@ -1267,6 +1277,7 @@ pub(super) fn execute(
         Command::BulkPermissions(ids) => st.open_bulk_permissions(ids),
         Command::Rename(id) => st.begin_rename(inv, id),
         Command::Image(id) => st.thumbnail.open(id),
+        Command::AutoImage(id) => actions.push(InvAction::AutoImage(id)),
         Command::Protect(ids) => {
             // The Legacy Viewer shows Protect and Unprotect as two entries, each
             // acting on every selected folder: LLInventoryAction::doToSelected

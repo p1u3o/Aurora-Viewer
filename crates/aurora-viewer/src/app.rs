@@ -109,6 +109,7 @@ mod hud_drag;
 mod imports;
 mod inspect;
 mod inventory;
+mod inventory_auto_image;
 mod inventory_drag;
 mod inventory_hover;
 mod inventory_thumbnail;
@@ -1284,6 +1285,8 @@ pub struct App {
     inventory_images: inventory_thumbnail::ImageJobs,
     /// The outfit's auto portrait or square photo mode under way.
     outfit_portrait: Option<outfit_portrait::Session>,
+    /// An attachable inventory item's automatic picture under way.
+    inventory_auto_image: Option<inventory_auto_image::Session>,
     /// The outfits' batch portraits, from their window's opening.
     outfit_batch: Option<outfit_batch::Batch>,
     appearance_ui: ui::appearance::AppearanceUi,
@@ -2411,6 +2414,7 @@ impl App {
             demo_script_experiences: Default::default(),
             inventory_images: Default::default(),
             outfit_portrait: None,
+            inventory_auto_image: None,
             outfit_batch: None,
             appearance_ui,
             shape_ui: Default::default(),
@@ -11265,6 +11269,7 @@ impl App {
         self.capture_360_frame(&mut gfx.renderer);
         self.outfit_batch_frame();
         self.outfit_portrait_frame(&gfx.renderer);
+        self.inventory_auto_image_frame(&gfx.renderer);
         self.photo_update(&mut gfx.renderer);
         self.studio_photo_frame(&mut gfx.renderer);
         self.viewfinder_frame(&mut gfx.renderer);
@@ -13980,6 +13985,17 @@ impl App {
             let item = uuid::Uuid::from_u128(8101);
             self.inventory_ui.thumbnail.pending = Some(request);
             self.inventory_image_action(request, item, ui::inventory::thumbnail::Input::Capture);
+        }
+        // AURORA_DEMO_INVENTORY=auto-image: the whole flow without a grid —
+        // the demo's worn backpack stands in for the item being attached.
+        if self.demo && std::env::var("AURORA_DEMO_INVENTORY").is_ok_and(|v| v.starts_with("auto-image")) {
+            match self.frame_count {
+                1500 => self.open_inventory_auto_image(uuid::Uuid::from_u128(8100)),
+                1700 => self.begin_inventory_auto_image(),
+                1900 => self.inventory_auto_image_shoot(),
+                2100 => self.inventory_auto_image_use(),
+                _ => {}
+            }
         }
         if self.demo
             && let Some(big) = crate::world::inventory::demo::big()
@@ -20333,6 +20349,7 @@ impl App {
                 self.panels.appearance = open;
                 self.wearable_favorites_window(&ctx, &p);
                 self.outfit_portrait_window(&ctx, &p);
+                self.inventory_auto_image_window(&ctx, &p);
                 self.outfit_batch_window(&ctx, &p);
                 self.update_demo_shape_mesh();
                 self.shape_ui.update(&mut self.world, &self.scene, &ctx);
