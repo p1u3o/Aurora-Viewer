@@ -4233,6 +4233,33 @@ impl Scene {
         animesh::owner(&world.objects, idx)
     }
 
+    /// Posed world bounds of a rigged object's own geometry. `ObjGpu::wide`
+    /// is the wearer's whole-skeleton extent (the culling sphere), which is
+    /// useless for framing one garment: it makes the camera orbit the
+    /// avatar's root while the item hangs at its shoulder. This uses the
+    /// same joint boxes and palette matrices as the draw path
+    /// (`SyncContext::placement`), so the centre follows the pose.
+    pub fn posed_object_bounds(&self, world: &World, idx: usize) -> Option<(Vec3, f32)> {
+        let key = self.gpu.get(idx)?.geom?;
+        let geom = self.geom_ready(&key)?;
+        if geom.joint_bounds.is_empty() {
+            return None;
+        }
+        let (owner, owner_idx) = Self::skeleton_owner(world, idx)?;
+        let binds = match key {
+            GeomKey::Mesh { id, .. } => self.skin_binds.base_of(&id)?,
+            _ => return None,
+        };
+        let slot = *self.palette_slots.get(&owner)?;
+        let (pos, rot, _) = Self::object_transform(world, owner_idx, std::time::Instant::now(), 0)?;
+        let model = anchors::skeleton_model(world, &self.meshes, owner_idx, pos, rot, 1.0);
+        animesh::posed_bounds(&geom.joint_bounds, |j| {
+            let b = self.skin_binds.list().get(binds as usize + j as usize)?;
+            let p = self.palettes.get(slot as usize * anim::PALETTE_JOINTS + b.joint[0] as usize)?;
+            Some(model * Mat4::from_cols_array_2d(p) * Mat4::from_cols_array_2d(&b.inverse_bind))
+        })
+    }
+
     /// Palette base (first matrix index) for a skeleton owner.
     fn palette_base(&mut self, owner: Uuid) -> u32 {
         if let Some(s) = self.palette_slots.get(&owner) {

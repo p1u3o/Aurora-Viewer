@@ -605,11 +605,20 @@ impl App {
         };
         // A rigged garment's vertices are posed from the skeleton, so its
         // scale and attachment-point position say nothing about its size.
-        // The scene keeps the posed bounds of such meshes (`wide`), updated
-        // with each animation frame; fall back to the cull sphere, then to
-        // the prim's scale before the geometry arrives.
+        // `wide` is the wearer's *whole skeleton* culling sphere (root plus
+        // ~2 m): orbiting it makes the camera circle the avatar while the
+        // jacket hangs off to one side. Use the posed bounds of this mesh's
+        // own joint boxes, then fall back to the cull sphere and the prim's
+        // scale before the geometry arrives.
         let g = self.scene.gpu.get(index);
-        let (center, radius) = g.and_then(|g| g.wide).or_else(|| g.map(|g| g.sphere())).unwrap_or_else(|| {
+        let (center, radius) = if rigged {
+            self.scene
+                .posed_object_bounds(&self.world, index)
+                .or_else(|| g.map(|g| (g.center, g.radius)))
+        } else {
+            g.map(|g| g.sphere())
+        }
+        .unwrap_or_else(|| {
             let pos = crate::scene::Scene::object_transform(&self.world, index, now, 0)
                 .map(|(p, _, _)| p)
                 .unwrap_or_default();
