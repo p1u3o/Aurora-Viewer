@@ -66,6 +66,57 @@ fn subject_up(rigged: bool, object_rot: Quat, wearer_rot: Option<Quat>) -> Vec3 
     }
 }
 
+/// Whether `idx` is the attachment root or one of its linked children.
+fn under_root(world: &crate::world::World, idx: usize, root: usize) -> bool {
+    let mut idx = idx;
+    for _ in 0..64 {
+        if idx == root {
+            return true;
+        }
+        let Some(object) = world.objects.get(idx) else {
+            return false;
+        };
+        let Some(parent) = world.objects.parent_of(object) else {
+            return false;
+        };
+        idx = parent;
+    }
+    false
+}
+
+impl App {
+    /// Bounds of the whole worn item, not just its root prim: a garment is
+    /// often a linkset whose visible panels are children of a scripted or
+    /// invisible root. Centre-cropping the root alone leaves the picture
+    /// badly off centre and makes rotation swing around the wrong point.
+    fn subject_bounds(&self, root: usize, rigged: bool) -> Option<(Vec3, f32)> {
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        for (idx, _) in self.world.objects.iter() {
+            if !under_root(&self.world, idx, root) {
+                continue;
+            }
+            let g = self.scene.gpu.get(idx).filter(|g| !g.faces.is_empty());
+            let bounds = if rigged {
+                self.scene.posed_object_bounds(&self.world, idx)
+            } else {
+                None
+            }
+            .or_else(|| g.map(|g| (g.center, g.radius)));
+            if let Some((center, radius)) = bounds {
+                let span = Vec3::splat(radius);
+                min = min.min(center - span);
+                max = max.max(center + span);
+            }
+        }
+        if min.x.is_finite() {
+            Some(((min + max) * 0.5, (max - min).length() * 0.5))
+        } else {
+            None
+        }
+    }
+}
+
 /// The photo awaiting "Use".
 struct Shot {
     size: (u32, u32),
@@ -603,22 +654,12 @@ impl App {
         let Some((_, object_rot, _)) = crate::scene::Scene::object_transform(&self.world, index, now, 0) else {
             return;
         };
-        // A rigged garment's vertices are posed from the skeleton, so its
-        // scale and attachment-point position say nothing about its size.
         // `wide` is the wearer's *whole skeleton* culling sphere (root plus
-        // ~2 m): orbiting it makes the camera circle the avatar while the
-        // jacket hangs off to one side. Use the posed bounds of this mesh's
-        // own joint boxes, then fall back to the cull sphere and the prim's
-        // scale before the geometry arrives.
-        let g = self.scene.gpu.get(index);
-        let (center, radius) = if rigged {
-            self.scene
-                .posed_object_bounds(&self.world, index)
-                .or_else(|| g.map(|g| (g.center, g.radius)))
-        } else {
-            g.map(|g| g.sphere())
-        }
-        .unwrap_or_else(|| {
+        // ~2 m), so orbiting it makes the camera circle the avatar while the
+        // garment hangs off to one side. Use the posed bounds of the meshes
+        // in the worn linkset (not just its root prim), then fall back to
+        // the prim's scale before the geometry arrives.
+        let (center, radius) = self.subject_bounds(index, rigged).unwrap_or_else(|| {
             let pos = crate::scene::Scene::object_transform(&self.world, index, now, 0)
                 .map(|(p, _, _)| p)
                 .unwrap_or_default();
