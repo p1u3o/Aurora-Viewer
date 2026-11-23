@@ -66,22 +66,34 @@ fn subject_up(rigged: bool, object_rot: Quat, wearer_rot: Option<Quat>) -> Vec3 
     }
 }
 
-/// World direction the worn item was authored facing. Rigged content is
-/// authored facing the avatar's +Y, but the rig joint the item hangs from can
-/// turn independently of the avatar's root — a turned head, a pointed foot —
-/// and `attach_frame` already carries that joint's posed rotation. Reading +Y
-/// in that frame gives a better front than the root's facing; without a known
-/// point (or for a non-rigged prim, which carries the point's rotation itself)
-/// the avatar's own forward is kept. The component along world Z is dropped:
-/// the camera stays level even when the joint points up or down.
-fn subject_front(rigged: bool, wearer_rot: Option<Quat>, point_rot: Option<Quat>) -> Vec3 {
+/// World direction the worn item was authored facing, flattened so the camera
+/// stays level. Rigged content is authored facing the avatar's +Y, but the
+/// bones that actually carry it can face elsewhere: the chain tries the
+/// dominant skinned joint first, then the attachment point's posed joint
+/// (`anchors::attach_frame`), then the avatar's root, and the caller falls
+/// back to world +Y if even that points straight up. A non-rigged prim keeps
+/// the root's forward: it already carries the point's own rotation.
+fn subject_front(rigged: bool, wearer_rot: Option<Quat>, point_rot: Option<Quat>, dominant_front: Option<Vec3>) -> Vec3 {
     let wearer_rot = wearer_rot.unwrap_or(Quat::IDENTITY);
-    let front = if rigged {
-        wearer_rot * point_rot.unwrap_or(Quat::IDENTITY) * Vec3::Y
-    } else {
-        wearer_rot * Vec3::Y
-    };
-    Vec3::new(front.x, front.y, 0.0)
+    let flat = |v: Vec3| Vec3::new(v.x, v.y, 0.0);
+    if !rigged {
+        return flat(wearer_rot * Vec3::Y);
+    }
+    // An axis pointing almost straight along world Z says nothing about the
+    // front, so a dominant joint that steep has to fall through.
+    if let Some(front) = dominant_front
+        && front.is_finite()
+        && flat(front).length() > 0.25
+    {
+        return flat(front);
+    }
+    if let Some(point) = point_rot {
+        let front = flat(wearer_rot * point * Vec3::Y);
+        if front.length_squared() > 1e-4 {
+            return front;
+        }
+    }
+    flat(wearer_rot * Vec3::Y)
 }
 
 /// Whether `idx` is the attachment root or one of its linked children.
@@ -132,6 +144,24 @@ impl App {
         } else {
             None
         }
+    }
+
+    /// Front of the dominant skinned joint of the whole worn linkset: the
+    /// visible panels of a garment are often children of an invisible root.
+    /// The extent returned by the scene compares meshes on different bones.
+    fn subject_dominant_front(&self, root: usize) -> Option<Vec3> {
+        let mut best: Option<(f32, Vec3)> = None;
+        for (idx, _) in self.world.objects.iter() {
+            if !under_root(&self.world, idx, root) {
+                continue;
+            }
+            if let Some((extent, front)) = self.scene.posed_joint_front(&self.world, idx)
+                && best.as_ref().is_none_or(|(b, _)| extent > *b)
+            {
+                best = Some((extent, front));
+            }
+        }
+        best.map(|(_, front)| front)
     }
 }
 
@@ -705,7 +735,8 @@ impl App {
         } else {
             None
         };
-        let forward_flat = subject_front(rigged, wearer_rot, point_rot);
+        let dominant_front = if rigged { self.subject_dominant_front(index) } else { None };
+        let forward_flat = subject_front(rigged, wearer_rot, point_rot, dominant_front);
         let direction = if forward_flat.length_squared() > 1e-4 {
             forward_flat.normalize()
         } else {
@@ -961,18 +992,34 @@ mod tests {
 
     #[test]
     fn a_rigged_photo_faces_the_attachment_points_joint() {
-        // The head turned a quarter turn right takes the garment's front with
-        // it, even though the avatar's root still faces +Y.
+        // With no dominant skinned joint, the head turned a quarter turn right
+        // takes the garment's front with it, though the root still faces +Y.
         let point = Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2);
-        let front = subject_front(true, Some(Quat::IDENTITY), Some(point));
+        let front = subject_front(true, Some(Quat::IDENTITY), Some(point), None);
         assert!((front - Vec3::X).length() < 1e-5, "{front:?}");
     }
 
     #[test]
     fn the_joint_front_composes_with_the_avatars_facing() {
         let quarter = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
-        let front = subject_front(true, Some(quarter), Some(quarter));
+        let front = subject_front(true, Some(quarter), Some(quarter), None);
         assert!((front - Vec3::NEG_Y).length() < 1e-5, "{front:?}");
+    }
+
+    #[test]
+    fn the_dominant_skinned_joint_takes_precedence() {
+        // A mesh attached at Spine but weighted mostly to a foot looks along
+        // the foot, not along the point's own frame.
+        let point = Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2);
+        let front = subject_front(true, Some(Quat::IDENTITY), Some(point), Some(Vec3::NEG_Y));
+        assert!((front - Vec3::NEG_Y).length() < 1e-5, "{front:?}");
+    }
+
+    #[test]
+    fn a_dominant_joint_pointing_up_falls_through_to_the_point() {
+        let point = Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2);
+        let front = subject_front(true, Some(Quat::IDENTITY), Some(point), Some(Vec3::Z));
+        assert!((front - Vec3::X).length() < 1e-5, "{front:?}");
     }
 
     #[test]
@@ -980,17 +1027,16 @@ mod tests {
         let avatar = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
         let point = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
         let expected = Vec3::NEG_X;
-        let no_joint = subject_front(true, Some(avatar), None);
+        let no_joint = subject_front(true, Some(avatar), None, None);
         assert!((no_joint - expected).length() < 1e-5, "{no_joint:?}");
-        let non_rigged = subject_front(false, Some(avatar), Some(point));
+        let non_rigged = subject_front(false, Some(avatar), Some(point), Some(Vec3::X));
         assert!((non_rigged - expected).length() < 1e-5, "{non_rigged:?}");
     }
 
     #[test]
-    fn a_joint_pointing_straight_up_leaves_no_forward_to_follow() {
-        // The preview then falls back to the world's +Y, as before.
+    fn a_joint_pointing_straight_up_falls_back_to_the_avatar_forward() {
         let point = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
-        let front = subject_front(true, Some(Quat::IDENTITY), Some(point));
-        assert!(front.length() < 1e-5, "{front:?}");
+        let front = subject_front(true, Some(Quat::IDENTITY), Some(point), None);
+        assert!((front - Vec3::Y).length() < 1e-5, "{front:?}");
     }
 }

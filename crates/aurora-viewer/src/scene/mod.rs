@@ -4260,6 +4260,36 @@ impl Scene {
         })
     }
 
+    /// Bind-space extent and posed world front of the mesh's dominant skinned
+    /// joint: the joint whose vertex box is largest. A rigged item can hang
+    /// from a generic point while its geometry is weighted to a foot or a
+    /// hand, so this is a better guess of its authored front than the point's
+    /// own frame. Reads the same joint boxes and palette matrices as
+    /// `posed_object_bounds`; the extent lets the caller compare meshes.
+    pub fn posed_joint_front(&self, world: &World, idx: usize) -> Option<(f32, Vec3)> {
+        let key = self.gpu.get(idx)?.geom?;
+        let geom = self.geom_ready(&key)?;
+        let extent = |j: &animesh::JointBounds| {
+            let s = j.max - j.min;
+            (s.x * s.y * s.z).abs()
+        };
+        let dominant = geom.joint_bounds.iter().max_by(|a, b| extent(a).total_cmp(&extent(b)))?;
+        let (owner, owner_idx) = Self::skeleton_owner(world, idx)?;
+        let binds = match key {
+            GeomKey::Mesh { id, .. } => self.skin_binds.base_of(&id)?,
+            _ => return None,
+        };
+        let slot = *self.palette_slots.get(&owner)?;
+        let (pos, rot, _) = Self::object_transform(world, owner_idx, Instant::now(), 0)?;
+        let model = anchors::skeleton_model(world, &self.meshes, owner_idx, pos, rot, 1.0);
+        let bind = self.skin_binds.list().get(binds as usize + dominant.joint as usize)?;
+        let p = self.palettes.get(slot as usize * anim::PALETTE_JOINTS + bind.joint[0] as usize)?;
+        let matrix = model * Mat4::from_cols_array_2d(p) * Mat4::from_cols_array_2d(&bind.inverse_bind);
+        let (_, q, _) = matrix.to_scale_rotation_translation();
+        let front = q * Vec3::Y;
+        (front.is_finite() && front.length_squared() > 1e-6).then_some((extent(dominant), front))
+    }
+
     /// Palette base (first matrix index) for a skeleton owner.
     fn palette_base(&mut self, owner: Uuid) -> u32 {
         if let Some(s) = self.palette_slots.get(&owner) {
