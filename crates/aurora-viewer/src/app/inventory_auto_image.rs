@@ -5,9 +5,9 @@
 //! that attachment alone (its wearer is only unseen, so a rigged garment
 //! still has a posed skeleton and a FULL cull state), and the square photo
 //! becomes the item's picture through the ordinary thumbnail upload. The
-//! camera is levelled from the attachment's own down axis: a non-rigged
-//! object carried at Spine has the point's rotation applied to it, a rigged
-//! one is posed from the skeleton instead.
+//! camera is levelled from the attachment's own down axis and faces the rig
+//! joint it hangs from: a non-rigged object carried at Spine has the point's
+//! rotation applied to it, a rigged one is posed from the skeleton instead.
 //!
 //! Nothing here changes the grid: the wear is the same as double-clicking
 //! the item, and the previous outfit is put back when it was not already
@@ -64,6 +64,24 @@ fn subject_up(rigged: bool, object_rot: Quat, wearer_rot: Option<Quat>) -> Vec3 
     } else {
         object_rot * Vec3::Z
     }
+}
+
+/// World direction the worn item was authored facing. Rigged content is
+/// authored facing the avatar's +Y, but the rig joint the item hangs from can
+/// turn independently of the avatar's root — a turned head, a pointed foot —
+/// and `attach_frame` already carries that joint's posed rotation. Reading +Y
+/// in that frame gives a better front than the root's facing; without a known
+/// point (or for a non-rigged prim, which carries the point's rotation itself)
+/// the avatar's own forward is kept. The component along world Z is dropped:
+/// the camera stays level even when the joint points up or down.
+fn subject_front(rigged: bool, wearer_rot: Option<Quat>, point_rot: Option<Quat>) -> Vec3 {
+    let wearer_rot = wearer_rot.unwrap_or(Quat::IDENTITY);
+    let front = if rigged {
+        wearer_rot * point_rot.unwrap_or(Quat::IDENTITY) * Vec3::Y
+    } else {
+        wearer_rot * Vec3::Y
+    };
+    Vec3::new(front.x, front.y, 0.0)
 }
 
 /// Whether `idx` is the attachment root or one of its linked children.
@@ -669,14 +687,25 @@ impl App {
         let radius = radius.max(0.05);
         let fov = self.camera.fov_y.max(0.1);
         let distance = (radius / (fov * 0.5).tan() * FRAMING_MARGIN * zoom).max(0.2);
-        // Look at it from the side it was authored facing: the avatar's
-        // forward, or the world's +Y when there is no useful pose.
+        // Look at it from the side it was authored facing. A rigged item's
+        // front follows the joint it hangs from (a turned head, a pointed
+        // foot), not just the avatar's root; without a pose the root's forward
+        // is the fallback, and with no avatar at all the world's +Y.
         let wearer = isolate::wearer_of(&self.world, index).map(|(i, _)| i);
-        let forward_flat = wearer
+        let wearer_rot = wearer
             .and_then(|i| crate::scene::Scene::object_transform(&self.world, i, now, 0))
-            .map(|(_, q, _)| q * Vec3::Y)
-            .unwrap_or(Vec3::Y);
-        let forward_flat = Vec3::new(forward_flat.x, forward_flat.y, 0.0);
+            .map(|(_, q, _)| q);
+        let point_rot = if rigged {
+            wearer.and_then(|i| {
+                let root = self.world.objects.get(index)?;
+                let wearer_obj = self.world.objects.get(i)?;
+                let frame = crate::scene::anchors::attach_frame(&self.world, wearer_obj, root.attachment_point());
+                (!frame.hud).then_some(frame.rot)
+            })
+        } else {
+            None
+        };
+        let forward_flat = subject_front(rigged, wearer_rot, point_rot);
         let direction = if forward_flat.length_squared() > 1e-4 {
             forward_flat.normalize()
         } else {
@@ -688,9 +717,6 @@ impl App {
         // SL prim local -Z is down. A non-rigged attachment carries the
         // attachment point's rotation; a rigged mesh is posed by the
         // skeleton and never sees that rotation.
-        let wearer_rot = wearer
-            .and_then(|i| crate::scene::Scene::object_transform(&self.world, i, now, 0))
-            .map(|(_, q, _)| q);
         let up = subject_up(rigged, object_rot, wearer_rot);
         let mut up = up - facing * facing.dot(up);
         if up.length_squared() < 1e-6 {
@@ -931,5 +957,40 @@ mod tests {
         let up = subject_up(true, object, Some(wearer));
         assert!((up - Vec3::new(0.0, -1.0, 0.0)).length() < 1e-5, "{up:?}");
         assert!(subject_up(true, object, None) == Vec3::Z);
+    }
+
+    #[test]
+    fn a_rigged_photo_faces_the_attachment_points_joint() {
+        // The head turned a quarter turn right takes the garment's front with
+        // it, even though the avatar's root still faces +Y.
+        let point = Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2);
+        let front = subject_front(true, Some(Quat::IDENTITY), Some(point));
+        assert!((front - Vec3::X).length() < 1e-5, "{front:?}");
+    }
+
+    #[test]
+    fn the_joint_front_composes_with_the_avatars_facing() {
+        let quarter = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        let front = subject_front(true, Some(quarter), Some(quarter));
+        assert!((front - Vec3::NEG_Y).length() < 1e-5, "{front:?}");
+    }
+
+    #[test]
+    fn an_unknown_joint_or_a_non_rigged_prim_keeps_the_avatar_forward() {
+        let avatar = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        let point = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        let expected = Vec3::NEG_X;
+        let no_joint = subject_front(true, Some(avatar), None);
+        assert!((no_joint - expected).length() < 1e-5, "{no_joint:?}");
+        let non_rigged = subject_front(false, Some(avatar), Some(point));
+        assert!((non_rigged - expected).length() < 1e-5, "{non_rigged:?}");
+    }
+
+    #[test]
+    fn a_joint_pointing_straight_up_leaves_no_forward_to_follow() {
+        // The preview then falls back to the world's +Y, as before.
+        let point = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
+        let front = subject_front(true, Some(Quat::IDENTITY), Some(point));
+        assert!(front.length() < 1e-5, "{front:?}");
     }
 }
