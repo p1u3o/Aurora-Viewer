@@ -1267,6 +1267,7 @@ impl App {
             ui.add_space(4.0);
             let adjustable = !confirming && !saved && !restored;
             ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
                 let button = Vec2::new(50.0, 22.0);
                 use crate::ui::widgets::flat_button_sized;
                 if flat_button_sized(ui, p, aurora_i18n::tr!("ui-inventory-auto-image-front"), button).clicked() {
@@ -1281,7 +1282,7 @@ impl App {
                 if flat_button_sized(ui, p, aurora_i18n::tr!("ui-inventory-auto-image-right"), button).clicked() {
                     view = Some(90.0);
                 }
-                if flat_button_sized(ui, p, aurora_i18n::tr!("ui-inventory-auto-image-reset"), Vec2::new(64.0, 22.0)).clicked() {
+                if flat_button_sized(ui, p, aurora_i18n::tr!("ui-inventory-auto-image-reset"), Vec2::new(96.0, 22.0)).clicked() {
                     reset = true;
                 }
             });
