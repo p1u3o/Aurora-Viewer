@@ -4298,6 +4298,131 @@ impl Scene {
         self.palette_slots.get(owner).map(|s| *s * anim::PALETTE_JOINTS as u32)
     }
 
+    /// Posed world bounds of a rigged object's own geometry. `ObjGpu::wide`
+    /// is the wearer's whole-skeleton extent (the culling sphere), which is
+    /// useless for framing one garment: it makes the camera orbit the
+    /// avatar's root while the item hangs at its shoulder. This uses the
+    /// same joint boxes and palette matrices as the draw path
+    /// (`SyncContext::placement`), so the centre follows the pose.
+    pub fn posed_object_bounds(&self, world: &World, idx: usize) -> Option<(Vec3, f32)> {
+        let key = self.gpu.get(idx)?.geom?;
+        let geom = self.geom_ready(&key)?;
+        if geom.joint_bounds.is_empty() {
+            return None;
+        }
+        let (owner, owner_idx) = Self::skeleton_owner(world, idx)?;
+        let binds = match key {
+            GeomKey::Mesh { id, .. } => self.skin_binds.base_of(&id)?,
+            _ => return None,
+        };
+        let slot = *self.palette_slots.get(&owner)?;
+        let (pos, rot, _) = Self::object_transform(world, owner_idx, std::time::Instant::now(), 0)?;
+        let model = anchors::skeleton_model(world, &self.meshes, owner_idx, pos, rot, 1.0);
+        animesh::posed_bounds(&geom.joint_bounds, |j| {
+            let b = self.skin_binds.list().get(binds as usize + j as usize)?;
+            let p = self.palettes.get(slot as usize * anim::PALETTE_JOINTS + b.joint[0] as usize)?;
+            Some(model * Mat4::from_cols_array_2d(p) * Mat4::from_cols_array_2d(&b.inverse_bind))
+        })
+    }
+
+    /// Volume of a skinned joint's bind-space vertex box: the joint carrying
+    /// most of a rigged mesh is the one with the largest such box.
+    fn joint_extent(j: &animesh::JointBounds) -> f32 {
+        let s = j.max - j.min;
+        (s.x * s.y * s.z).abs()
+    }
+
+    /// Bones named for the torso or head, whose local +Y follows the body.
+    /// A limb bone's +Y runs along the limb, so a garment weighted mostly to
+    /// a leg or an arm still faces the way the avatar faces and must not
+    /// decide which joint describes its front.
+    fn joint_faces_forward(name: &str) -> bool {
+        let n = name.to_ascii_uppercase();
+        const LIMB: &[&str] = &[
+            "LEG", "ARM", "FOOT", "HAND", "KNEE", "WRIST", "ELBOW", "SHOULDER", "CLAVICLE", "HIP", "TOE",
+        ];
+        if LIMB.iter().any(|part| n.contains(part)) {
+            return false;
+        }
+        const BODY: &[&str] = &[
+            "PELVIS", "TORSO", "CHEST", "SPINE", "BELLY", "BACK", "HEAD", "NECK", "SKULL", "BUTT", "WAIST",
+        ];
+        BODY.iter().any(|part| n.contains(part))
+    }
+
+    /// Bind-space extent and posed world axis of the mesh's most useful
+    /// skinned joint: the largest vertex box whose bone belongs to the torso
+    /// or head. A rigged item can hang from a generic point while its geometry
+    /// is weighted to a foot, a leg or a hand; those limb bones point along
+    /// the limb, so the caller ignores them and uses the wearer's bind front
+    /// for garments like shorts. Reads the same joint boxes and palette
+    /// matrices as `posed_object_bounds`.
+    pub fn posed_joint_front(&self, world: &World, idx: usize) -> Option<(f32, Vec3)> {
+        let key = self.gpu.get(idx)?.geom?;
+        let geom = self.geom_ready(&key)?;
+        let meta = match key {
+            GeomKey::Mesh { id, .. } => self.meshes.meta(&id),
+            _ => None,
+        };
+        let names = meta
+            .as_ref()
+            .and_then(|meta| meta.skin.as_ref())
+            .map(|skin| skin.joint_names.as_slice());
+        let dominant = geom
+            .joint_bounds
+            .iter()
+            .filter(|j| {
+                names
+                    .and_then(|names| names.get(j.joint as usize))
+                    .is_some_and(|name| Self::joint_faces_forward(name))
+            })
+            .max_by(|a, b| Self::joint_extent(a).total_cmp(&Self::joint_extent(b)))?;
+        let (_, q, _) = self.joint_matrix(world, idx, dominant.joint)?.to_scale_rotation_translation();
+        let front = q * Vec3::Y;
+        (front.is_finite() && front.length_squared() > 1e-6).then_some((Self::joint_extent(dominant), front))
+    }
+
+    /// The matrix that places a mesh's bind-space point in the world through
+    /// one of its skinned joints, as the draw path does.
+    fn joint_matrix(&self, world: &World, idx: usize, joint: u8) -> Option<Mat4> {
+        let key = self.gpu.get(idx)?.geom?;
+        let binds = match key {
+            GeomKey::Mesh { id, .. } => self.skin_binds.base_of(&id)?,
+            _ => return None,
+        };
+        let (owner, owner_idx) = Self::skeleton_owner(world, idx)?;
+        let slot = *self.palette_slots.get(&owner)?;
+        let (pos, rot, _) = Self::object_transform(world, owner_idx, Instant::now(), 0)?;
+        let model = anchors::skeleton_model(world, &self.meshes, owner_idx, pos, rot, 1.0);
+        let bind = self.skin_binds.list().get(binds as usize + joint as usize)?;
+        let p = self.palettes.get(slot as usize * anim::PALETTE_JOINTS + bind.joint[0] as usize)?;
+        Some(model * Mat4::from_cols_array_2d(p) * Mat4::from_cols_array_2d(&bind.inverse_bind))
+    }
+
+    /// World centre of a rigged mesh's own geometry. The union of skinned
+    /// joint boxes used for culling is skewed by wide, heavily overlapping
+    /// boxes, which leaves a garment off centre in its picture; the mesh's
+    /// bind-space centre posed by its largest joint follows the visible mesh.
+    pub fn posed_subject_center(&self, world: &World, idx: usize) -> Option<Vec3> {
+        let geom = self.geom_ready(&self.gpu.get(idx)?.geom?)?;
+        let joint = geom
+            .joint_bounds
+            .iter()
+            .max_by(|a, b| Self::joint_extent(a).total_cmp(&Self::joint_extent(b)))?
+            .joint;
+        let center = self.joint_matrix(world, idx, joint)?.transform_point3((geom.min + geom.max) * 0.5);
+        center.is_finite().then_some(center)
+    }
+
+    /// Half the diagonal of a mesh's bind-space box. The union of skinned
+    /// joint boxes is much larger than the garment for densely weighted
+    /// meshes, so the photo's framing uses this as an upper bound on size.
+    pub fn bind_radius(&self, idx: usize) -> Option<f32> {
+        let key = self.gpu.get(idx)?.geom?;
+        let geom = self.geom_ready(&key)?;
+        Some((geom.max - geom.min).length() * 0.5)
+    }
+
     /// Palette base (first matrix index) for a skeleton owner.
     fn palette_base(&mut self, owner: Uuid) -> u32 {
         if let Some(s) = self.palette_slots.get(&owner) {

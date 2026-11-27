@@ -299,6 +299,10 @@ pub enum InvAction {
         item: Uuid,
         input: thumbnail::Input,
     },
+    /// Take an automatic picture of an attachable item.
+    AutoImage(Uuid),
+    /// Compose a folder's picture from its children's pictures.
+    FolderImage(Uuid),
     /// An action of the dual-panel layout's right pane (`DUAL_PANE`), or an
     /// inventory change of a folder window (its id): the app answers in that
     /// pane (messages, documents, created items).

@@ -83,6 +83,16 @@ impl ThumbnailUi {
         }
         let asset = image(&world.inventory, item);
         let ready = self.pending.is_none() && !mutation_pending && rules::mutable(&world.inventory, item);
+        // The automatic picture lives here, after Image on the item's menu:
+        // only an attachable object or a system wearable can be photographed
+        // (the same rule the session enforces when it opens).
+        let auto_ok = ready
+            && world
+                .inventory
+                .items
+                .get(&item)
+                .is_some_and(|it| crate::app::inventory_auto_image::auto_image_eligible(it.asset_type));
+        let folder_ok = ready && world.inventory.folders.contains_key(&item);
         let position = ctx.content_rect().center() - egui::vec2(360.0, 200.0);
         let mut open = true;
         let mut caption = String::new();
@@ -124,6 +134,28 @@ impl ThumbnailUi {
                 ) {
                     self.photo_open = true;
                     self.request(item, Input::Capture, actions);
+                }
+                if toolbar_button(
+                    ui,
+                    p,
+                    "wand",
+                    aurora_i18n::tr!("ui-inventory-auto-image-command"),
+                    auto_ok,
+                    &mut caption,
+                ) {
+                    actions.push(InvAction::AutoImage(item));
+                }
+                if folder_ok
+                    && toolbar_button(
+                        ui,
+                        p,
+                        "wand",
+                        aurora_i18n::tr!("ui-inventory-auto-image-folder"),
+                        ready,
+                        &mut caption,
+                    )
+                {
+                    actions.push(InvAction::FolderImage(item));
                 }
                 if toolbar_button(
                     ui,

@@ -38,7 +38,7 @@ impl App {
         self.photo_isolate_demo(renderer);
         // (the outfit's auto portrait isolates as the photo mode does, and
         // so does the Director, for the film)
-        let open = self.panels.snapshot || self.outfit_portrait_studio() || self.panels.director;
+        let open = self.panels.snapshot || self.outfit_portrait_studio() || self.inventory_auto_image_isolates() || self.panels.director;
         let agent = self.world.agent_id;
         let iso = &mut self.world.photo_isolation;
         iso.set_own(agent);

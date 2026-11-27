@@ -29,6 +29,14 @@ pub enum Mode {
     /// Everything but the other avatars (and what they wear): the outfit
     /// portrait in its region (`snapshot::portrait`).
     OthersHidden,
+    /// One worn attachment alone (`chosen` holds its root prim): the auto
+    /// image of an attachable inventory item. The wearer's body stays
+    /// [`View::Unseen`] — it is a skeleton owner and a light caster, and a
+    /// rigged garment is drawn through its pose. Everything else is gone.
+    Attachment,
+    /// Our avatar's body alone, with no wearable objects: a system wearable
+    /// photographed from its locally composed bakes.
+    AvatarOnly,
 }
 
 /// The isolation of the photo session.
@@ -105,8 +113,8 @@ impl Isolation {
         }
         match self.mode {
             Mode::Off => true,
-            Mode::Own => *root == self.own,
-            Mode::Chosen => self.chosen.contains(root),
+            Mode::Own | Mode::AvatarOnly => *root == self.own,
+            Mode::Chosen | Mode::Attachment => self.chosen.contains(root),
             Mode::OthersHidden => !avatar || *root == self.own,
         }
     }
@@ -163,7 +171,7 @@ impl Isolation {
     pub fn set_own(&mut self, own: Uuid) {
         if self.own != own {
             self.own = own;
-            if self.applied() && matches!(self.mode, Mode::Own | Mode::OthersHidden) {
+            if self.applied() && matches!(self.mode, Mode::Own | Mode::OthersHidden | Mode::Attachment | Mode::AvatarOnly) {
                 self.bump();
             }
         }
@@ -197,7 +205,7 @@ impl Isolation {
     }
 
     fn choice_changed(&mut self) {
-        if self.applied() && self.mode == Mode::Chosen {
+        if self.applied() && matches!(self.mode, Mode::Chosen | Mode::Attachment) {
             self.bump();
         }
     }
@@ -212,6 +220,20 @@ impl Isolation {
 /// isolated) or an object whose parent is not known yet.
 pub fn root_of(world: &crate::world::World, index: usize) -> Option<(usize, Uuid)> {
     root_including_huds(world, index, false)
+}
+
+/// Whether an object shows the avatar's bakes on mesh (BOM): one of its faces
+/// carries a "use baked texture" id instead of its own asset. In the wearable
+/// picture these are the only worn meshes kept — they are the mannequin the
+/// composed bake is drawn on; an ordinary mesh attachment would cover it.
+fn uses_baked_texture(world: &crate::world::World, index: usize) -> bool {
+    world.objects.get(index).is_some_and(|o| {
+        o.te.as_ref().is_some_and(|te| {
+            te.faces
+                .iter()
+                .any(|face| crate::scene::avatar::bake_slot_for(&face.texture).is_some())
+        })
+    })
 }
 
 fn root_including_huds(world: &crate::world::World, index: usize, huds: bool) -> Option<(usize, Uuid)> {
@@ -231,6 +253,41 @@ fn root_including_huds(world: &crate::world::World, index: usize, huds: bool) ->
                 .is_some_and(|p| world.objects.get(p).is_some_and(|a| a.is_avatar()))
         {
             return None;
+        }
+        index = world.objects.parent_of(object)?;
+    }
+    None
+}
+
+/// The worn attachment a drawn face belongs to: climb to the first child of
+/// an avatar. HUD points have no place here (they are screen space, never
+/// isolated). A seated avatar's furniture is not an attachment either.
+pub fn attachment_root_of(world: &crate::world::World, index: usize) -> Option<(usize, Uuid)> {
+    let mut index = index;
+    for _ in 0..64 {
+        let object = world.objects.get(index)?;
+        if object.is_avatar() {
+            return None;
+        }
+        let parent = world.objects.parent_of(object)?;
+        if world.objects.get(parent).is_some_and(|o| o.is_avatar()) && object.state != 0 {
+            if (31..=38).contains(&object.attachment_point()) {
+                return None;
+            }
+            return Some((index, object.full_id));
+        }
+        index = parent;
+    }
+    None
+}
+
+/// The avatar that wears the object at `index`, if any.
+pub fn wearer_of(world: &crate::world::World, index: usize) -> Option<(usize, Uuid)> {
+    let mut index = index;
+    for _ in 0..64 {
+        let object = world.objects.get(index)?;
+        if object.is_avatar() {
+            return Some((index, object.full_id));
         }
         index = world.objects.parent_of(object)?;
     }
@@ -312,6 +369,26 @@ pub fn object_view(world: &crate::world::World, index: usize) -> View {
     if !iso.hides() {
         return View::Drawn;
     }
+    if iso.mode == Mode::AvatarOnly && iso.applied() {
+        // The avatar's own body is the mannequin. Anything worn by it is kept
+        // only when it shows a bake on mesh: an ordinary mesh shirt or hair
+        // would cover the composed layer. `root_of` cannot decide this — it
+        // returns the avatar for ordinary attachment points and None for HUD
+        // ones, so walk the parent chain instead.
+        let own = world.agent_id;
+        if world.objects.get(index).is_some_and(|o| o.full_id == own) {
+            return View::Drawn;
+        }
+        let worn = root_including_huds(world, index, true).is_some_and(|(_, root)| root == own);
+        return if worn && uses_baked_texture(world, index) {
+            View::Drawn
+        } else {
+            View::Gone
+        };
+    }
+    if iso.mode == Mode::Attachment && iso.applied() {
+        return attachment_view(world, index, iso);
+    }
     let Some((root_index, root)) = root_of(world, index) else {
         return View::Drawn;
     };
@@ -323,6 +400,36 @@ pub fn object_view(world: &crate::world::World, index: usize) -> View {
         (true, _) => View::Drawn,
         (false, true) => View::Gone,
         (false, false) => View::Unseen,
+    }
+}
+
+/// One worn attachment alone: its linkset is drawn, every other object and
+/// avatar is gone. The wearer's body is the one exception — it is [`View::Unseen`]
+/// rather than gone, so its skeleton still poses a rigged garment and its
+/// cull state stays FULL (a hidden avatar stops being ranked in full detail,
+/// and the attachment is then dropped by the avatar-state cull or baked into
+/// an impostor).
+fn attachment_view(world: &crate::world::World, index: usize, iso: &Isolation) -> View {
+    let Some((root_index, root)) = root_of(world, index) else {
+        return View::Drawn; // a HUD point: never isolated
+    };
+    let Some((_, attachment_root)) = attachment_root_of(world, index) else {
+        if world.objects.get(root_index).is_some_and(|o| o.is_avatar()) {
+            let wearer = iso.chosen().iter().any(|target| {
+                world
+                    .objects
+                    .index_of_uuid(target)
+                    .and_then(|i| wearer_of(world, i))
+                    .is_some_and(|(_, id)| id == root)
+            });
+            return if wearer { View::Unseen } else { View::Gone };
+        }
+        return View::Gone;
+    };
+    if iso.chosen().contains(&attachment_root) {
+        View::Drawn
+    } else {
+        View::Gone
     }
 }
 
@@ -436,6 +543,78 @@ mod tests {
         for (_, avatar, view) in views(&world) {
             assert_eq!(view, if avatar { View::Gone } else { View::Drawn });
         }
+    }
+
+    #[test]
+    fn one_worn_attachment_alone_hides_the_body_and_everything_else() {
+        let mut world = crate::world::World::new(std::sync::Arc::new(crate::scene::avatar::AvatarLibrary::load()));
+        for event in crate::demo::events().into_iter().chain(crate::demo::hud::events()) {
+            world.apply(event);
+        }
+        for event in crate::demo::worn::events() {
+            world.apply(event);
+        }
+        let root = crate::demo::worn::root().full_id;
+        let root_index = world.objects.index_of_uuid(&root).expect("backpack root");
+        let local_id = world.objects.get(root_index).expect("backpack").key.local_id;
+        let child_index = world
+            .objects
+            .iter()
+            .find(|(_, o)| o.parent_id == local_id)
+            .map(|(i, _)| i)
+            .expect("backpack child");
+        let agent_index = world.objects.index_of_uuid(&world.agent_id).expect("agent");
+        let other_avatar = world
+            .objects
+            .avatars()
+            .find(|(_, o)| o.full_id != world.agent_id)
+            .map(|(i, _)| i)
+            .expect("another avatar");
+        let region_object = world
+            .objects
+            .iter()
+            .find(|(i, o)| !o.is_avatar() && o.parent_id == 0 && *i != root_index)
+            .map(|(i, _)| i)
+            .expect("region object");
+        let hud = world
+            .objects
+            .index_of_uuid(&crate::demo::hud::object(31, false).full_id)
+            .expect("own HUD");
+
+        world.photo_isolation.set_open(true);
+        world.photo_isolation.set_mode(Mode::Attachment);
+        let version = world.photo_isolation.version;
+        world.photo_isolation.toggle(root);
+        assert!(world.photo_isolation.version > version, "the choice re-flags the scene");
+        assert_eq!(object_view(&world, root_index), View::Drawn);
+        assert_eq!(object_view(&world, child_index), View::Drawn, "a linkset child comes with it");
+        assert_eq!(object_view(&world, agent_index), View::Unseen, "the body poses the rig");
+        assert_eq!(object_view(&world, other_avatar), View::Gone);
+        assert_eq!(object_view(&world, region_object), View::Gone);
+        assert_eq!(object_view(&world, hud), View::Drawn, "a HUD is never isolated");
+    }
+
+    #[test]
+    fn the_wearable_picture_keeps_only_the_bom_meshes() {
+        let mut world = crate::world::World::new(std::sync::Arc::new(crate::scene::avatar::AvatarLibrary::load()));
+        for event in crate::demo::events().into_iter().chain(crate::demo::worn::events()) {
+            world.apply(event);
+        }
+        let root = crate::demo::worn::root().full_id;
+        let index = world.objects.index_of_uuid(&root).expect("backpack root");
+        world.photo_isolation.set_open(true);
+        world.photo_isolation.set_mode(Mode::AvatarOnly);
+        assert_eq!(object_view(&world, index), View::Gone, "an ordinary worn mesh covers the picture");
+
+        let bom = crate::scene::avatar::BAKES[0].2;
+        let face = aurora_prim::te::TextureFace {
+            texture: bom,
+            ..Default::default()
+        };
+        if let Some(o) = world.objects.get_mut(index) {
+            o.te = Some(std::sync::Arc::new(aurora_prim::TextureEntry { faces: vec![face] }));
+        }
+        assert_eq!(object_view(&world, index), View::Drawn, "a BOM mesh is the mannequin");
     }
 
     #[test]

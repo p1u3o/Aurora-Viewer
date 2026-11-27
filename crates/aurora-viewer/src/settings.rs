@@ -32,6 +32,17 @@ pub enum FloatingTextBackground {
     All,
 }
 
+/// Backdrop of a picture made by the inventory's automatic thumbnail.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AutoImageBackground {
+    /// The Legacy Viewer's neutral grey, as before.
+    #[default]
+    Grey,
+    White,
+    /// Keep the cut-out's alpha instead of flattening it.
+    Transparent,
+}
+
 /// A blocked resident's nearby chat (FSShowMutedChatHistory, fsfloaternearbychat.cpp):
 /// hidden as in the Legacy Viewer by default; or kept in the nearby chat's
 /// history only, either folded into one "n messages hidden" row that opens
@@ -622,6 +633,10 @@ pub struct Settings {
     pub show_stand_fly_panel: bool,
     /// ShowHUDAttachments, enabled by default in Firestorm.
     pub show_huds: bool,
+    /// Pan the automatic thumbnail camera onto the item's visible centre.
+    pub auto_image_centre: bool,
+    /// Backdrop of the item's automatic thumbnail.
+    pub auto_image_background: AutoImageBackground,
     /// sunbeacon / moonbeacon: a line from the avatar towards the sun or
     /// the moon ("Show Beacon" of the Sun & Moon tab).
     pub sun_beacon: bool,
@@ -2503,6 +2518,8 @@ impl Default for Settings {
             show_bug_report: true,
             show_stand_fly_panel: true,
             show_huds: true,
+            auto_image_centre: true,
+            auto_image_background: AutoImageBackground::Grey,
             sun_beacon: false,
             moon_beacon: false,
             beacons: Default::default(),

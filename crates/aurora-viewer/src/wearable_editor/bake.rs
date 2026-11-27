@@ -330,6 +330,33 @@ pub fn compose(
     global: &HashMap<i32, f32>,
     images: &HashMap<Uuid, Arc<Image>>,
 ) -> Result<Vec<u8>, String> {
+    compose_impl(defs, region, size, worn, global, images, false)
+}
+
+/// The same composition on a white base, using only the target's own
+/// texture layers: a system item photographed without changing the avatar's
+/// outfit. Default layers (skin, shape tints) are left out; a translucent
+/// target blends over white instead of over black.
+pub fn compose_neutral(
+    defs: &Definitions,
+    region: &Region,
+    size: u32,
+    worn: &[Worn],
+    global: &HashMap<i32, f32>,
+    images: &HashMap<Uuid, Arc<Image>>,
+) -> Result<Vec<u8>, String> {
+    compose_impl(defs, region, size, worn, global, images, true)
+}
+
+fn compose_impl(
+    defs: &Definitions,
+    region: &Region,
+    size: u32,
+    worn: &[Worn],
+    global: &HashMap<i32, f32>,
+    images: &HashMap<Uuid, Arc<Image>>,
+    neutral: bool,
+) -> Result<Vec<u8>, String> {
     let mut output = vec![0u8; (size * size * 4) as usize];
     // Publishing a bake UUID also enables the system skirt mesh. An empty
     // universal's optional skirt slot must therefore remain transparent;
@@ -347,8 +374,16 @@ pub fn compose(
     {
         return Ok(output);
     }
-    output.par_chunks_exact_mut(4).for_each(|p| p[3] = 255);
-    for layer in region.layers.iter().filter(|layer| !layer.visibility) {
+    if neutral {
+        output.fill(255);
+    } else {
+        output.par_chunks_exact_mut(4).for_each(|p| p[3] = 255);
+    }
+    for layer in region
+        .layers
+        .iter()
+        .filter(|layer| !layer.visibility && (!neutral || layer.local.is_some()))
+    {
         let instances: Vec<Option<&Worn>> = if let Some((_, kind)) = layer.local {
             worn.iter().filter(|w| w.value.kind == kind).map(Some).collect()
         } else {
@@ -437,7 +472,11 @@ pub fn compose(
             });
         }
     }
-    let visibility: Vec<_> = region.layers.iter().filter(|layer| layer.visibility).collect();
+    let visibility: Vec<_> = region
+        .layers
+        .iter()
+        .filter(|layer| layer.visibility && (!neutral || layer.local.is_some()))
+        .collect();
     if region.clear_alpha || !visibility.is_empty() {
         output.par_chunks_exact_mut(4).for_each(|p| p[3] = 255);
     }

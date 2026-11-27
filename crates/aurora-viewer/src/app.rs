@@ -111,7 +111,9 @@ mod imports;
 mod inspect;
 mod interest_list;
 mod inventory;
+pub(crate) mod inventory_auto_image;
 mod inventory_drag;
+mod inventory_folder_image;
 mod inventory_hover;
 mod inventory_thumbnail;
 mod joystick;
@@ -1325,6 +1327,8 @@ pub struct App {
     inventory_images: inventory_thumbnail::ImageJobs,
     /// The outfit's auto portrait or square photo mode under way.
     outfit_portrait: Option<outfit_portrait::Session>,
+    /// An attachable inventory item's automatic picture under way.
+    inventory_auto_image: Option<inventory_auto_image::Session>,
     /// The outfits' batch portraits, from their window's opening.
     outfit_batch: Option<outfit_batch::Batch>,
     appearance_ui: ui::appearance::AppearanceUi,
@@ -2510,6 +2514,7 @@ impl App {
             demo_script_experiences: Default::default(),
             inventory_images: Default::default(),
             outfit_portrait: None,
+            inventory_auto_image: None,
             outfit_batch: None,
             appearance_ui,
             shape_ui: Default::default(),
@@ -4362,6 +4367,13 @@ impl App {
         }
         if let NetEvent::InventoryPreview { item, asset, result } = &ev {
             self.local_bakes.loaded(*item, *asset, result);
+            // This block always returns below, so the auto-image wearable
+            // reply has to be claimed here, before the editors and the
+            // generic preview handler consume it.
+            if self.wearable_photo_pending(*item) {
+                self.wearable_loaded(*item, result.clone());
+                return;
+            }
         }
         if let NetEvent::InventoryPreview { item, asset, result } = ev {
             self.toolbar_notecard_preview(item, asset, &result);
@@ -4865,9 +4877,12 @@ impl App {
             }
             NetEvent::TeleportLocal { .. } | NetEvent::TeleportStarted { .. } => {
                 self.vr_rebase_after_travel();
+                // an item worn for its picture is put back before we travel
+                self.close_inventory_auto_image();
             }
             NetEvent::TeleportFinished { .. } => {
                 self.vr_rebase_after_travel();
+                self.close_inventory_auto_image();
                 self.stop_local_typing();
                 // (TeleportFinish is the arrival in another region)
                 self.start_draw_stepping("teleport");
@@ -7592,6 +7607,8 @@ impl App {
         if !self.exit_prompt.confirm(action, Instant::now()) {
             return;
         }
+        // never leave the grid with an item worn only for a picture
+        self.close_inventory_auto_image();
         if action == ui::exit::Action::Quit {
             self.hide_windows_for_exit();
         }
@@ -7609,6 +7626,7 @@ impl App {
     /// Log out, save the window, layout, inventory cache and settings, exit.
     fn shutdown(&mut self, event_loop: &ActiveEventLoop) {
         self.hide_windows_for_exit();
+        self.close_inventory_auto_image();
         self.instances.leave();
         // closed while the graphics card still holds a frame, from its
         // notice or not: reported, and the next start offers the safe
@@ -11732,6 +11750,8 @@ impl App {
         self.capture_360_frame(&mut gfx.renderer);
         self.outfit_batch_frame();
         self.outfit_portrait_frame(&gfx.renderer);
+        self.inventory_auto_image_frame(&mut gfx.renderer);
+        self.folder_image_frame(&mut gfx.renderer);
         self.photo_update(&mut gfx.renderer);
         self.studio_photo_frame(&mut gfx.renderer);
         self.viewfinder_frame(&mut gfx.renderer);
@@ -12314,6 +12334,7 @@ impl App {
                 .pose_layers_with_base(&self.world, |id| self.scene.skeleton_base(&id));
             self.scene.poser = poser;
             self.outfit_portrait_pose();
+            self.inventory_auto_image_pose();
             self.ik_editor.tick_pose_storage(&self.scene.jobs, &self.egui_ctx, &self.world);
             if !self.scene.poser.is_empty() {
                 self.scene.ik_edit = Default::default();
@@ -14592,6 +14613,40 @@ impl App {
             let item = uuid::Uuid::from_u128(8101);
             self.inventory_ui.thumbnail.pending = Some(request);
             self.inventory_image_action(request, item, ui::inventory::thumbnail::Input::Capture);
+        }
+        // AURORA_DEMO_INVENTORY=auto-image: the whole flow without a grid —
+        // the demo's worn backpack stands in for the item being attached.
+        if self.demo && std::env::var("AURORA_DEMO_INVENTORY").is_ok_and(|v| v == "auto-image") {
+            match self.frame_count {
+                1500 => self.open_inventory_auto_image(uuid::Uuid::from_u128(8100)),
+                1700 => self.begin_inventory_auto_image(),
+                1900 => self.inventory_auto_image_shoot(),
+                2100 => self.inventory_auto_image_use(),
+                _ => {}
+            }
+        }
+        // AURORA_DEMO_INVENTORY=auto-image-wearable: a system shirt on a white
+        // avatar, with no simulator and no change to the real outfit.
+        if self.demo && std::env::var("AURORA_DEMO_INVENTORY").is_ok_and(|v| v == "auto-image-wearable") {
+            const SHIRT: uuid::Uuid = uuid::Uuid::from_u128(84_000);
+            if self.frame_count == 1500 {
+                self.world.inventory.add_items(vec![aurora_net::inventory::InvItem {
+                    id: SHIRT,
+                    parent: self.world.inventory.root,
+                    name: "Demo shirt".into(),
+                    asset_type: 5,
+                    inv_type: 18,
+                    flags: 4,
+                    owner: self.world.agent_id,
+                    ..Default::default()
+                }]);
+                self.open_inventory_auto_image(SHIRT);
+            }
+            match self.frame_count {
+                1700 | 1900 => self.inventory_auto_image_shoot(),
+                2100 => self.inventory_auto_image_use(),
+                _ => {}
+            }
         }
         if self.demo
             && let Some(big) = crate::world::inventory::demo::big()
@@ -21204,6 +21259,7 @@ impl App {
                 self.panels.appearance = open;
                 self.wearable_favorites_window(&ctx, &p);
                 self.outfit_portrait_window(&ctx, &p);
+                self.inventory_auto_image_window(&ctx, &p);
                 self.outfit_batch_window(&ctx, &p);
                 self.update_demo_shape_mesh();
                 self.shape_ui.update(&mut self.world, &self.scene, &ctx);
