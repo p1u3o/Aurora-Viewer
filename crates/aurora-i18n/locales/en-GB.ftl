@@ -558,6 +558,7 @@ build-place-tip = Then click a surface or the ground: the selection goes against
 build-place-offset-tip = How far off the surface it goes (metres, along the surface’s normal); negative sinks it in.
 
 script-color-hint = Possible colour: click to open the colour picker.
+script-preferences-inlays-hint = The parameter's name in the gap before each argument of a call the catalogue knows, as a pill (Aurora's own: the Legacy Viewer writes none).
 
 radar-opt-color-names = Colour names by distance
 
@@ -852,5 +853,3 @@ notecard-lsl-demo =
     { "    }" }
     { "}" }
     ```
-
-script-preferences-inlays-hint = The parameter's name in the gap before each argument of a call the catalogue knows, as a pill (Aurora's own: the Legacy Viewer writes none).

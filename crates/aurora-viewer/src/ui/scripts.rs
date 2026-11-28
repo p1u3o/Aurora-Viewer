@@ -21,6 +21,8 @@ use uuid::Uuid;
 
 /// The lines a window's Console keeps: a script that says a line a frame
 /// cannot grow it without end.
+const CONSOLE_LINES: usize = 200;
+
 /// Two documents of the list, mutably, in the order given: the two panes of a
 /// split window.
 fn two_mut(documents: &mut [Editor], a: usize, b: usize) -> (&mut Editor, &mut Editor) {
@@ -35,6 +37,7 @@ fn two_mut(documents: &mut [Editor], a: usize, b: usize) -> (&mut Editor, &mut E
 }
 
 pub mod backup;
+mod check;
 mod colors;
 mod complete;
 mod create;
@@ -52,6 +55,7 @@ mod format;
 mod indent;
 mod inlays;
 mod linkset;
+mod lints;
 mod minimap;
 mod navigate;
 mod outline;
@@ -80,6 +84,7 @@ pub use view::BarChange;
 pub const INVENTORY_WINDOW: Uuid = Uuid::from_u128(0x5C01_9C0D_0000_0000_0000_0000_0000_0001);
 
 pub enum Action {
+    Debug,
     /// Rename only the inventory/task item metadata, never the source text.
     Rename {
         target: ScriptTarget,
@@ -90,6 +95,12 @@ pub enum Action {
         name: String,
     },
     Paste(ScriptTarget),
+    /// Read a script's text for an object-wide search or check, no document
+    /// opened: the app answers `loaded` with that request.
+    ReadScript {
+        target: ScriptTarget,
+        request: Uuid,
+    },
     SettingsChanged,
     Save {
         request: Uuid,
@@ -193,6 +204,64 @@ pub struct ScriptStats {
     pub total: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConsoleLine {
+    pub time: std::time::SystemTime,
+    pub from: String,
+    pub text: String,
+    /// What it is: what the object said to its owner, or the script's own
+    /// debug channel (a run-time error, a warning), drawn in the chat's
+    /// script-error colour.
+    pub debug: bool,
+    /// The script the line names, when it is the editor's own word or a
+    /// finding: a click brings it to the front, at the finding's line and
+    /// column (as the compiler counts them).
+    pub target: Option<ScriptTarget>,
+    pub line: Option<(usize, usize)>,
+}
+
+/// The Search tab's query, replacement and options for one window.
+struct SearchState {
+    query: String,
+    replacement: String,
+    /// Case-insensitive, as the Find panel is by default.
+    insensitive: bool,
+    whole_words: bool,
+    /// The replacement row is shown: the field and Replace all under the query.
+    replace_open: bool,
+}
+
+impl Default for SearchState {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            replacement: String::new(),
+            insensitive: true,
+            whole_words: false,
+            replace_open: false,
+        }
+    }
+}
+
+/// What the editor sees in one window's object: the rows it shows, and what
+/// they were made of, so that they are worked out again only when a text or
+/// the object's list changes.
+#[derive(Default)]
+struct Check {
+    /// The object's scripts and their texts, hashed.
+    signature: u64,
+    /// The rows: the script, its name, the line and what is wrong.
+    rows: Vec<(ScriptTarget, String, usize, String)>,
+}
+
+/// The References tab of one window: the name it is renaming, and the new name
+/// the reader is typing.
+#[derive(Default)]
+struct ReferenceState {
+    word: String,
+    name: String,
+}
+
 struct PendingSave {
     request: Uuid,
     source: String,
@@ -231,6 +300,9 @@ pub struct Editor {
     lua_scripts: bool,
     running: Option<bool>,
     status: String,
+    /// The status last said in the window's console: the words that used to
+    /// stand under the source are said there, once per change.
+    said: Option<String>,
     /// When this script was last saved in this session, for the bar to say so.
     pub(super) saved_at: Option<std::time::SystemTime>,
     errors: Vec<String>,
@@ -312,18 +384,20 @@ impl Editor {
         use std::hash::{Hash, Hasher};
         let lua = self.lua();
         let lang = self.lang();
+        let linter = self.processor_settings.linter;
         let key = {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             self.text_key(stamp).hash(&mut hasher);
             self.name.hash(&mut hasher);
             lua.hash(&mut hasher);
+            linter.hash(&mut hasher);
             hasher.finish()
         };
         if self.tools.analysis.0 != Some(key) {
             let made = if self.tools.processed {
-                view::Analysis::make(&self.tools.processed_source, lang)
+                view::Analysis::make(&self.tools.processed_source, &self.source, &self.name, lang, linter)
             } else {
-                view::Analysis::make(&self.source, lang)
+                view::Analysis::make(&self.source, &self.source, &self.name, lang, linter)
             };
             self.tools.analysis = (Some(key), made);
         }
@@ -394,6 +468,90 @@ impl Editor {
     }
 }
 
+/// The places `query` is found in a text, as the Search tab matches them (the
+/// same case and whole-word options), in the text's characters.
+fn search_ranges(source: &str, query: &str, insensitive: bool, whole_words: bool) -> Vec<std::ops::Range<usize>> {
+    let needle = query.trim();
+    if needle.chars().count() < 2 {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    let mut start = 0;
+    for line in source.split('\n') {
+        for range in editing::matches_filtered(line, needle, insensitive, whole_words) {
+            found.push(start + range.start..start + range.end);
+        }
+        start += line.chars().count() + 1;
+    }
+    found
+}
+
+/// Replaces every place the Search tab would list in the window's open,
+/// editable scripts, the last place first so that the earlier ones stay true;
+/// each document keeps its own undo step.
+fn replace_search(
+    ctx: &egui::Context,
+    documents: &mut [Editor],
+    root: Uuid,
+    query: &str,
+    replacement: &str,
+    insensitive: bool,
+    whole_words: bool,
+) -> usize {
+    let mut count = 0;
+    for e in documents.iter_mut() {
+        if e.closed || e.linkset != root || !e.loaded || !e.can_edit || e.tools.processed || e.colors.active() {
+            continue;
+        }
+        let ranges = search_ranges(&e.source, query, insensitive, whole_words);
+        let id = egui::Id::unique((&Editors::document_id(e), "source_text"));
+        for range in ranges.into_iter().rev() {
+            if editing::replace(ctx, id, &mut e.source, range, replacement) {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+/// Renames every reference of the References tab: each name is replaced in its
+/// own document, the last place first so that the ones before it stay true, as
+/// an edit each document's undoer knows.
+/// Renames `name` at every hit, in the scripts that may be edited, and says
+/// how many it renamed: a script opened read-only (someone else's, or no
+/// modify) is left as it is, as its own text is.
+fn rename_references(ctx: &egui::Context, documents: &mut [Editor], hits: &[navigate::Reference], name: &str) -> usize {
+    let new = name.trim();
+    if new.is_empty() || !new.chars().all(|ch| ch == '_' || ch.is_alphanumeric()) {
+        return 0;
+    }
+    let mut renamed = 0;
+    for hit in hits.iter().rev() {
+        let Some(e) = documents.get_mut(hit.document) else {
+            continue;
+        };
+        if !e.can_edit {
+            continue;
+        }
+        let id = egui::Id::unique((&Editors::document_id(e), "source_text"));
+        if editing::replace(ctx, id, &mut e.source, hit.range.clone(), new) {
+            renamed += 1;
+        }
+    }
+    renamed
+}
+
+/// The script errors' routing, kept in the main settings (Preferences ›
+/// Chat, where the world's debug window reads it): the app hands the values in
+/// before the windows draw and takes them back after, so that the editor's
+/// preferences can show them beside Owner say.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ErrorRouting {
+    pub in_chat: bool,
+    pub to_channel: bool,
+    pub channel: i32,
+}
+
 /// The language a script is written in: what its scanners read it as, and what
 /// its catalogue names (`llSay` or `ll.Say`). The Luau VM runs Lua.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -434,6 +592,9 @@ pub struct StageView {
 #[derive(Default)]
 pub struct Editors {
     pub documents: Vec<Editor>,
+    /// The errors' routing, as the preferences last changed it (the app
+    /// writes it into the main settings).
+    pub errors: ErrorRouting,
     /// The layout the open scripts were put in, as the preferences last said:
     /// one window per script, or the shared windows. The app watches it, so a
     /// change moves every open script to the window it belongs in now.
@@ -443,10 +604,43 @@ pub struct Editors {
     active: std::collections::HashMap<Uuid, ScriptTarget>,
     /// The filter of each linkset window's tree, by its root.
     filters: std::collections::HashMap<Uuid, String>,
+    /// Whether a window's Problems dock lists every script of the linkset,
+    /// by its root.
+    problems_all: std::collections::HashMap<Uuid, bool>,
+    /// Whether the window's Console lists what every script of the object said
+    /// (`llOwnerSay` and the findings of a save), or only what the script in
+    /// front did: by the window's root. The console starts with all of them.
+    console_all: std::collections::HashMap<Uuid, bool>,
+    /// What each window's Console is narrowed to, by its root: empty for all
+    /// of its lines.
+    console_filter: std::collections::HashMap<Uuid, String>,
+    /// Whether a window's Problems dock is folded to its header, by its root
+    /// (the script's item for a window of its own).
+    problems_folded: std::collections::HashMap<Uuid, bool>,
+    /// Which list each window's dock shows, by its root (the script's item for
+    /// a window of its own).
+    dock_tabs: std::collections::HashMap<Uuid, view::DockTab>,
+    /// What each window's dock searches its scripts for, and with what
+    /// options, by its root.
+    dock_search: std::collections::HashMap<Uuid, SearchState>,
+    /// The name each window's References tab renames, and the new name being
+    /// typed for it, by the window's root.
+    references: std::collections::HashMap<Uuid, ReferenceState>,
+    /// Whether a window's Search tab looks in every script of its object, by
+    /// the window's root.
+    search_object: std::collections::HashMap<Uuid, bool>,
     /// The scripts read for an object-wide search or check, no document
     /// opened, by the script; and the request being served, by its id.
     read: std::collections::HashMap<ScriptTarget, ReadText>,
     reads: std::collections::HashMap<Uuid, ScriptTarget>,
+    /// Each window's object-wide check, by the window's root.
+    checks: std::collections::HashMap<Uuid, Check>,
+    /// What each window's object said with `llOwnerSay`, by the window's
+    /// root, oldest first (the dock's Console tab).
+    console: std::collections::HashMap<Uuid, Vec<ConsoleLine>>,
+    /// The newest chat line read for the console: lines older than this were
+    /// there before the viewer looked.
+    console_upto: Option<std::time::SystemTime>,
     /// The two scripts a window shows side by side, left then right, by its
     /// root. The one in front is one of them.
     splits: std::collections::HashMap<Uuid, (ScriptTarget, ScriptTarget)>,
@@ -461,6 +655,8 @@ pub struct Editors {
     /// they were chosen; the script in front is one of them (a plain click
     /// leaves it alone).
     tree_selection: std::collections::HashMap<Uuid, Vec<ScriptTarget>>,
+    /// What each window's Outline narrows its tree to, by its root.
+    outline_filter: std::collections::HashMap<Uuid, String>,
     /// The region's figure of each object's scripts, by the object (the
     /// window's root), as the bridge last brought it.
     stats: std::collections::HashMap<Uuid, ScriptStats>,
@@ -516,6 +712,16 @@ struct PendingInclude {
     owner: ScriptTarget,
     asset: Uuid,
     reply: std::sync::mpsc::Sender<Result<preprocessor::Include, String>>,
+}
+
+/// The dock's height as the settings keep it: the default is no choice at
+/// all, so a height that is the default stores 0 and follows the window.
+fn store_dock_height(height: f32) -> u16 {
+    if (height - view::DOCK_HEIGHT).abs() < 0.5 {
+        0
+    } else {
+        height.round().clamp(0.0, f32::from(u16::MAX)) as u16
+    }
 }
 
 /// The tab strip's order once `moved` is dropped on `onto`: before it when it
@@ -753,6 +959,7 @@ impl Editors {
                 aurora_i18n::tr!("script-no-permission")
             }
             .into(),
+            said: None,
             saved_at: None,
             errors: Vec::new(),
             compile_failed: false,
@@ -815,6 +1022,7 @@ impl Editors {
             lua_scripts: false,
             running: None,
             status: String::new(),
+            said: None,
             saved_at: None,
             errors: Vec::new(),
             compile_failed: false,
@@ -943,10 +1151,41 @@ impl Editors {
                     aurora_i18n::tr!("script-saved-not-compiled").to_string()
                 }
             }
-            Err(reason) => reason.to_string(),
+            Err(reason) => reason.clone(),
         };
-        e.status = outcome;
+        e.status.clear();
         e.close_after_save = false;
+        // what the save did, and what the script has to answer for, go to the
+        // window's console: the word, then each finding with its line and
+        // column, under the script's name, where the other lines it said are
+        let key = Self::window_key(e);
+        let from = e.name.clone();
+        let now = std::time::SystemTime::now();
+        let rows = Self::document_problems(e, None);
+        self.console_line(
+            key,
+            ConsoleLine {
+                time: now,
+                from,
+                text: outcome,
+                debug: false,
+                target: Some(target),
+                line: None,
+            },
+        );
+        for row in rows {
+            self.console_line(
+                key,
+                ConsoleLine {
+                    time: now,
+                    from: row.source,
+                    text: format!("{}:{}: {}", row.line, row.column, row.message),
+                    debug: false,
+                    target: Some(target),
+                    line: Some((row.line, row.column)),
+                },
+            );
+        }
         true
     }
 
@@ -1054,7 +1293,7 @@ impl Editors {
     /// the scripts of its window, Ctrl+W closes it, Ctrl+1 to Ctrl+5 choose a
     /// tab of the dock in the reader's order. Run before the sources are
     /// drawn, or the text edit would take the Tab as an indentation.
-    fn shortcuts(&mut self, ctx: &egui::Context) {
+    fn shortcuts(&mut self, ctx: &egui::Context, settings: &settings::ScriptSettings) {
         let Some(owner) = focus::active(ctx) else { return };
         // only from the source: a field of the tree (its filter) keeps the
         // text keys, and Find has its own
@@ -1068,6 +1307,27 @@ impl Editors {
         else {
             return;
         };
+        // Ctrl+1 to Ctrl+6: the dock's tabs, by the place the reader gave them,
+        // and the dock unfolded so that the tab is seen
+        let dock = ctx.input_mut(|i| {
+            [
+                egui::Key::Num1,
+                egui::Key::Num2,
+                egui::Key::Num3,
+                egui::Key::Num4,
+                egui::Key::Num5,
+                egui::Key::Num6,
+            ]
+            .into_iter()
+            .position(|key| i.consume_key(egui::Modifiers::CTRL, key))
+        });
+        if let Some(at) = dock
+            && let Some(tab) = settings.dock_order().get(at).copied()
+        {
+            let root = Self::window_key(&self.documents[index]);
+            self.dock_tabs.insert(root, tab);
+            self.problems_folded.insert(root, false);
+        }
         #[derive(Clone, Copy)]
         enum Step {
             Next,
@@ -1169,6 +1429,112 @@ impl Editors {
         }
     }
 
+    /// What the objects say, from the lines their scripts put out
+    /// (`world::script_debug`): each new `llOwnerSay` and each run-time error
+    /// or warning goes into the Console tab of the window that shows the
+    /// object that said it, whether or not the nearby chat shows it too, and
+    /// whatever account owns the object (that window is about it). The
+    /// store's history at the first call is not replayed.
+    ///
+    /// `linksets` are the windows' trees, as drawn: a line names the prim its
+    /// script says with, not the window, and a split's other pane or another
+    /// prim of the linkset is still the same window.
+    pub fn console_from(&mut self, lines: &std::collections::VecDeque<crate::world::ChatLine>, linksets: &[Linkset]) {
+        // what was said before the viewer first looked is not replayed; the
+        // clock is taken at that first look, even with nothing said yet, not
+        // at the first line, which would be taken for history and lost
+        let upto = *self.console_upto.get_or_insert_with(std::time::SystemTime::now);
+        let Some(last) = lines.back().map(|line| line.time) else {
+            return;
+        };
+        if last <= upto {
+            return;
+        }
+        self.console_upto = Some(last);
+        for line in lines.iter().filter(|line| line.time > upto) {
+            // llOwnerSay, and what the script says on the debug channel: its
+            // run-time errors and warnings
+            let debug = match line.kind {
+                crate::world::ChatKind::Object(aurora_net::ChatType::OwnerSay) => false,
+                crate::world::ChatKind::Object(aurora_net::ChatType::Debug) => true,
+                _ => continue,
+            };
+            let Some(root) = self.window_of_source(line.source, linksets) else {
+                continue;
+            };
+            self.console_line(
+                root,
+                ConsoleLine {
+                    time: line.time,
+                    from: line.from.clone(),
+                    text: line.text.clone(),
+                    debug,
+                    // the chat names the object, not the script that said it
+                    target: None,
+                    line: None,
+                },
+            );
+        }
+    }
+
+    /// The window a line belongs to: the prim its script says with, when that
+    /// script has a document, or any prim of a window's linkset (the root
+    /// included), or a window whose root the line names.
+    fn window_of_source(&self, object: Uuid, linksets: &[Linkset]) -> Option<Uuid> {
+        if let Some(key) = self
+            .documents
+            .iter()
+            .find(|e| !e.closed && e.target.object == object)
+            .map(Self::window_key)
+        {
+            return Some(key);
+        }
+        let linkset = linksets
+            .iter()
+            .find(|linkset| linkset.root == object || linkset.prims.iter().any(|prim| prim.object == object))?;
+        self.documents
+            .iter()
+            .find(|e| !e.closed && e.linkset == linkset.root)
+            .map(Self::window_key)
+    }
+
+    /// A line the object `object` said with `llOwnerSay`: into the Console
+    /// tab of the window that shows it, when one is open. The chat carries no
+    /// script's name, so the line is the object's. The demos and the tests
+    /// hand a line in straight, without the chat around it.
+    #[cfg(test)]
+    pub fn console(&mut self, time: std::time::SystemTime, object: Uuid, from: String, text: String, debug: bool) {
+        let Some(root) = self
+            .documents
+            .iter()
+            .find(|e| !e.closed && e.target.object == object)
+            .map(Self::window_key)
+        else {
+            return;
+        };
+        self.console_line(
+            root,
+            ConsoleLine {
+                time,
+                from,
+                text,
+                debug,
+                target: None,
+                line: None,
+            },
+        );
+    }
+
+    /// One line in the Console of the window `key`, the oldest dropped past
+    /// the hundred and more it keeps: a chatty script cannot grow it without
+    /// end.
+    fn console_line(&mut self, key: Uuid, line: ConsoleLine) {
+        let lines = self.console.entry(key).or_default();
+        lines.push(line);
+        let overflow = lines.len().saturating_sub(CONSOLE_LINES);
+        lines.drain(..overflow);
+    }
+
     pub fn show(
         &mut self,
         ctx: &egui::Context,
@@ -1179,14 +1545,14 @@ impl Editors {
     ) -> Vec<Action> {
         let colors_before = color_prefs.clone();
         let mut actions = Vec::new();
-        if self.panels.preferences.show(ctx, p, settings) {
+        if self.panels.preferences.show(ctx, p, settings, &mut self.errors) {
             actions.push(Action::SettingsChanged);
         }
         dialogs::Shortcuts::show(&mut self.panels.shortcuts, ctx, p);
         // The window commands of the script in front, before its source is
         // drawn: Ctrl+Tab and Ctrl+Shift+Tab cycle the scripts of its window,
         // Ctrl+W closes it. Consumed here so the text edit never sees the Tab.
-        self.shortcuts(ctx);
+        self.shortcuts(ctx, settings);
         // A Find popup hangs under the menus and toolbar its window drew this
         // frame; the search later in the frame takes that place.
         for e in &mut self.documents {
@@ -1337,6 +1703,37 @@ impl Editors {
         if !bound {
             search.open = false;
         }
+        // The words that used to stand under the source go to the window's
+        // console, once per change: the script says there what it is doing
+        // (saving, preprocessing, a refusal) and what it just did, under its
+        // name, where the other lines it said are.
+        let now = std::time::SystemTime::now();
+        let mut said = Vec::new();
+        for e in self.documents.iter_mut().filter(|e| !e.closed) {
+            if e.status.is_empty() {
+                e.said = None;
+                continue;
+            }
+            if e.said.as_ref() == Some(&e.status) {
+                continue;
+            }
+            let (key, from, text) = (Self::window_key(e), e.name.clone(), e.status.clone());
+            e.said = Some(text.clone());
+            said.push((key, from, text, e.target));
+        }
+        for (key, from, text, target) in said {
+            self.console_line(
+                key,
+                ConsoleLine {
+                    time: now,
+                    from,
+                    text,
+                    debug: false,
+                    target: Some(target),
+                    line: None,
+                },
+            );
+        }
         if *color_prefs != colors_before {
             actions.push(Action::SettingsChanged);
         }
@@ -1346,11 +1743,11 @@ impl Editors {
     /// The Problems dock's rows of one document: its diagnostics, with the
     /// line and column each one names (a message without one is listed, and
     /// clicking it does nothing).
-    fn document_problems(e: &mut Editor) -> Vec<view::Problem> {
+    fn document_problems(e: &mut Editor, stamp: Option<f64>) -> Vec<view::Problem> {
         if !e.is_open() {
             return Vec::new();
         }
-        let rows: Vec<view::Problem> = e
+        let mut rows: Vec<view::Problem> = e
             .errors
             .iter()
             .map(|message| {
@@ -1363,6 +1760,56 @@ impl Editors {
                 }
             })
             .collect();
+        // then what the editor itself sees, the lints of lints.rs: LSL's, or
+        // Lua's for a Lua script, read off the analysis the window keeps
+        rows.extend(e.analysis(stamp).rows.iter().cloned());
+        rows
+    }
+
+    /// What the editor sees in the object's scripts: the structure of each, the
+    /// lints of the ones no tab holds, and the scripts it could not read. A
+    /// script with a tab keeps only its structure here: its own Problems has
+    /// its lints already.
+    fn object_rows(
+        targets: &[(ScriptTarget, String, Lang)],
+        open: &[(Option<usize>, ScriptTarget, &str, &str, Lang)],
+        read: &std::collections::HashMap<ScriptTarget, ReadText>,
+    ) -> Vec<(ScriptTarget, String, usize, String)> {
+        let mut rows = Vec::new();
+        for (target, name, lang) in targets {
+            if let Some((_, _, _, source, _)) = open.iter().find(|(_, open, ..)| open == target) {
+                for finding in check::structure(source, *lang) {
+                    rows.push((*target, name.clone(), finding.line(), finding.message()));
+                }
+                continue;
+            }
+            let Some(read) = read.get(target) else {
+                continue;
+            };
+            if let Some(reason) = &read.error {
+                rows.push((
+                    *target,
+                    name.clone(),
+                    0,
+                    aurora_i18n::tr!("script-check-unreachable", name = name.as_str(), reason = reason.as_str()).to_string(),
+                ));
+                continue;
+            }
+            let Some(text) = &read.text else {
+                continue;
+            };
+            let rules = if lang.is_lua() {
+                lints::lua_lints(text)
+            } else {
+                lints::lints(text, &outline::outline(text, Lang::Lsl))
+            };
+            for lint in rules {
+                rows.push((*target, name.clone(), lint.line, lint.rule.message()));
+            }
+            for finding in check::structure(text, *lang) {
+                rows.push((*target, name.clone(), finding.line(), finding.message()));
+            }
+        }
         rows
     }
 
@@ -1400,8 +1847,22 @@ impl Editors {
     ) {
         let id = Self::window_of(&self.documents[index]);
         let mut open = true;
-        let rows = Self::document_problems(&mut self.documents[index]);
+        let rows = Self::document_problems(&mut self.documents[index], Some(ctx.input(|i| i.time)));
+        let key = Self::window_key(&self.documents[index]);
+        let console = self.console.get(&key).cloned().unwrap_or_default();
+        let mine = view::ConsoleMine {
+            // a window of its own (an inventory script): no object the chat
+            // could name
+            object: String::new(),
+            script: self.documents[index].name.clone(),
+        };
+        let console_all = self.console_all.entry(key).or_insert(true);
+        let console_filter = self.console_filter.entry(key).or_default();
+        let outline_filter = self.outline_filter.entry(key).or_default();
+        let mut clicked = None;
         {
+            let folded = self.problems_folded.entry(key).or_insert(false);
+            let dock_tab = self.dock_tabs.entry(key).or_default();
             let e = &mut self.documents[index];
             focus::claim(
                 ctx,
@@ -1424,8 +1885,84 @@ impl Editors {
             .allow_partial_outside()
             .rename_title(e.name.clone(), e.can_edit && e.loaded && e.saving.is_none() && e.loading.is_none())
             .show(ctx, p, &mut open, |ui| {
-                view::body(ui, p, e, body_id, settings, panels, actions, true, &rows, None, true);
+                clicked = view::body(
+                    ui,
+                    p,
+                    e,
+                    body_id,
+                    settings,
+                    panels,
+                    actions,
+                    true,
+                    &rows,
+                    None,
+                    folded,
+                    dock_tab,
+                    None,
+                    None,
+                    None,
+                    &console,
+                    Some(&mut *console_all),
+                    &mine,
+                    &mut *console_filter,
+                    &mut *outline_filter,
+                    None,
+                    true,
+                );
             });
+        }
+        match clicked {
+            Some(view::DockClick::Problem(row)) => {
+                if let Some(problem) = rows.get(row) {
+                    let e = &mut self.documents[index];
+                    let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
+                    view::go_to_error(ctx, e, body_id, problem.line, problem.column);
+                }
+            }
+            Some(view::DockClick::Outline(item)) => {
+                let e = &mut self.documents[index];
+                let line = view::outline_items(e, Some(ctx.input(|i| i.time))).get(item).map(|item| item.line);
+                if let Some(line) = line {
+                    let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
+                    view::go_to_line(ctx, e, body_id, line, 0);
+                }
+            }
+            // only a window of a linkset has the Search and References tabs
+            // a window of its own has the same dock, its edge dragged the same
+            Some(view::DockClick::Resize(height)) => {
+                settings.dock_height = store_dock_height(height);
+                actions.push(Action::SettingsChanged);
+            }
+            Some(view::DockClick::ConsoleClear) => {
+                self.console.remove(&key);
+            }
+            // the reader's order is the same in every window, whichever one
+            // the tabs were dragged in
+            Some(view::DockClick::Reorder(order)) => {
+                settings.set_dock_order(order);
+                actions.push(Action::SettingsChanged);
+            }
+            Some(view::DockClick::Debug) => actions.push(Action::Debug),
+            Some(
+                view::DockClick::Search(_)
+                | view::DockClick::Reference(_)
+                | view::DockClick::Rename
+                | view::DockClick::ReplaceAll
+                | view::DockClick::Check,
+            ) => {}
+            Some(view::DockClick::Console { target, line }) => match self.documents.iter().position(|e| e.target == target && !e.closed) {
+                Some(at) => {
+                    let root = self.documents[at].linkset;
+                    self.select_script(root, at);
+                    if let Some((line, column)) = line {
+                        let e = &mut self.documents[at];
+                        let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
+                        view::go_to_error(ctx, e, body_id, line, column);
+                    }
+                }
+                None => actions.push(Action::OpenScript(target)),
+            },
+            None => {}
         }
         // Ctrl+click on a name: the declaration, in this script alone
         if let Some(word) = self.documents[index].tools.goto_word.take() {
@@ -1594,6 +2131,9 @@ impl Editors {
             self.tree_selection.remove(&root);
             self.pending_split.remove(&root);
             self.filters.remove(&root);
+            self.problems_all.remove(&root);
+            self.console_all.remove(&root);
+            self.console_filter.remove(&root);
             return;
         }
         // a script opened or raised from anywhere comes to the front
@@ -1674,6 +2214,14 @@ impl Editors {
             self.split_ratio.remove(&root);
         }
         let active_index = self.documents.iter().position(|e| e.target == active && !e.closed).unwrap_or(0);
+        // what the object said with llOwnerSay, for the Console tab
+        let console = self.console.get(&root).cloned().unwrap_or_default();
+        let mine = view::ConsoleMine {
+            // the name the chat gives the object ("Panel Script: hello" is
+            // "Control Panel: hello" from a line)
+            object: linkset.map(|linkset| linkset.name.clone()).unwrap_or_default(),
+            script: self.documents[active_index].name.clone(),
+        };
         let title = {
             // the script in front, as the window's title (the tab strip says
             // which one that is)
@@ -1682,8 +2230,186 @@ impl Editors {
             aurora_i18n::tr!("script-window-title", name = name.as_str()).to_string()
         };
         let source_id = egui::Id::unique((&Self::document_id(&self.documents[active_index]), "source_text"));
-        // the marks the source draws for a script that did not compile
-        let problems = Self::document_problems(&mut self.documents[active_index]);
+        // the Problems dock: this script's, or every script of the window
+        let all_sources = self.problems_all.entry(root).or_insert(false);
+        let mut problems = Vec::new();
+        let mut problem_rows = Vec::new();
+        for (index, e) in self.documents.iter_mut().enumerate() {
+            if e.closed || (if *all_sources { e.linkset != root } else { e.target != active }) {
+                continue;
+            }
+            for row in Self::document_problems(e, Some(ctx.input(|i| i.time))) {
+                problems.push(row);
+                problem_rows.push(index);
+            }
+        }
+        let scope = (members.len() > 1).then_some(&mut *all_sources);
+        let console_all = self.console_all.entry(root).or_insert(true);
+        let console_filter = self.console_filter.entry(root).or_default();
+        let outline_filter = self.outline_filter.entry(root).or_default();
+        // the dock folds to its header, remembered for this window
+        let folded = self.problems_folded.entry(root).or_insert(false);
+        // and shows the diagnostics, the outline or the window's scripts found
+        // by a word, as last chosen there
+        let dock_tab = self.dock_tabs.entry(root).or_default();
+        let search_state = self.dock_search.entry(root).or_default();
+        // the Search tab's hits, in the scripts as they are edited
+        // the dock's Check again, taken before the scripts are borrowed
+        let check_again = std::mem::take(&mut self.documents[active_index].tools.check_again);
+        let open: Vec<(Option<usize>, ScriptTarget, &str, &str, Lang)> = self
+            .documents
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| !e.closed && e.linkset == root)
+            .map(|(index, e)| (Some(index), e.target, e.name.as_str(), e.source.as_str(), e.lang()))
+            .collect();
+        let (insensitive, whole_words, query) = (search_state.insensitive, search_state.whole_words, search_state.query.clone());
+        let mut hits = navigate::find(&open, &query, insensitive, whole_words);
+        // the object scope looks in every script of the linkset, the ones no
+        // tab holds read from their prim as the reader asks
+        let object_search = *self.search_object.entry(root).or_insert(false);
+        let mut unread: Vec<ScriptTarget> = Vec::new();
+        if object_search && let Some(linkset) = linkset {
+            for prim in &linkset.prims {
+                for script in &prim.scripts {
+                    // a script the reader could not open is not searched
+                    if !script.can_read {
+                        continue;
+                    }
+                    // the prim the script is in, or none for the inventory's
+                    let target = ScriptTarget {
+                        object: script.object,
+                        item: script.item,
+                    };
+                    if open.iter().any(|(_, open, ..)| *open == target) {
+                        continue;
+                    }
+                    let lang = if aurora_net::scripts::is_slua_item(script.flags) {
+                        Lang::Lua
+                    } else {
+                        Lang::Lsl
+                    };
+                    if let Some(text) = self.read.get(&target).and_then(|read| read.text.as_deref()) {
+                        hits.extend(navigate::find(
+                            &[(None, target, script.name.as_str(), text, lang)],
+                            &query,
+                            insensitive,
+                            whole_words,
+                        ));
+                    } else if self.read.get(&target).is_none_or(|read| read.error.is_none()) {
+                        unread.push(target);
+                    }
+                }
+            }
+            hits.truncate(navigate::MAX_HITS);
+        }
+        for target in unread {
+            let waiting = self
+                .read
+                .get(&target)
+                .is_some_and(|read| read.text.is_some() || read.error.is_some() || read.request.is_some());
+            if waiting {
+                continue;
+            }
+            let request = Uuid::new_v4();
+            self.read.entry(target).or_default().request = Some(request);
+            self.reads.insert(request, target);
+            actions.push(Action::ReadScript { target, request });
+        }
+        // The object's every script, as the dock shows it: one no tab holds is
+        // read from its prim once, and what the editor sees in all of them is
+        // worked out again whenever a text or the object's list changes. There
+        // is no button: the Problems tab says what it sees, all the time.
+        let mut targets: Vec<(ScriptTarget, String, Lang)> = Vec::new();
+        let mut reading = 0usize;
+        let mut retry = false;
+        if let Some(linkset) = linkset {
+            for prim in &linkset.prims {
+                for script in &prim.scripts {
+                    // a script the reader could not open is not read, and has
+                    // no rows: its text is not the viewer's to ask for
+                    if !script.can_read {
+                        continue;
+                    }
+                    // the prim the script is in, or none for the inventory's
+                    let target = ScriptTarget {
+                        object: script.object,
+                        item: script.item,
+                    };
+                    let lang = if aurora_net::scripts::is_slua_item(script.flags) {
+                        Lang::Lua
+                    } else {
+                        Lang::Lsl
+                    };
+                    targets.push((target, script.name.clone(), lang));
+                    if open.iter().any(|(_, open, ..)| *open == target) {
+                        continue;
+                    }
+                    if check_again
+                        && let Some(read) = self.read.get_mut(&target)
+                        && read.error.is_some()
+                    {
+                        // the reader asked for another try at what failed
+                        *read = ReadText::default();
+                    }
+                    match self.read.get(&target) {
+                        Some(read) if read.text.is_some() => {}
+                        Some(read) if read.error.is_some() => retry = true,
+                        Some(read) if read.request.is_some() => reading += 1,
+                        _ => {
+                            let request = Uuid::new_v4();
+                            self.read.entry(target).or_default().request = Some(request);
+                            self.reads.insert(request, target);
+                            actions.push(Action::ReadScript { target, request });
+                            reading += 1;
+                        }
+                    }
+                }
+            }
+        }
+        let signature = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            for (target, name, lang) in &targets {
+                target.item.hash(&mut hasher);
+                name.hash(&mut hasher);
+                lang.hash(&mut hasher);
+                if let Some((_, _, _, source, _)) = open.iter().find(|(_, open, ..)| open == target) {
+                    source.hash(&mut hasher);
+                } else if let Some(read) = self.read.get(target) {
+                    read.text.hash(&mut hasher);
+                    read.error.hash(&mut hasher);
+                }
+            }
+            hasher.finish()
+        };
+        if self.checks.get(&root).is_none_or(|check| check.signature != signature) {
+            let rows = Self::object_rows(&targets, &open, &self.read);
+            self.checks.insert(root, Check { signature, rows });
+        }
+        // the check's rows, under each script's name, after the window's own
+        let mut check_rows: Vec<(ScriptTarget, usize)> = Vec::new();
+        if let Some(check) = self.checks.get(&root) {
+            for (target, name, line, message) in &check.rows {
+                check_rows.push((*target, problems.len()));
+                problems.push(view::Problem {
+                    source: name.clone(),
+                    line: *line,
+                    column: 0,
+                    message: message.clone(),
+                });
+            }
+        }
+        // the References tab's places: the name in code, the whole name each
+        let open_docs: Vec<(usize, &str, &str, Lang)> = open
+            .iter()
+            .filter_map(|(document, _, name, source, lang)| Some(((*document)?, *name, *source, *lang)))
+            .collect();
+        let reference_hits = self
+            .references
+            .get(&root)
+            .map(|state| navigate::references(&open_docs, &state.word))
+            .unwrap_or_default();
         // F8 works while a script of this window has the keyboard
         let window_keys = focus::active(ctx).is_some_and(|owner| {
             self.documents
@@ -1692,6 +2418,10 @@ impl Editors {
         });
         // Save All: every script this window has open that has something to save
         let save_all = self.documents.iter().any(|e| !e.closed && e.linkset == root && e.can_save());
+        let reference_word = self.references.get(&root).map(|state| state.word.clone()).unwrap_or_default();
+        // what the Problems dock says of the object: what it is still reading,
+        // and what it found
+        let check = Some(view::CheckDock { reading, retry });
         let mut open = true;
         let mut select = None;
         // the tree's selection changes and the menu's entries that need the
@@ -1707,6 +2437,7 @@ impl Editors {
         let mut tree_dropped = None;
         let mut pane_area = None;
         let mut unsplit = false;
+        let mut clicked_problem = None;
         // the prim a new script's page was asked for, from the tree or the strip
         let mut new_draft: Option<Uuid> = None;
         // a fresh window takes the documentation pane's room beside the
@@ -1814,7 +2545,7 @@ impl Editors {
                 if let Some(e) = self.documents.get_mut(active_index)
                     && e.draft.is_none()
                 {
-                    view::notice_bar(ui, p, e, actions);
+                    view::notice_bar(ui, p, e, actions, dock_tab);
                 }
                 // the window's status bar takes its room under the columns,
                 // and the air the columns keep between them above it; the page
@@ -1960,6 +2691,15 @@ impl Editors {
                                     let right = self.documents.iter().position(|e| e.target == right && !e.closed)?;
                                     (left != right).then_some((left, right))
                                 });
+                                let search = Some(view::SearchDock {
+                                    query: &mut search_state.query,
+                                    replacement: &mut search_state.replacement,
+                                    insensitive: &mut search_state.insensitive,
+                                    whole_words: &mut search_state.whole_words,
+                                    replace_open: &mut search_state.replace_open,
+                                    hits: &hits,
+                                    object: self.search_object.entry(root).or_default(),
+                                });
                                 // where a tab let go over the source opens a pane
                                 pane_area = Some(ui.available_rect_before_wrap());
                                 let ratio = self.split_ratio.entry(root).or_insert(0.5);
@@ -1968,7 +2708,7 @@ impl Editors {
                                     let right_id = egui::Id::unique((&Self::document_id(&self.documents[right]), "source_text"));
                                     let side = if left == index { view::Side::Left } else { view::Side::Right };
                                     let (a, b) = two_mut(&mut self.documents, left, right);
-                                    let focus = view::split_body(
+                                    let (dock, focus) = view::split_body(
                                         ui,
                                         p,
                                         a,
@@ -1979,17 +2719,33 @@ impl Editors {
                                         settings,
                                         &mut self.panels,
                                         &problems,
+                                        scope,
+                                        folded,
+                                        dock_tab,
+                                        search,
+                                        Some(view::ReferencesDock {
+                                            word: &reference_word,
+                                            name: &mut self.references.entry(root).or_default().name,
+                                            hits: &reference_hits,
+                                        }),
+                                        check,
+                                        &console,
+                                        Some(&mut *console_all),
+                                        &mine,
+                                        &mut *console_filter,
+                                        &mut *outline_filter,
                                         ratio,
                                         stats,
                                         false,
                                     );
+                                    clicked_problem = dock;
                                     if let Some(target) = focus {
                                         self.active.insert(root, target);
                                         self.reveal.insert(root, target.object);
                                     }
                                 } else {
                                     let e = &mut self.documents[index];
-                                    view::body(
+                                    clicked_problem = view::body(
                                         ui,
                                         p,
                                         e,
@@ -1999,6 +2755,21 @@ impl Editors {
                                         actions,
                                         false,
                                         &problems,
+                                        scope,
+                                        folded,
+                                        dock_tab,
+                                        search,
+                                        Some(view::ReferencesDock {
+                                            word: &reference_word,
+                                            name: &mut self.references.entry(root).or_default().name,
+                                            hits: &reference_hits,
+                                        }),
+                                        check,
+                                        &console,
+                                        Some(&mut *console_all),
+                                        &mine,
+                                        &mut *console_filter,
+                                        &mut *outline_filter,
                                         stats,
                                         false,
                                     );
@@ -2120,14 +2891,121 @@ impl Editors {
         {
             let e = &self.documents[active_index];
             let at = (active_index, e.tools.position.0 + e.first_line());
-            let rows: Vec<(usize, usize)> = problems.iter().map(|problem| (active_index, problem.line)).collect();
+            let rows: Vec<(usize, usize)> = problem_rows
+                .iter()
+                .zip(&problems)
+                .map(|(index, problem)| (*index, problem.line))
+                .collect();
             if let Some(row) = view::problem_row(&rows, at, next)
-                && let Some(problem) = problems.get(row)
+                && let (Some(&index), Some(problem)) = (problem_rows.get(row), problems.get(row))
             {
-                let e = &mut self.documents[active_index];
+                let e = &mut self.documents[index];
+                self.active.insert(root, e.target);
                 let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
                 view::go_to_error(ctx, e, body_id, problem.line, problem.column);
             }
+        }
+        if let Some(click) = clicked_problem {
+            match click {
+                view::DockClick::Problem(row) => {
+                    if let Some((target, _)) = check_rows.iter().find(|(_, index)| *index == row) {
+                        // a script no tab holds: opening it is the way there
+                        actions.push(Action::OpenScript(*target));
+                    } else if let (Some(&index), Some(problem)) = (problem_rows.get(row), problems.get(row)) {
+                        let e = &mut self.documents[index];
+                        self.active.insert(root, e.target);
+                        let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
+                        view::go_to_error(ctx, e, body_id, problem.line, problem.column);
+                    }
+                }
+                view::DockClick::Outline(index) => {
+                    let e = &mut self.documents[active_index];
+                    let line = view::outline_items(e, Some(ctx.input(|i| i.time))).get(index).map(|item| item.line);
+                    if let Some(line) = line {
+                        let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
+                        view::go_to_line(ctx, e, body_id, line, 0);
+                    }
+                }
+                view::DockClick::Search(index) => {
+                    if let Some(hit) = hits.get(index) {
+                        match hit.document {
+                            Some(document) => {
+                                let e = &mut self.documents[document];
+                                self.active.insert(root, e.target);
+                                let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
+                                view::go_to_line(ctx, e, body_id, hit.line, hit.column);
+                            }
+                            // a script the object scope read has no tab yet
+                            None => actions.push(Action::OpenScript(hit.target)),
+                        }
+                    }
+                }
+                view::DockClick::Console { target, line } => match self.documents.iter().position(|e| e.target == target && !e.closed) {
+                    Some(index) => {
+                        let root = self.documents[index].linkset;
+                        self.select_script(root, index);
+                        if let Some((line, column)) = line {
+                            let e = &mut self.documents[index];
+                            let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
+                            view::go_to_error(ctx, e, body_id, line, column);
+                        }
+                    }
+                    None => actions.push(Action::OpenScript(target)),
+                },
+                view::DockClick::ReplaceAll => {
+                    if let Some(state) = self.dock_search.get(&root) {
+                        let (query, replacement, insensitive, whole_words) =
+                            (state.query.clone(), state.replacement.clone(), state.insensitive, state.whole_words);
+                        let count = replace_search(ctx, &mut self.documents, root, &query, &replacement, insensitive, whole_words);
+                        if count > 0 {
+                            self.documents[active_index].status = aurora_i18n::tr!("script-search-replaced", count = count as i64);
+                        }
+                    }
+                }
+                view::DockClick::Reference(index) => {
+                    if let Some(hit) = reference_hits.get(index) {
+                        let e = &mut self.documents[hit.document];
+                        self.active.insert(root, e.target);
+                        let body_id = egui::Id::unique((&Self::document_id(e), "source_text"));
+                        view::go_to_line(ctx, e, body_id, hit.line, hit.column);
+                    }
+                }
+                view::DockClick::Check => {
+                    self.documents[active_index].tools.check_again = true;
+                }
+                view::DockClick::Reorder(order) => {
+                    settings.set_dock_order(order);
+                    actions.push(Action::SettingsChanged);
+                }
+                view::DockClick::Resize(height) => {
+                    settings.dock_height = store_dock_height(height);
+                    actions.push(Action::SettingsChanged);
+                }
+                view::DockClick::ConsoleClear => {
+                    self.console.remove(&root);
+                }
+                view::DockClick::Debug => actions.push(Action::Debug),
+                view::DockClick::Rename => {
+                    let state = self.references.entry(root).or_default();
+                    let renamed = state.name.trim().to_owned();
+                    let count = rename_references(ctx, &mut self.documents, &reference_hits, &renamed) as i64;
+                    self.dock_tabs.insert(root, view::DockTab::References);
+                    self.documents[active_index].status = aurora_i18n::tr!("script-references-renamed", count = count);
+                    // the tab lists the new name's places from now on
+                    state.word = renamed;
+                    state.name.clear();
+                }
+            }
+        }
+        // the context menu's Find references: the dock's References tab, on
+        // that name, with a new name to type
+        if let Some(word) = self.documents[active_index].tools.references_word.take() {
+            let state = self.references.entry(root).or_default();
+            if state.word != word {
+                state.name.clear();
+            }
+            state.word = word;
+            self.dock_tabs.insert(root, view::DockTab::References);
         }
         // Ctrl+click on a name (or the menu's command): the window takes the
         // caret to where the name is declared

@@ -27,6 +27,7 @@ fn a_page_finds_the_script_that_appeared_after_it_opened() {
         flags: 0,
         running: None,
         permissions: Permissions::default(),
+        can_read: true,
         dirty: false,
         menu: None,
     };
@@ -1507,6 +1508,7 @@ fn script_row(target: ScriptTarget, name: &str, flags: u32) -> LinksetScript {
             can_delete: true,
             can_control: true,
         }),
+        can_read: true,
     }
 }
 
@@ -1765,6 +1767,61 @@ fn the_engine_is_chosen_from_the_bar() {
 
 /// Ctrl+1 to Ctrl+5 choose a tab of the dock, in the reader's order, and
 /// unfold it.
+#[test]
+fn ctrl_and_a_number_choose_a_tab_of_the_dock() {
+    use view::DockTab;
+    let ctx = egui::Context::default();
+    let mut editors = Editors::default();
+    let mut settings = settings::ScriptSettings::default();
+    let (linkset, _panel, _door) = two_scripts_open(&ctx, &mut editors, &mut settings, "source", "source");
+    let linksets = std::slice::from_ref(&linkset);
+    *editors.problems_folded.entry(linkset.root).or_insert(false) = true;
+    // Ctrl+2: the second tab of the reader's order (the console is the
+    // first), with the dock open
+    frame_linksets(
+        &ctx,
+        &mut editors,
+        &mut settings,
+        vec![key(egui::Key::Num2, egui::Modifiers::CTRL)],
+        linksets,
+    );
+    assert_eq!(editors.dock_tabs.get(&linkset.root), Some(&DockTab::Problems), "the second tab");
+    assert_eq!(editors.problems_folded.get(&linkset.root), Some(&false), "the dock open");
+    // the keys follow the order the reader dragged the tabs into
+    settings.set_dock_order([
+        DockTab::Console,
+        DockTab::Problems,
+        DockTab::Outline,
+        DockTab::Search,
+        DockTab::References,
+    ]);
+    frame_linksets(
+        &ctx,
+        &mut editors,
+        &mut settings,
+        vec![key(egui::Key::Num1, egui::Modifiers::CTRL)],
+        linksets,
+    );
+    assert_eq!(
+        editors.dock_tabs.get(&linkset.root),
+        Some(&DockTab::Console),
+        "the first of the reader's order"
+    );
+    // Ctrl+5 is the last of that order, where the reader left it
+    frame_linksets(
+        &ctx,
+        &mut editors,
+        &mut settings,
+        vec![key(egui::Key::Num5, egui::Modifiers::CTRL)],
+        linksets,
+    );
+    assert_eq!(
+        editors.dock_tabs.get(&linkset.root),
+        Some(&DockTab::References),
+        "the last of the reader's order"
+    );
+}
+
 /// Ctrl+Shift+S saves every script of the window, as the Save All button.
 #[test]
 fn ctrl_shift_s_asks_to_save_every_script_of_the_window() {
@@ -1857,8 +1914,98 @@ fn the_tabs_menu_closes_the_other_scripts_or_all_of_them() {
 
 /// The dock's Outline tab lists the script's declarations, and a click
 /// puts the caret on one; the window remembers the tab it shows.
+#[test]
+fn the_outline_dock_lists_the_declarations_and_jumps_to_them() {
+    let ctx = egui::Context::default();
+    let mut editors = Editors::default();
+    let target = ScriptTarget {
+        object: Uuid::from_u128(11),
+        item: Uuid::from_u128(12),
+    };
+    let source = "default\n{\n    state_entry()\n    {\n        llSay(0, \"hi\");\n    }\n}\n";
+    let load = editors.open(target, "Symbols".into(), true, true, 0).unwrap();
+    editors.loaded(load, target, Ok(source.into()));
+    // tall enough for the dock's table to show every declared name
+    super::super::widgets::place_floater(&ctx, &window(target), egui::pos2(60.0, 40.0), Vec2::new(820.0, 720.0));
+    settle(&ctx, &mut editors);
+    // the dock opens on the console, as a script's own window does
+    let output = frame(&ctx, &mut editors, vec![]);
+    assert_eq!(editors.dock_tabs.get(&target.item), Some(&view::DockTab::Console));
+    assert!(
+        output
+            .shapes
+            .iter()
+            .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text == aurora_i18n::tr!("script-console-none")))
+    );
+    // its Outline tab lists what the script declares, with the lines
+    let tab = text_at(&output, aurora_i18n::tr!("script-dock-outline"));
+    let click = |ctx: &egui::Context, editors: &mut Editors, at: egui::Pos2| {
+        for pressed in [true, false] {
+            frame(
+                ctx,
+                editors,
+                vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+    };
+    click(&ctx, &mut editors, tab);
+    let output = frame(&ctx, &mut editors, vec![]);
+    assert_eq!(editors.dock_tabs.get(&target.item), Some(&view::DockTab::Outline));
+    // the table's cells, under the heading of its name column
+    let head = text_at(&output, aurora_i18n::tr!("script-outline-name").as_ref()).y;
+    let row = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(t) if t.galley.job.text == "state_entry" => {
+                let at = t.pos + t.galley.size() * 0.5;
+                (at.y > head).then_some(at)
+            }
+            _ => None,
+        })
+        .next()
+        .expect("the outline's row");
+    // a row puts the caret on its line
+    click(&ctx, &mut editors, row);
+    frame(&ctx, &mut editors, vec![]);
+    frame(&ctx, &mut editors, vec![]);
+    assert_eq!(editors.documents[0].tools.position.0, 2, "the caret is on the event's line");
+}
+
 /// The Problems dock folds to its header, and keeps its room: the source
 /// takes the rest.
+#[test]
+fn the_problems_dock_folds_to_its_header() {
+    let ctx = egui::Context::default();
+    let mut editors = Editors::default();
+    let mut settings = settings::ScriptSettings::default();
+    let (linkset, _, _door) = two_scripts_open(&ctx, &mut editors, &mut settings, "source", "source");
+    let linksets = std::slice::from_ref(&linkset);
+    editors.dock_tabs.insert(linkset.root, view::DockTab::Problems);
+    let drawn = |output: &egui::FullOutput, text: &str| {
+        output
+            .shapes
+            .iter()
+            .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text == text))
+    };
+    let header = aurora_i18n::tr!("script-dock-problems").as_ref();
+    let none = aurora_i18n::tr!("script-problems-none");
+    let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    assert!(drawn(&output, header) && drawn(&output, none));
+    *editors.problems_folded.entry(linkset.root).or_insert(false) = true;
+    let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    assert!(drawn(&output, header), "the header stays");
+    assert!(!drawn(&output, none), "folded to its header");
+}
+
 /// A diagnostic marks its line in the gutter, where the dock's row would
 /// take the caret.
 #[test]
@@ -2033,6 +2180,56 @@ fn the_trees_panel_reaches_the_status_bars_bottom() {
 /// The dock's tabs drag into another order, the last one too: the
 /// References tab dropped on Problems takes its place, and no tab is lost on
 /// the way.
+#[test]
+fn the_last_tab_drags_into_the_middle_of_the_dock() {
+    let ctx = egui::Context::default();
+    let mut editors = Editors::default();
+    let mut settings = settings::ScriptSettings::default();
+    let (linkset, _panel, _door) = two_scripts_open(&ctx, &mut editors, &mut settings, "source", "source");
+    let linksets = std::slice::from_ref(&linkset);
+    let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    let references = text_at(&output, aurora_i18n::tr!("script-dock-references").as_ref());
+    let problems = text_at(&output, aurora_i18n::tr!("script-dock-problems").as_ref());
+    // the last tab pressed, dragged onto the second, then let go
+    for events in [
+        vec![
+            egui::Event::PointerMoved(references),
+            egui::Event::PointerButton {
+                pos: references,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+        vec![egui::Event::PointerMoved(problems)],
+        vec![egui::Event::PointerButton {
+            pos: problems,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    ] {
+        frame_linksets(&ctx, &mut editors, &mut settings, events, linksets);
+    }
+    assert_eq!(
+        settings.dock_tabs.as_str(),
+        "console,references,problems,outline,search",
+        "the last tab took the second place: {}",
+        settings.dock_tabs
+    );
+    assert_eq!(
+        settings.dock_order(),
+        [
+            view::DockTab::Console,
+            view::DockTab::References,
+            view::DockTab::Problems,
+            view::DockTab::Outline,
+            view::DockTab::Search
+        ],
+        "all five, in the order dragged"
+    );
+}
+
 /// The bar's first toggle is the window layout: the shared window, or one
 /// per script as the preference keeps it.
 #[test]
@@ -2151,6 +2348,45 @@ fn a_scripts_row_stands_under_its_prim() {
 
 /// The debug channel reaches the console too: a run-time error or a
 /// warning of the object's script, as the chat shows it.
+#[test]
+fn a_debug_line_reaches_the_console() {
+    let ctx = egui::Context::default();
+    let mut editors = Editors::default();
+    let mut settings = settings::ScriptSettings::default();
+    let (linkset, panel, _door) = two_scripts_open(&ctx, &mut editors, &mut settings, "panel", "door");
+    let time = std::time::SystemTime::now();
+    let mut chat = std::collections::VecDeque::new();
+    for (text, kind) in [
+        ("Panel ready.", crate::world::ChatKind::Object(aurora_net::ChatType::OwnerSay)),
+        (
+            "llSay: too many characters (script warning)",
+            crate::world::ChatKind::Object(aurora_net::ChatType::Debug),
+        ),
+    ] {
+        let mut line = crate::world::ChatLine {
+            time,
+            from: "Control Panel".into(),
+            text: text.into(),
+            kind,
+            source: panel.object,
+            origin: crate::world::Origin::Live,
+            blocked: false,
+            beyond_range: false,
+            speaker: crate::world::Speaker::default(),
+            private_history: false,
+        };
+        line.time = time + std::time::Duration::from_secs(chat.len() as u64);
+        chat.push_back(line);
+    }
+    // a look from before the lines arrived takes them all
+    editors.console_upto = Some(time - std::time::Duration::from_millis(1));
+    editors.console_from(&chat, std::slice::from_ref(&linkset));
+    let lines = editors.console.get(&linkset.root).expect("the window's console");
+    assert_eq!(lines.len(), 2, "both kinds of line");
+    assert!(!lines[0].debug, "what it said to its owner");
+    assert!(lines[1].debug, "and what the script warned");
+}
+
 /// The old layout: with no shared window, each script of an object is in
 /// a window of its own, as it was before the tree -- the window named after
 /// the script alone, and no tab strip or tree beside it.
@@ -2229,6 +2465,7 @@ fn inventory_scripts_share_the_inventory_window() {
         flags: 0,
         running: None,
         permissions: Permissions::new(perm::COPY | perm::MODIFY | perm::TRANSFER, 0),
+        can_read: true,
         dirty: false,
         menu: None,
     };
@@ -2270,14 +2507,101 @@ fn inventory_scripts_share_the_inventory_window() {
     for label in ["Weapons", "Sword Script", "Wrench Script"] {
         assert!(drawn(label), "{label} is drawn; drawn: {texts:?}");
     }
+    assert!(
+        !drawn(aurora_i18n::tr!("script-dock-console").as_ref()),
+        "no Console tab: no object says anything"
+    );
+    assert!(drawn(aurora_i18n::tr!("script-dock-problems").as_ref()), "the other tabs stay");
 }
 
 /// The console's first look at the lines is the frame, not the first
 /// line: a script's first `llOwnerSay` of a session is not taken for
 /// history.
+#[test]
+fn the_first_line_of_a_session_reaches_the_console() {
+    let ctx = egui::Context::default();
+    let mut editors = Editors::default();
+    let mut settings = settings::ScriptSettings::default();
+    let (linkset, panel, _door) = two_scripts_open(&ctx, &mut editors, &mut settings, "panel", "door");
+    // a frame with nothing said yet: the clock is taken then, not at the
+    // first line
+    editors.console_from(&std::collections::VecDeque::new(), std::slice::from_ref(&linkset));
+    assert!(
+        editors.console_upto.is_some(),
+        "the first look takes the clock, even with nothing said"
+    );
+    let chat = [crate::world::ChatLine {
+        time: std::time::SystemTime::now() + std::time::Duration::from_millis(50),
+        from: "Control Panel".into(),
+        text: "the first thing it said".into(),
+        kind: crate::world::ChatKind::Object(aurora_net::ChatType::OwnerSay),
+        source: panel.object,
+        origin: crate::world::Origin::Live,
+        blocked: false,
+        beyond_range: false,
+        speaker: crate::world::Speaker::default(),
+        private_history: false,
+    }]
+    .into_iter()
+    .collect();
+    editors.console_from(&chat, std::slice::from_ref(&linkset));
+    let lines = editors.console.get(&linkset.root).expect("the window's console");
+    assert_eq!(lines.len(), 1);
+}
+
 /// A line names the prim its script said it with, not the window: the
 /// Console of a linkset's window takes every prim of it, even one no tab
 /// holds, and nothing of an object no window shows.
+#[test]
+fn a_line_from_another_prim_reaches_the_windows_console() {
+    let ctx = egui::Context::default();
+    let mut editors = Editors::default();
+    let mut settings = settings::ScriptSettings::default();
+    let (mut linkset, panel, _door) = two_scripts_open(&ctx, &mut editors, &mut settings, "panel", "door");
+    let spare = Uuid::new_v4();
+    linkset.prims.push(LinksetPrim {
+        object: spare,
+        kind: PrimKind::Prim,
+        name: "Spare".into(),
+        depth: 0,
+
+        type_default: 0,
+        loading: false,
+        can_new_script: true,
+        menu: None,
+        touch: true,
+        scripts: Vec::new(),
+    });
+    let time = std::time::SystemTime::now();
+    let line = |source, text: &str| crate::world::ChatLine {
+        time,
+        from: "Control Panel".into(),
+        text: text.into(),
+        kind: crate::world::ChatKind::Object(aurora_net::ChatType::OwnerSay),
+        source,
+        origin: crate::world::Origin::Live,
+        blocked: false,
+        beyond_range: false,
+        speaker: crate::world::Speaker::default(),
+        private_history: false,
+    };
+    let chat = [
+        line(linkset.root, "the root's line"),
+        line(spare, "another prim's line"),
+        line(panel.object, "the panel's line"),
+        line(Uuid::new_v4(), "an object no window shows"),
+    ]
+    .into_iter()
+    .collect();
+    editors.console_upto = Some(time - std::time::Duration::from_millis(1));
+    editors.console_from(&chat, std::slice::from_ref(&linkset));
+    {
+        let lines = editors.console.get(&linkset.root).expect("the window's console");
+        assert_eq!(lines.len(), 3, "the window's own prims alone");
+        assert_eq!(lines[1].text, "another prim's line");
+    }
+}
+
 /// The console's scope leads it from the whole object to the script in
 /// front, as the other tabs' scopes do.
 /// The console of a script's own window keeps its scope in the dock's header,
@@ -2360,9 +2684,269 @@ fn a_very_large_script_keeps_its_cost_steady() {
     assert_eq!(editors.documents[0].source.len(), source.len(), "and the text is the one loaded");
 }
 
+#[test]
+fn the_own_windows_console_keeps_its_scope_in_the_header() {
+    let ctx = egui::Context::default();
+    let mut editors = Editors::default();
+    let mut settings = settings::ScriptSettings::default();
+    let target = ScriptTarget {
+        object: Uuid::nil(),
+        item: Uuid::from_u128(31),
+    };
+    let load = editors.open(target, "Console".into(), true, true, 0).unwrap();
+    editors.loaded(load, target, Ok("default { state_entry() { } }".into()));
+    editors.dock_tabs.insert(target.item, view::DockTab::Console);
+    let mut output = frame_settings(&ctx, &mut editors, &mut settings, vec![]);
+    for _ in 0..2 {
+        output = frame_settings(&ctx, &mut editors, &mut settings, vec![]);
+    }
+    let scope = aurora_i18n::tr!("script-problems-all");
+    let at = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(t) if t.galley.job.text == scope => Some(t.pos + t.galley.size() * 0.5),
+            _ => None,
+        })
+        .expect("its scope");
+    let window = ctx.memory(|m| m.area_rect(egui::Id::unique(window(target)))).expect("the window");
+    assert!(window.contains(at), "the scope stands in the window: {at:?} in {window:?}");
+}
+
+#[test]
+fn the_console_lists_the_object_or_the_script_in_front() {
+    let ctx = egui::Context::default();
+    let mut editors = Editors::default();
+    let mut settings = settings::ScriptSettings::default();
+    let (linkset, panel, _door) = two_scripts_open(&ctx, &mut editors, &mut settings, "panel", "door");
+    let linksets = std::slice::from_ref(&linkset);
+    editors.console(
+        std::time::SystemTime::now(),
+        panel.object,
+        "Panel Script".into(),
+        "ready".into(),
+        false,
+    );
+    editors.dock_tabs.insert(linkset.root, view::DockTab::Console);
+    let drawn = |output: &egui::FullOutput, text: &str| {
+        output
+            .shapes
+            .iter()
+            .any(|shape| matches!(&shape.shape, egui::Shape::Text(t) if t.galley.job.text == text))
+    };
+    // the whole object's lines, as the console starts
+    let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    assert_eq!(editors.console_all.get(&linkset.root), Some(&true), "the object, to begin with");
+    assert!(drawn(&output, "ready"), "the object's line");
+    assert!(drawn(&output, aurora_i18n::tr!("script-problems-all").as_ref()), "its scope");
+    // and only the script in front's, when the reader asks for that
+    editors.console_all.insert(linkset.root, false);
+    let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    assert!(!drawn(&output, "ready"), "the door's script said nothing");
+    assert!(drawn(&output, aurora_i18n::tr!("script-console-none").as_ref()));
+}
+
+/// A save leaves what the script has to answer for in the console of its
+/// window.
+#[test]
+fn a_save_writes_the_scripts_issues_into_the_console() {
+    let ctx = egui::Context::default();
+    let mut editors = Editors::default();
+    let mut settings = settings::ScriptSettings::default();
+    let (linkset, _panel, door) = two_scripts_open(&ctx, &mut editors, &mut settings, "source", "source");
+    let linksets = std::slice::from_ref(&linkset);
+    let e = editors.documents.iter_mut().find(|e| e.target == door).unwrap();
+    e.source = "default { state_entry() { llSleep(0.5); } }".into();
+    e.baseline = e.source.clone();
+    // an object's script needs its reply and its experience to save
+    e.running = Some(true);
+    e.experience.selected = Some(Uuid::new_v4());
+    let Some(Action::Save { request, .. }) = e.save() else {
+        panic!("the save to send");
+    };
+    editors.saved(
+        request,
+        door,
+        &Ok(ScriptSaved {
+            asset: Uuid::new_v4(),
+            compiled: true,
+            checked: true,
+            errors: vec![],
+        }),
+    );
+    let lines = editors.console.get(&linkset.root).expect("the window's console");
+    // the save's own word first, with the script it came from
+    assert_eq!(lines[0].text, aurora_i18n::tr!("script-saved").to_string(), "{lines:?}");
+    let saved = editors.documents.iter().find(|e| e.target == door).unwrap().name.clone();
+    assert_eq!(lines[0].from, saved, "the script that was saved");
+    let lint = aurora_i18n::tr!("script-lint-sleeping-call").to_string();
+    assert!(lines.iter().any(|line| line.text.contains(&lint)), "{lines:?}");
+    // the footer keeps no second copy of it
+    assert!(
+        editors.documents.iter().find(|e| e.target == door).unwrap().status.is_empty(),
+        "the status bar no longer says what the console keeps"
+    );
+    // and the tab shows them
+    editors.dock_tabs.insert(linkset.root, view::DockTab::Console);
+    let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    assert!(
+        output.shapes.iter().any(|shape| matches!(
+            &shape.shape,
+            egui::Shape::Text(t) if t.galley.job.text.contains(&lint)
+        )),
+        "the console tab draws the save's findings"
+    );
+}
+
+/// The word that used to stand under the source is a line of the window's
+/// console: a save the preprocessor takes says so there, under the
+/// script's name, and the footer draws no copy of it.
+#[test]
+fn the_word_under_the_source_goes_to_the_console() {
+    let ctx = egui::Context::default();
+    let mut editors = Editors::default();
+    let mut settings = settings::ScriptSettings::default();
+    let (linkset, _panel, door) = two_scripts_open(&ctx, &mut editors, &mut settings, "source", "source");
+    let linksets = std::slice::from_ref(&linkset);
+    settings.preprocessor = true;
+    frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    let word = aurora_i18n::tr!("script-preproc-processing").to_string();
+    {
+        let e = editors.documents.iter_mut().find(|e| e.target == door).unwrap();
+        e.source = "default { state_entry() {} }".into();
+        e.baseline = String::new();
+        e.running = Some(true);
+        e.experience.selected = Some(Uuid::new_v4());
+        assert!(e.save().is_none(), "the preprocessor takes the save");
+        assert_eq!(e.status, word);
+    }
+    let said = |editors: &Editors| -> Vec<ConsoleLine> {
+        editors
+            .console
+            .get(&linkset.root)
+            .map(|lines| lines.iter().filter(|line| line.text == word).cloned().collect())
+            .unwrap_or_default()
+    };
+    assert!(said(&editors).is_empty(), "nothing said before the frame");
+    let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    let lines = said(&editors);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0].from, "Door Script", "the script that says it");
+    assert!(
+        !output.shapes.iter().any(|shape| matches!(
+            &shape.shape,
+            egui::Shape::Text(t) if t.galley.job.text == word
+        )),
+        "the footer keeps no copy of the console's word"
+    );
+    // a word that stands still is said once, not every frame
+    let gone = aurora_i18n::tr!("script-goto-not-found").to_string();
+    editors.documents.iter_mut().find(|e| e.target == door).unwrap().status = gone.clone();
+    for _ in 0..2 {
+        frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    }
+    assert_eq!(
+        editors
+            .console
+            .get(&linkset.root)
+            .unwrap()
+            .iter()
+            .filter(|line| line.text == gone)
+            .count(),
+        1,
+        "said once while it stands"
+    );
+}
+
+/// A Lua script's save says what it did in the console, and its own lints
+/// are Lua's: an LSL name called as LSL writes it, and a local never read,
+/// where none of LSL's rules reads the text.
+#[test]
+fn a_lua_save_says_so_in_the_console_with_its_own_lints() {
+    let ctx = egui::Context::default();
+    let mut editors = Editors::default();
+    let mut settings = settings::ScriptSettings::default();
+    let (linkset, _panel, door) = two_scripts_open(&ctx, &mut editors, &mut settings, "source", "source");
+    let e = editors.documents.iter_mut().find(|e| e.target == door).unwrap();
+    // the source of an SLua item: a comment with an apostrophe, and a call
+    // the LSL linter would name
+    e.compile = CompileTarget::Luau;
+    e.source = "-- it's fine\nllSleep(0.5)\nlocal t = { a = 1 }\n".into();
+    e.baseline = String::new();
+    e.running = Some(true);
+    e.experience.selected = Some(Uuid::new_v4());
+    let Some(Action::Save { request, .. }) = e.save() else {
+        panic!("the save to send")
+    };
+    editors.saved(
+        request,
+        door,
+        &Ok(ScriptSaved {
+            asset: Uuid::new_v4(),
+            compiled: true,
+            checked: true,
+            errors: vec![],
+        }),
+    );
+    let lines = editors.console.get(&linkset.root).expect("the window's console");
+    assert_eq!(lines[0].text, aurora_i18n::tr!("script-saved").to_string(), "{lines:?}");
+    // the LSL call named as Lua writes it, and the local no one reads
+    let call = aurora_i18n::tr!("script-lint-lua-lsl-call", name = "llSleep", suggestion = "ll.Sleep").to_string();
+    assert!(lines.iter().any(|line| line.text.contains(&call)), "{lines:?}");
+    let unused = aurora_i18n::tr!("script-lint-lua-unused-local", name = "t").to_string();
+    assert!(lines.iter().any(|line| line.text.contains(&unused)), "{lines:?}");
+    // and none of LSL's own rules read the text
+    let lsl = aurora_i18n::tr!("script-lint-sleeping-call").to_string();
+    assert!(!lines.iter().any(|line| line.text.contains(&lsl)), "{lines:?}");
+}
+
 /// The object-wide check reads a Lua script as Lua: the apostrophe of a
 /// `--` comment is not a string left open, its `llSleep` is Lua's own lint
 /// and none of LSL's.
+#[test]
+fn the_object_check_reads_a_lua_script_as_lua() {
+    let ctx = egui::Context::default();
+    let mut editors = Editors::default();
+    let mut settings = settings::ScriptSettings::default();
+    let (mut linkset, panel, door) = linkset_fixture();
+    // SST_LUA in the flags of the door's script: the object check and the
+    // tree read its language from them
+    linkset.prims[1].scripts[0].flags = 1;
+    let load = editors.open(panel, "Panel Script".into(), true, true, 0).unwrap();
+    editors.loaded(load, panel, Ok("default { }\n".into()));
+    editors.documents.iter_mut().find(|e| e.target == panel).unwrap().linkset = linkset.root;
+    let linksets = std::slice::from_ref(&linkset);
+    let mut request = None;
+    for _ in 0..3 {
+        let (_, actions) = frame_linksets_actions(&ctx, &mut editors, &mut settings, vec![], linksets);
+        request = request.or_else(|| {
+            actions.iter().find_map(|action| match action {
+                Action::ReadScript { target, request } if *target == door => Some(*request),
+                _ => None,
+            })
+        });
+    }
+    let request = request.expect("the door's script is read on its own");
+    editors.loaded(request, door, Ok("-- it's fine\nllSleep(0.5)\nlocal t = { a = 1 }\n".into()));
+    editors.dock_tabs.insert(linkset.root, view::DockTab::Problems);
+    let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    assert!(
+        !drawn(&output, aurora_i18n::tr!("script-check-open-string").as_ref()),
+        "the apostrophe is a comment's, in Lua"
+    );
+    assert!(
+        !drawn(&output, aurora_i18n::tr!("script-lint-sleeping-call").as_ref()),
+        "no LSL lint on a Lua script"
+    );
+    assert!(
+        drawn(
+            &output,
+            &aurora_i18n::tr!("script-lint-lua-lsl-call", name = "llSleep", suggestion = "ll.Sleep")
+        ),
+        "the object check gives Lua's own lint"
+    );
+}
+
 /// A Lua pane offers no Source / Output switch, even with the preprocessor
 /// on: the preprocessor is LSL's, so there is no second view to show.
 #[test]
@@ -2494,8 +3078,89 @@ fn a_lua_script_sits_in_the_tree_beside_its_lsl_neighbour() {
 
 /// The Console tab lists what the window's object said with `llOwnerSay`,
 /// with the time it said it, and Clear empties it.
+#[test]
+fn the_console_tab_lists_what_the_object_said() {
+    let ctx = egui::Context::default();
+    let mut editors = Editors::default();
+    let mut settings = settings::ScriptSettings::default();
+    let (linkset, panel, _door) = two_scripts_open(&ctx, &mut editors, &mut settings, "source", "source");
+    let linksets = std::slice::from_ref(&linkset);
+    let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+    editors.console(when, panel.object, "Control Panel".into(), "ready".into(), false);
+    editors.dock_tabs.insert(linkset.root, view::DockTab::Console);
+    let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    let time = crate::ui::chat::hhmmss(when);
+    for text in [
+        aurora_i18n::tr!("script-console-time").as_ref(),
+        time.as_str(),
+        "Control Panel",
+        "ready",
+    ] {
+        text_at(&output, text);
+    }
+    // Clear empties it
+    let clear = text_at(&output, aurora_i18n::tr!("common-clear").as_ref());
+    click_at(&ctx, &mut editors, &mut settings, linksets, clear, egui::PointerButton::Primary);
+    let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    text_at(&output, aurora_i18n::tr!("script-console-none").as_ref());
+}
+
 /// The dock's Search tab lists a word in every script of the window, and a
 /// click opens that script on the line.
+#[test]
+fn the_search_tab_finds_a_word_in_the_windows_scripts() {
+    let ctx = egui::Context::default();
+    let mut editors = Editors::default();
+    let (linkset, panel, door) = linkset_fixture();
+    let mut settings = settings::ScriptSettings::default();
+    for (target, name, source) in [
+        (panel, "Panel Script", "integer count = 0;\nllSay(0, \"count\");\n"),
+        (
+            door,
+            "Door Script",
+            "default\n{\n    state_entry()\n    {\n        count = 1;\n    }\n}\n",
+        ),
+    ] {
+        let load = editors.open(target, name.into(), true, true, 0).unwrap();
+        editors.loaded(load, target, Ok(source.into()));
+        editors.documents.iter_mut().find(|e| e.target == target).unwrap().linkset = linkset.root;
+    }
+    let linksets = std::slice::from_ref(&linkset);
+    for _ in 0..3 {
+        frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    }
+    // the Search tab, on "count", in a dock made tall enough to show every
+    // hit whole
+    editors.dock_tabs.insert(linkset.root, view::DockTab::Search);
+    editors.dock_search.entry(linkset.root).or_default().query = "count".into();
+    settings.dock_height = 200;
+    let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    // two hits in the panel's script, one in the door's, with their places
+    for cell in ["0:8", "1:10", "4:8"] {
+        text_at(&output, cell);
+    }
+    // the columns of the table, and the scope of the search in the header
+    for label in [
+        aurora_i18n::tr!("script-problems-source").as_ref(),
+        aurora_i18n::tr!("script-problems-line").as_ref(),
+        aurora_i18n::tr!("script-dock-text").as_ref(),
+        aurora_i18n::tr!("script-search-scope-window").as_ref(),
+    ] {
+        text_at(&output, label);
+    }
+    // a click opens that script on the line
+    let at = text_at(&output, "4:8");
+    click_at(&ctx, &mut editors, &mut settings, linksets, at, egui::PointerButton::Primary);
+    frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    assert_eq!(editors.active.get(&linkset.root), Some(&door), "the door's script is in front");
+    assert_eq!(
+        editors.documents.iter().find(|e| e.target == door).unwrap().tools.position.0,
+        4,
+        "the caret is on the hit's line"
+    );
+}
+
 /// A click in the pane that is not in front brings its script to the
 /// front (the tree and the status bar follow it), and the panes stay.
 #[test]
@@ -3488,6 +4153,136 @@ fn choosing_a_script_opens_the_prim_that_holds_it() {
     assert!(row_drawn(&output), "the reader's shut group is open now");
 }
 
+/// Find references opens the References tab on the name, and "Rename all"
+/// renames it in every script of the window at once.
+#[test]
+fn the_references_tab_renames_a_name_across_the_windows_scripts() {
+    let ctx = egui::Context::default();
+    let mut editors = Editors::default();
+    let (linkset, panel, door) = linkset_fixture();
+    let mut settings = settings::ScriptSettings::default();
+    for (target, name, source) in [
+        (panel, "Panel Script", "integer value = 1;\nvalue = value + 1;\n"),
+        (door, "Door Script", "value = 2;\n"),
+    ] {
+        let load = editors.open(target, name.into(), true, true, 0).unwrap();
+        editors.loaded(load, target, Ok(source.into()));
+        editors.documents.iter_mut().find(|e| e.target == target).unwrap().linkset = linkset.root;
+    }
+    let linksets = std::slice::from_ref(&linkset);
+    for _ in 0..3 {
+        frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    }
+    // the context menu's Find references on `value`
+    let active = *editors.active.get(&linkset.root).unwrap();
+    editors
+        .documents
+        .iter_mut()
+        .find(|e| e.target == active)
+        .unwrap()
+        .tools
+        .references_word = Some("value".into());
+    let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    assert_eq!(
+        editors.dock_tabs.get(&linkset.root),
+        Some(&view::DockTab::References),
+        "the dock shows the references"
+    );
+    let state = editors.references.get(&linkset.root).expect("the name");
+    assert_eq!(state.word, "value");
+    // the tab lists the name's places in both scripts
+    let listed = |label: &str| {
+        output
+            .shapes
+            .iter()
+            .any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == label))
+    };
+    assert!(listed("Panel Script") && listed("Door Script"), "the places of both");
+    // the new name, and Rename all
+    editors.references.get_mut(&linkset.root).unwrap().name = "amount".into();
+    frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    let rename = text_at(&output, aurora_i18n::tr!("script-references-rename").as_ref());
+    click_at(&ctx, &mut editors, &mut settings, linksets, rename, egui::PointerButton::Primary);
+    frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    for (target, expected) in [(panel, "integer amount = 1;\namount = amount + 1;\n"), (door, "amount = 2;\n")] {
+        let source = &editors.documents.iter().find(|e| e.target == target).unwrap().source;
+        assert_eq!(source, expected);
+    }
+    // the tab follows the new name
+    assert_eq!(
+        editors.references.get(&linkset.root).map(|state| state.word.as_str()),
+        Some("amount")
+    );
+}
+
+/// The Search tab's object scope looks in the scripts of the linkset no tab
+/// holds, read from their prim, and a click opens the script it is in.
+#[test]
+fn the_object_scope_searches_the_scripts_no_tab_holds() {
+    let ctx = egui::Context::default();
+    let mut editors = Editors::default();
+    let (linkset, panel, door) = linkset_fixture();
+    let mut settings = settings::ScriptSettings::default();
+    let load = editors.open(panel, "Panel Script".into(), true, true, 0).unwrap();
+    editors.loaded(load, panel, Ok("alpha here;\n".into()));
+    editors.documents.iter_mut().find(|e| e.target == panel).unwrap().linkset = linkset.root;
+    let linksets = std::slice::from_ref(&linkset);
+    // the door's script has no tab: the window asks for its text as it
+    // opens (the Problems tab reads the object by itself)
+    let mut request = None;
+    for _ in 0..3 {
+        let (_, actions) = frame_linksets_actions(&ctx, &mut editors, &mut settings, vec![], linksets);
+        request = request.or_else(|| {
+            actions.iter().find_map(|action| match action {
+                Action::ReadScript { target, request } if *target == door => Some(*request),
+                _ => None,
+            })
+        });
+    }
+    let request = request.expect("the script no tab holds is read");
+    editors.dock_search.entry(linkset.root).or_default().query = "alpha".into();
+    editors.dock_tabs.insert(linkset.root, view::DockTab::Search);
+    editors.search_object.insert(linkset.root, true);
+    frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    editors.loaded(request, door, Ok("also alpha\n".into()));
+    let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    let listed = |label: &str| {
+        output
+            .shapes
+            .iter()
+            .any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == label))
+    };
+    assert!(listed("alpha here;"), "the tab's own script");
+    assert!(listed("also alpha"), "and the one read from its prim");
+    // a click opens that script, which has no tab yet
+    let hit = text_at(&output, "also alpha");
+    let actions = click_at(&ctx, &mut editors, &mut settings, linksets, hit, egui::PointerButton::Primary);
+    assert!(
+        actions
+            .iter()
+            .any(|action| matches!(action, Action::OpenScript(target) if *target == door)),
+        "the script no tab holds is opened on its hit"
+    );
+    // the window's own scripts alone: the read one is left out
+    editors.search_object.insert(linkset.root, false);
+    let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    let still = output
+        .shapes
+        .iter()
+        .any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "also alpha"));
+    assert!(!still, "the object's script is out of the window's scope");
+}
+
+/// The dock's height is kept as the reader left it, and the default one is
+/// not kept at all, so that it follows the size of the window.
+#[test]
+fn the_docks_default_height_is_not_stored() {
+    assert_eq!(store_dock_height(view::DOCK_HEIGHT), 0);
+    assert_eq!(store_dock_height(view::DOCK_HEIGHT + 0.2), 0, "close enough to the default");
+    assert_eq!(store_dock_height(300.0), 300);
+}
+
 /// A tab dragged over another takes its place: before it when it comes
 /// from its right, after it when it comes from its left.
 #[test]
@@ -3500,6 +4295,156 @@ fn a_script_tab_dragged_over_another_takes_its_place() {
     assert_eq!(order, vec![a, b, c], "from the left, after it");
     reorder_targets(&mut order, a, a);
     assert_eq!(order, vec![a, b, c], "dropped on itself");
+}
+
+/// The order the reader drags the dock's tabs into is kept, and a list
+/// that names only some of them leaves the rest in their default order.
+#[test]
+fn the_dock_tabs_keep_the_order_they_were_dragged_into() {
+    use view::DockTab::{Console, Outline, Problems, References, Search};
+    let mut settings = settings::ScriptSettings::default();
+    assert_eq!(
+        settings.dock_order(),
+        [Console, Problems, Outline, Search, References],
+        "the default, the console first"
+    );
+    settings.set_dock_order([References, Problems, Outline, Search, Console]);
+    assert_eq!(settings.dock_order(), [References, Problems, Outline, Search, Console]);
+    // five names, each kept, the last one too
+    settings.set_dock_order([Console, Outline, Problems, Search, References]);
+    assert_eq!(settings.dock_order(), [Console, Outline, Problems, Search, References]);
+    // what the settings file holds, even written by hand
+    settings.dock_tabs = "search,,outline,unknown,search".into();
+    assert_eq!(settings.dock_order(), [Search, Outline, Console, Problems, References]);
+}
+
+/// Folding the dock gives its room to the source, never to the window: it
+/// used to grow the window a few points every frame, down the screen.
+#[test]
+fn folding_the_dock_keeps_the_windows_size() {
+    let ctx = egui::Context::default();
+    let mut editors = Editors::default();
+    let (linkset, panel, _door) = linkset_fixture();
+    let mut settings = settings::ScriptSettings::default();
+    let load = editors.open(panel, "Panel Script".into(), true, true, 0).unwrap();
+    editors.loaded(load, panel, Ok("default { }\n".into()));
+    editors.documents.iter_mut().find(|e| e.target == panel).unwrap().linkset = linkset.root;
+    let linksets = std::slice::from_ref(&linkset);
+    let window = egui::Id::unique(format!("script_linkset_{}", linkset.root));
+    let size = |ctx: &egui::Context| egui::AreaState::load(ctx, window).and_then(|state| state.size);
+    for _ in 0..4 {
+        frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    }
+    let opened = size(&ctx).expect("the window's size");
+    editors.problems_folded.insert(linkset.root, true);
+    for _ in 0..6 {
+        frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    }
+    assert_eq!(size(&ctx), Some(opened), "folded, the window keeps its size");
+    editors.problems_folded.insert(linkset.root, false);
+    for _ in 0..6 {
+        frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    }
+    assert_eq!(size(&ctx), Some(opened), "and unfolded again");
+}
+
+/// The object-wide check reads a script no tab holds from its prim, but only
+/// one whose source the reader could open: copy and modify, as `script_info`
+/// and the contents window's Open ask. A script that cannot be read has no
+/// rows and is never asked for.
+#[test]
+fn the_object_check_reads_only_scripts_whose_source_may_be_read() {
+    let ctx = egui::Context::default();
+    let mut editors = Editors::default();
+    let (mut linkset, panel, _door) = linkset_fixture();
+    let mut settings = settings::ScriptSettings::default();
+    let load = editors.open(panel, "Panel Script".into(), true, true, 0).unwrap();
+    editors.loaded(load, panel, Ok("default { }\n".into()));
+    editors.documents.iter_mut().find(|e| e.target == panel).unwrap().linkset = linkset.root;
+    // two scripts no tab holds, one the reader may open and one they may not
+    let readable = ScriptTarget {
+        object: panel.object,
+        item: Uuid::from_u128(76),
+    };
+    let locked = ScriptTarget {
+        object: panel.object,
+        item: Uuid::from_u128(77),
+    };
+    for (target, name, can_read) in [(readable, "Open Script", true), (locked, "Locked Script", false)] {
+        linkset.prims[0].scripts.push(LinksetScript {
+            object: target.object,
+            item: target.item,
+            name: name.into(),
+            flags: 0,
+            running: None,
+            permissions: Permissions::new(perm::COPY | perm::MODIFY, 0),
+            can_read,
+            dirty: false,
+            menu: None,
+        });
+    }
+    let linksets = std::slice::from_ref(&linkset);
+    let mut asked: Vec<ScriptTarget> = Vec::new();
+    for _ in 0..3 {
+        let (_, actions) = frame_linksets_actions(&ctx, &mut editors, &mut settings, vec![], linksets);
+        for action in &actions {
+            if let Action::ReadScript { target, .. } = action {
+                asked.push(*target);
+            }
+        }
+    }
+    assert!(asked.contains(&readable), "copy and modify: the check reads it");
+    assert!(!asked.contains(&locked), "neither: its source is not the viewer's to ask for");
+}
+
+/// The Problems tab reads the object's every script on its own -- no
+/// button -- and says what the editor sees in them: here, a block a script
+/// no tab holds never closes, and then one opened in the script in front.
+#[test]
+fn the_object_check_reads_the_whole_object_and_finds_an_open_block() {
+    let ctx = egui::Context::default();
+    let mut editors = Editors::default();
+    let (linkset, panel, door) = linkset_fixture();
+    let mut settings = settings::ScriptSettings::default();
+    let load = editors.open(panel, "Panel Script".into(), true, true, 0).unwrap();
+    editors.loaded(load, panel, Ok("default { }\n".into()));
+    editors.documents.iter_mut().find(|e| e.target == panel).unwrap().linkset = linkset.root;
+    let linksets = std::slice::from_ref(&linkset);
+    // the script no tab holds is read without anything being pressed
+    let mut request = None;
+    for _ in 0..3 {
+        let (_, actions) = frame_linksets_actions(&ctx, &mut editors, &mut settings, vec![], linksets);
+        request = request.or_else(|| {
+            actions.iter().find_map(|action| match action {
+                Action::ReadScript { target, request } if *target == door => Some(*request),
+                _ => None,
+            })
+        });
+    }
+    let request = request.expect("the door's script is read on its own");
+    editors.loaded(request, door, Ok("default\n{\n    state_entry()\n    {\n}\n".into()));
+    editors.dock_tabs.insert(linkset.root, view::DockTab::Problems);
+    let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    let block = aurora_i18n::tr!("script-check-open-block");
+    let blocks = |output: &egui::FullOutput| {
+        output
+            .shapes
+            .iter()
+            .filter(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == block))
+            .count()
+    };
+    assert_eq!(blocks(&output), 1, "the check says the block never closes");
+    assert!(
+        output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text)
+                if text.galley.job.text.starts_with("Door Script"))),
+        "under the script's name"
+    );
+    // the script in front is read as it is typed, in the same list
+    if let Some(e) = editors.documents.iter_mut().find(|e| e.target == panel) {
+        e.source.push_str("integer x = 1;\n{\n");
+    }
+    let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    assert_eq!(blocks(&output), 2, "a block opened in the script in front shows at once");
 }
 
 /// Help › Shortcuts opens a window that tells what each key does in a
@@ -3692,6 +4637,7 @@ fn a_tree_row_without_a_tab_asks_the_app_to_open_its_script() {
         flags: 0,
         running: None,
         permissions: Permissions::new(perm::COPY | perm::MODIFY, 0),
+        can_read: true,
         dirty: false,
         menu: Some(LinksetScriptMenu {
             moves: false,
@@ -3944,7 +4890,103 @@ fn ctrl_and_shift_choose_several_scripts_and_the_menu_acts_on_them() {
     );
 }
 
+/// The Search tab's replacement takes every place its options match, in
+/// the window's open scripts, whole words and case as the list reads them.
+#[test]
+fn the_search_tab_replaces_every_place_with_its_options() {
+    let ctx = egui::Context::default();
+    let mut editors = Editors::default();
+    let root = Uuid::from_u128(9);
+    for (item, source) in [(1u128, "alpha alpha"), (2, "Alpha alphabet")] {
+        let target = ScriptTarget {
+            object: Uuid::nil(),
+            item: Uuid::from_u128(item),
+        };
+        let load = editors.open(target, "S".into(), true, true, 0).unwrap();
+        editors.loaded(load, target, Ok(source.into()));
+        editors.documents.last_mut().unwrap().linkset = root;
+    }
+    assert_eq!(
+        replace_search(&ctx, &mut editors.documents, root, "alpha", "beta", true, true),
+        3,
+        "two in the first script, the whole word in the second"
+    );
+    assert_eq!(editors.documents[0].source, "beta beta");
+    assert_eq!(editors.documents[1].source, "beta alphabet");
+    assert_eq!(
+        replace_search(&ctx, &mut editors.documents, root, "ALPHA", "gamma", false, true),
+        0,
+        "nothing left, and the case matters now"
+    );
+    assert_eq!(search_ranges("Alpha alpha alphabet", "alpha", true, true).len(), 2);
+    assert!(search_ranges("Alpha", "alpha", false, true).is_empty());
+}
+
+/// A save's word and its findings name the script in the Console, with the
+/// line a finding is on, so that a click can go there.
+#[test]
+fn a_saved_scripts_findings_name_it_in_the_console() {
+    let mut editors = Editors::default();
+    let target = target(31);
+    let load = editors.open(target, "S".into(), true, true, 0).unwrap();
+    editors.loaded(load, target, Ok("default {}\n".into()));
+    let e = editors.documents.iter_mut().find(|e| e.target == target).unwrap();
+    e.source.push_str("// an edit\n");
+    let Some(Action::Save { request, .. }) = e.save() else {
+        panic!("a save")
+    };
+    editors.saved(
+        request,
+        target,
+        &Ok(ScriptSaved {
+            asset: Uuid::nil(),
+            compiled: false,
+            checked: true,
+            errors: vec!["(3, 5) : ERROR : Syntax error".into()],
+        }),
+    );
+    let lines = editors.console.get(&target.item).expect("the script's console");
+    assert!(
+        lines.iter().any(|line| line.target == Some(target) && line.line.is_none()),
+        "the word names the script"
+    );
+    assert!(
+        lines.iter().any(|line| line.target == Some(target) && line.line == Some((3, 5))),
+        "a finding names its line and column"
+    );
+}
+
 /// A console row that names a script brings it to the front.
+#[test]
+fn a_console_line_that_names_a_script_opens_it() {
+    let ctx = egui::Context::default();
+    let mut editors = Editors::default();
+    let mut settings = settings::ScriptSettings::default();
+    let (linkset, panel, door) = two_scripts_open(&ctx, &mut editors, &mut settings, "source", "source");
+    editors.console.entry(linkset.root).or_default().push(ConsoleLine {
+        time: std::time::SystemTime::now(),
+        from: "Saved".into(),
+        text: "Source saved, but compilation failed.".into(),
+        debug: false,
+        target: Some(panel),
+        line: None,
+    });
+    editors.active.insert(linkset.root, door);
+    editors.dock_tabs.insert(linkset.root, view::DockTab::Console);
+    let linksets = std::slice::from_ref(&linkset);
+    for _ in 0..3 {
+        frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    }
+    let output = frame_linksets(&ctx, &mut editors, &mut settings, vec![], linksets);
+    let at = text_at(&output, "Saved");
+    click_at(&ctx, &mut editors, &mut settings, linksets, at, egui::PointerButton::Primary);
+    assert_eq!(
+        editors.active.get(&linkset.root),
+        Some(&panel),
+        "the line's script comes to the front"
+    );
+}
+
 /// The Properties section keeps its room while the page of a new script is
 /// in front: the tree's list and its Settings row do not move.
 #[test]

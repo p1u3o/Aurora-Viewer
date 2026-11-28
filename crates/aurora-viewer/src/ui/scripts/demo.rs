@@ -33,6 +33,41 @@ impl Editors {
         self.open_draft(root, root, prim.to_owned(), lang, Vec::new());
     }
 
+    pub fn demo_outline(&mut self) {
+        let first = self
+            .documents
+            .iter()
+            .find(|e| e.is_open())
+            .map(|e| (Self::window_key(e), e.target, e.target.object));
+        let roots: Vec<Uuid> = self.documents.iter().filter(|e| e.is_open()).map(Self::window_key).collect();
+        for root in roots {
+            self.dock_tabs.insert(root, view::DockTab::Outline);
+        }
+        // the first script, whose tree has more to show than the lamp's
+        if let Some((root, target, prim)) = first {
+            self.active.insert(root, target);
+            self.reveal.insert(root, prim);
+        }
+    }
+
+    pub fn demo_problems(&mut self) {
+        let roots: Vec<Uuid> = self.documents.iter().filter(|e| e.is_open()).map(Self::window_key).collect();
+        for root in roots {
+            self.dock_tabs.insert(root, view::DockTab::Problems);
+            self.problems_folded.insert(root, false);
+        }
+    }
+
+    /// The dock on the Console, unfolded: what the object said, the way the
+    /// demo of its lines shows it (`AURORA_DEMO_SCRIPTS=console`).
+    pub fn demo_console(&mut self) {
+        let roots: Vec<Uuid> = self.documents.iter().filter(|e| e.is_open()).map(Self::window_key).collect();
+        for root in roots {
+            self.dock_tabs.insert(root, view::DockTab::Console);
+            self.problems_folded.insert(root, false);
+        }
+    }
+
     pub fn demo_discard_prompts(&mut self) -> usize {
         let mut discarded = 0;
         for e in &mut self.documents {

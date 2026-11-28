@@ -183,7 +183,7 @@ impl App {
     }
 
     fn demo_script_linkset(&mut self) {
-        let lint = false;
+        let lint = std::env::var("AURORA_DEMO_SCRIPTS").is_ok_and(|mode| mode == "lints");
         for event in crate::demo::script_linkset_events() {
             self.world.apply(event);
         }
@@ -251,6 +251,8 @@ impl App {
             targets.push(target);
             self.demo_script_sources.insert(target, source);
         }
+        // a dock tall enough for the console's lines and the band under them
+        self.settings.script_editor.dock_height = 165;
         // the panel's script and the lamp's second one: two tabs to switch --
         // the linter's demo keeps the panel's in front, the one it has
         // something to say about
@@ -315,6 +317,8 @@ impl App {
             targets.push((local, target));
             self.demo_script_sources.insert(target, source);
         }
+        // room for the tree's groups and the dock under the source
+        self.settings.script_editor.dock_height = 165;
         // the root's script and the deepest prim's: the tree shows the levels
         // between them
         let root = targets.iter().find(|(local, _)| *local == 96_200).map(|(_, target)| *target);
@@ -364,12 +368,22 @@ impl App {
                 | "format"
                 | "inlays"
         );
+        // the split's demo: the two open scripts side by side, the divider a
+        // little left of the middle
+        if self.frame_count == 300 && mode == "split" {
+            self.script_editors.demo_split();
+        }
+        // the dock's own: its Outline tab, or its Problems on the findings
+        if self.frame_count == 300 && mode == "outline" {
+            self.script_editors.demo_outline();
+        }
+        if self.frame_count == 300 && matches!(mode.as_str(), "lints" | "lua-lints") {
+            self.script_editors.demo_problems();
+        }
+        if self.frame_count == 300 && mode == "console" {
+            self.script_editors.demo_console();
+        }
         if self.frame_count == 300 && matches!(mode.as_str(), "linkset" | "split") {
-            // the split's demo: the two open scripts side by side, the divider
-            // a little left of the middle
-            if mode == "split" {
-                self.script_editors.demo_split();
-            }
             // what the region reports of the object's scripts, for the bar:
             // the demo's bridge has no endpoint here, so it gives the figure
             // the query would bring (four scripts, three of them running)
@@ -490,7 +504,18 @@ impl App {
             self.panels.perf = false;
             if matches!(
                 mode.as_str(),
-                "linkset" | "quit" | "split" | "simple" | "root-menu" | "script-menu" | "new"
+                "linkset"
+                    | "quit"
+                    | "lints"
+                    | "lua-lints"
+                    | "split"
+                    | "outline"
+                    | "search-linkset"
+                    | "console"
+                    | "simple"
+                    | "root-menu"
+                    | "script-menu"
+                    | "new"
             ) {
                 self.demo_script_linkset();
             }

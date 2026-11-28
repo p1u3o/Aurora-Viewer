@@ -114,6 +114,74 @@ fn label_button_room(ui: &mut egui::Ui, label: &str, enabled: bool, side: f32) -
     }
 }
 
+/// The top edge of a panel under another: a strip that drags its height
+/// between `min` and `max`, lit while the pointer is on it, back to `default`
+/// on a double click. Returns the height it asks for, when it asks for one.
+///
+/// The grip is drawn at `grip` when the caller has room for it between the
+/// panel and what sits above it (the middle of that room reads as the divider,
+/// where the edge itself would read as the panel's own border); a small box
+/// around the grip takes the pointer there, and the strip at the edge keeps
+/// the rest. `dots` says whether its three dots are drawn: a split keeps the
+/// box and the edge, its divider already showing the same three dots.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resize_edge(
+    ui: &egui::Ui,
+    p: &Palette,
+    area: egui::Rect,
+    grip: Option<egui::Pos2>,
+    dots: bool,
+    height: f32,
+    default: f32,
+    min: f32,
+    max: f32,
+    id: egui::Id,
+) -> Option<f32> {
+    let y = area.top();
+    let edge = egui::Rect::from_min_max(egui::pos2(area.left(), y - 4.0), egui::pos2(area.right(), y + 4.0));
+    let mut response = ui
+        .interact(edge, id, egui::Sense::click_and_drag())
+        .on_hover_cursor(egui::CursorIcon::ResizeVertical);
+    // a grip drawn away from the edge is a target of its own, so that the dots
+    // are what the reader grabs, and a drag that starts on the strip stays its
+    // own (the pointer may cross the box on the way)
+    let grip = grip.filter(|grip| (grip.y - y).abs() > 4.0);
+    if let Some(grip) = grip {
+        let held = ui
+            .interact(
+                egui::Rect::from_center_size(grip, egui::vec2(44.0, 14.0)),
+                id.with("grip"),
+                egui::Sense::click_and_drag(),
+            )
+            .on_hover_cursor(egui::CursorIcon::ResizeVertical);
+        if !response.dragged() && (held.hovered() || held.dragged() || held.double_clicked()) {
+            response = held;
+        }
+    }
+    if response.hovered() || response.dragged() {
+        ui.painter()
+            .hline(area.x_range(), y, border_stroke(p, egui::Stroke::new(1.0, p.violet_light)));
+    } else if dots {
+        // the same grip, lying down: this edge drags too
+        let middle = grip.unwrap_or(egui::pos2(edge.center().x, y));
+        for step in -1..=1 {
+            ui.painter().circle_filled(
+                egui::pos2(middle.x + step as f32 * 5.0, middle.y),
+                1.5,
+                p.muted_dim.gamma_multiply(0.9),
+            );
+        }
+    }
+    if response.double_clicked() {
+        return Some(default.clamp(min, max));
+    }
+    // the edge is the panel's top: pulling it up gives the panel more room
+    if response.dragged() && response.drag_delta().y != 0.0 {
+        return Some((height - response.drag_delta().y).clamp(min, max));
+    }
+    None
+}
+
 /// The edge of a side's panel: an 8-point strip that drags its width between
 /// `min` and `max`, lit while the pointer is on it, back to `default` on a
 /// double click. The strip lies `centre` points past the panel's edge, where
@@ -158,6 +226,21 @@ pub(crate) fn resize_side(
         return Some((width + response.drag_delta().x).clamp(min, max));
     }
     None
+}
+
+/// `tabs_reorderable` whose tabs keep a fixed room after their name for a
+/// state badge (the dock's Problems count): the tab never changes width when
+/// the badge appears, changes or goes. The tabs keep their own compact width --
+/// a name and the same air on either side -- and never swell to fill a wider
+/// row, so a row with room for them reads the same as a crowded one.
+pub fn tabs_reorderable_badged(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    selected: &mut usize,
+    labels: &[(&str, bool)],
+    badges: &[Option<&str>],
+) -> Option<(usize, usize)> {
+    tabs_row_full(ui, p, selected, labels, false, true, true, Some(badges), false).dragged
 }
 
 /// The face and the ink of a flat button of the theme: `field` at rest,
@@ -333,19 +416,28 @@ fn tabs_row_full(
                     .unwrap_or(from);
                 ctx.data_mut(|d| d.remove_temp::<usize>(drag));
                 if to != from {
-                    return TabsRow { changed, rects };
+                    return TabsRow {
+                        changed,
+                        rects,
+                        dragged: Some((from, to)),
+                    };
                 }
             }
         }
     }
-    TabsRow { changed, rects }
+    TabsRow {
+        changed,
+        rects,
+        dragged: None,
+    }
 }
 
-/// What a tab strip did: whether the selection changed, and the rect of each
-/// tab.
+/// What a tab strip did: whether the selection changed, the rect of each tab,
+/// and the places of a tab the reader dragged onto another's.
 struct TabsRow {
     changed: bool,
     rects: Vec<egui::Rect>,
+    dragged: Option<(usize, usize)>,
 }
 
 /// Room a tab keeps after its name for a state badge.
@@ -404,7 +496,7 @@ pub use copy_on_click::{copied_feedback, copy_on_click, show_copied};
 pub(crate) use modal_keys::{default_button, enter_pressed};
 pub use pills::{
     TabPill, chip_row, clearable_search_box, dot_pill, dot_pill_width, filter_field, filter_pill, filter_pill_at, filter_pill_width,
-    pill_tab, pill_tab_wide, reveal_search_selection, search_box, search_cleared, search_list_item, search_scroll_to_column,
+    pill_tab, pill_tab_wide, quiet_note, reveal_search_selection, search_box, search_cleared, search_list_item, search_scroll_to_column,
     search_scroll_to_row, search_text_edit, search_text_edit_with_margin, select_on_focus, tab_pill, tab_pill_width,
 };
 pub use text_field::text_field;

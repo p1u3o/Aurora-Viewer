@@ -570,6 +570,7 @@ enum Page {
     Editing,
     Preprocessor,
     External,
+    Errors,
     Layout,
 }
 
@@ -585,11 +586,12 @@ impl Preferences {
     /// The window of the preferences, as `Floater` is given it.
     pub const WINDOW: &'static str = "script_preferences";
 
-    pub fn show(&mut self, ctx: &egui::Context, p: &Palette, settings: &mut ScriptSettings) -> bool {
+    pub fn show(&mut self, ctx: &egui::Context, p: &Palette, settings: &mut ScriptSettings, errors: &mut super::ErrorRouting) -> bool {
         if !self.open {
             return false;
         }
         let before = settings.clone();
+        let routing_before = *errors;
         if let Some(result) = self.directory.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.directory = None;
             if let Some(path) = result {
@@ -629,6 +631,11 @@ impl Preferences {
                     aurora_i18n::tr!("script-preferences-external-page").to_string(),
                 ),
                 (
+                    Page::Errors,
+                    "bug-filled",
+                    aurora_i18n::tr!("script-preferences-errors").to_string(),
+                ),
+                (
                     Page::Layout,
                     "layout-filled",
                     aurora_i18n::tr!("script-preferences-layout").to_string(),
@@ -653,12 +660,13 @@ impl Preferences {
                         Page::Editing => self.editing(ui, p, settings),
                         Page::Preprocessor => self.preprocessor(ui, p, settings),
                         Page::External => self.external(ui, p, settings),
+                        Page::Errors => self.errors(ui, p, settings, errors),
                         Page::Layout => self.layout(ui, p, settings),
                     }
                 });
         });
         self.open = open;
-        *settings != before
+        *settings != before || *errors != routing_before
     }
 
     /// The colours, the font and the preview: what a script looks like.
@@ -796,6 +804,7 @@ impl Preferences {
             aurora_i18n::tr!("script-preferences-current-line"),
         );
         crate::ui::widgets::switch_labeled(ui, p, &mut settings.completion, aurora_i18n::tr!("script-preferences-completion"));
+        crate::ui::widgets::switch_labeled(ui, p, &mut settings.linter, aurora_i18n::tr!("script-preferences-linter"));
         crate::ui::widgets::switch_labeled(
             ui,
             p,
@@ -903,12 +912,40 @@ impl Preferences {
         );
     }
 
+    /// The script errors and what the objects say: where they go.
+    fn errors(&mut self, ui: &mut egui::Ui, p: &Palette, settings: &mut ScriptSettings, errors: &mut super::ErrorRouting) {
+        crate::ui::widgets::section_header(ui, p, "bug-filled", aurora_i18n::tr!("script-preferences-errors").as_ref());
+        crate::ui::widgets::switch_labeled(
+            ui,
+            p,
+            &mut settings.owner_say_debug,
+            aurora_i18n::tr!("script-preferences-owner-say"),
+        );
+        crate::ui::widgets::divider(ui, p);
+        crate::ui::widgets::switch_labeled(ui, p, &mut errors.in_chat, aurora_i18n::tr!("script-preferences-errors-in-chat"))
+            .on_hover_text(aurora_i18n::tr!("script-preferences-errors-in-chat-hint"));
+        crate::ui::widgets::switch_labeled(ui, p, &mut errors.to_channel, aurora_i18n::tr!("script-preferences-errors-channel"));
+        ui.add_enabled_ui(errors.to_channel, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(aurora_i18n::tr!("script-preferences-errors-channel-number"));
+                ui.add(egui::DragValue::new(&mut errors.channel).range(1..=i32::MAX));
+            });
+        });
+        ui.label(
+            RichText::new(aurora_i18n::tr!("script-preferences-errors-hint"))
+                .small()
+                .color(p.muted),
+        );
+    }
+
     /// The room the reader dragged: the tree's width, the dock's height and
     /// its tabs' order, and the way back from them.
     fn layout(&mut self, ui: &mut egui::Ui, p: &Palette, settings: &mut ScriptSettings) {
         crate::ui::widgets::section_header(ui, p, "layout-filled", aurora_i18n::tr!("script-preferences-layout").as_ref());
         if flat_button(ui, p, aurora_i18n::tr!("script-preferences-reset-layout")).clicked() {
             settings.tree_width = 0;
+            settings.dock_height = 0;
+            settings.dock_tabs.clear();
         }
         ui.label(
             RichText::new(aurora_i18n::tr!("script-preferences-reset-layout-hint"))

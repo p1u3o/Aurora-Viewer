@@ -10912,6 +10912,7 @@ script-properties-none = No script in front
 build-compact-surrounding = Select by surrounding
 script-properties-rights = Rights
 build-options-menu = Options
+script-console-open = Open the script
 build-options-locked-only = Select only locked objects
 build-options-copyable-only = Select only copyable objects
 build-options-group-owned = Include group-owned objects
@@ -10951,25 +10952,38 @@ build-capture-shape-mesh-or-sculpt = The shape of a mesh or a sculpted prim cann
 build-capture-shape-no-modify = You need permission to modify this prim to copy its shape
 script-menu-insert = Insert
 build-compact-move-tool = Move
+script-problems-message = Message
 build-compact-edit = Edit
+script-problems-source = Source
 build-compact-create = Create
+script-problems-line = Line
 task-transfer-source-gone = The source object is no longer available.
+script-problems-this = This script
 task-transfer-unavailable = This item cannot be transferred.
+script-problems-all = All scripts
 task-transfer-attachment-no-copy = A no-copy item cannot be removed from an attachment. Rez the object on the ground first.
+script-problems-none = No problems.
 task-transfer-no-permission = The permissions of this item and its object do not allow this transfer.
+script-problems-fold = Fold the problems
 task-transfer-title = Move contents to inventory
+script-problems-unfold = Show the problems
 task-transfer-warning = This item will not be copied: it will be removed from the object's contents and moved to your inventory.
+script-dock-problems = Problems
 task-transfer-warning-many = { $count ->
     [one] { $count } item will not be copied: it will be removed from the object's contents and moved to your inventory.
    *[other] { $count } items will not be copied: they will be removed from the object's contents and moved to your inventory.
     }
+script-dock-outline = Outline
 task-transfer-scripted-warning = This object contains scripts. Removing this item may disrupt them or make the object unusable.
+script-dock-search = Search
 task-transfer-ignore = Do not show this warning again
+script-dock-references = References
 task-transfer-destination = This folder cannot receive this item.
 script-type-lsl = LSL
 task-transfer-requested = Transfer to inventory requested.
 script-type-lua = Lua
 task-transfer-preferences = Removing object contents
+script-dock-console = Console
 task-transfer-warn-move = Confirm moving no-copy items
 task-transfer-warn-scripted = Warn when removal may disrupt scripts
 task-transfer-move-menu = Move to inventory
@@ -10989,8 +11003,11 @@ contents-copy-move-more = { $count ->
     [one] …and { $count } more item
    *[other] …and { $count } more items
     }
+script-console-time = Time
 contents-copy-requested = Copy of the contents to "{ $folder }" requested.
+script-console-filter = Filter the console
 contents-copy-folder-timeout = Creation of "{ $folder }" was not confirmed within 60 seconds. No contents were transferred.
+script-console-copy = Copy all
 contents-copy-complete = { $count ->
     [one] Contents copied to "{ $folder }": { $count } item received.
    *[other] Contents copied to "{ $folder }": { $count } items received.
@@ -10999,61 +11016,102 @@ script-unsaved = Unsaved
 contents-copy-timeout = Copy to "{ $folder }" could not be confirmed within 60 seconds. Items received: { $received }/{ $count }. Check the folder's contents.
 script-saved-at = Saved { $time }
 contents-copy-unavailable = Copy to "{ $folder }" could not be confirmed: the destination folder is missing or could not be loaded.
+script-console-none = Nothing said yet.
 contents-copy-wear-busy = Contents copied to "{ $folder }", but your outfit could not be changed while another outfit change was pending. Wear the folder from your inventory.
+script-outline-name = Name
 contents-copy-failed = The folder for the object's contents could not be created: { $reason }
+script-dock-text = Text
 contents-copy-wear-timeout = Not every item of "{ $folder }" reached your inventory: your outfit was not changed. Wear the folder from your inventory.
+script-search-scope-window = Open scripts
 build-compact-land = Land
+script-search-scope-object = This object
 build-compact-capacity = Remaining capacity: { $remaining }. Click to view detailed weights.
+script-check-again = Read the object's scripts again
 build-compact-empty = Select an object
+script-check-reading = { $count ->
+    [one] Reading { $count } script…
+   *[other] Reading { $count } scripts…
+    }
 build-compact-selection-edit = Editing the selection
 build-compact-object-kind = Whole object · { $kind }
 build-compact-prim = prim
 build-compact-mesh = mesh
+script-check-unreachable = { $name } could not be read: { $reason }
 build-compact-object-count = { $count ->
     [one] { $count } object
    *[other] { $count } objects
     }
+script-check-stray-close = A {"}"} closes no block.
 build-compact-prim-count = { $count ->
     [one] { $count } prim
    *[other] { $count } prims
     }
+script-check-open-block = A {"{"} is never closed.
 build-compact-position = Position
+script-check-open-string = A string is never closed.
 build-compact-size = Size
+script-check-open-comment = A comment is never closed.
 build-compact-rotation = Rotation
+script-check-open-lua-block = The { $word } block is never closed.
 build-compact-selection-snap = Selection and snapping
+script-check-stray-lua-close = This { $word } closes no block.
 build-compact-grid-unit = { $unit } m
+script-lint-fast-timer = A timer this fast starves the script; 0.1 s is the shortest that is worth it.
 build-compact-copy-hint = Shift + drag: copy
+script-lint-sleeping-call = llSleep stops the whole script; a timer lets it answer meanwhile.
 build-compact-create-hint = Click: create
+script-lint-costly-listen = Listens to every speaker on the channel; filter the name or the message.
 build-compact-land-hint = Hold: paint
+script-lint-fast-sensor = A sensor this often costs the region; a second is the shortest that is worth it.
 build-compact-drag-hint = Drag in the world
 
 # Compact build inspector, C3
+script-lint-integer-past-32-bits = An integer this large does not fit in 32 bits: it wraps when it compiles.
 build-c3-remaining = { $remaining } available
+script-lint-mergeable-prim-params = Two primitive-parameter calls in a row: one call with both lists does less work.
 build-c3-emission-options = Emission and options
+script-lint-string-build = Builds a string in a loop; collect the parts in a list and join them once.
 build-c3-maps-tints = Maps and tints
+script-lint-repeated-call = Called { $count } times with the same arguments here; keep it in a local.
 build-c3-texture-transform = Texture transforms
+script-lint-arguments = { $name } takes { $expected } arguments, but this call gives { $given }.
 build-c3-material-assigned = PBR material applied
+script-lint-event-arguments = The { $event } event takes { $expected } parameters, but this one gives { $given }.
 build-c3-choose = Choose…
 
+script-lint-unknown-function = Unknown function { $name }
 workspace-inventory-selected = { $count } selected
 
+script-lint-did-you-mean = Did you mean { $name }?
 workspace-land-identity = Identity and ownership
+script-lint-duplicate-event = The { $event } event is already handled in this state.
 workspace-land-sale = Sale and information
+script-lint-assignment-in-condition = Assignment in a condition: use == to compare.
 workspace-land-actions = Parcel actions
+script-lint-empty-if = The body of this if is empty.
 workspace-outfit-selection = Select an outfit
+script-lint-empty-while = The body of this while is empty.
 workspace-outfit-items =
     { $count ->
         [one] { $count } item
        *[other] { $count } items
     }
 
+script-lint-switch-no-default = This switch has no default: a value nothing matches does nothing.
 ui-inventory-received-purchases = Received items
+script-lint-switch-duplicate-case = Duplicate case { $value }.
 ui-inventory-no-received-purchases = No received items yet.
+script-lint-state-current = state { $state }: the script is already in that state.
 import-local-settings = Mesh loading settings
+script-lint-lua-lsl-call = { $name } is LSL's name: in Lua it is { $suggestion }.
 import-local-clear = Remove from selection
+script-lint-lua-lsl-call-hint = { $name } is LSL's name: in Lua, a built-in is called as an ll. name.
 import-local-rez = Place a prim for this preview
+script-lint-lua-unused-local = The local { $name } is never used.
 ui-context-sit-stand = Sit / stand
+script-lint-lua-global = { $name } is a global: write local { $name } unless it is shared on purpose.
 ui-context-save-backup = Backup
+script-lint-lua-string-plus = Lua joins strings with two dots, not with a plus.
 ui-context-save-collada = Collada
 script-help-shortcuts = Shortcuts
 script-shortcuts-files = Files and windows
@@ -11122,8 +11180,14 @@ script-shortcuts-list-take = Take the chosen name in the list
 radar-payment-none = No payment info
 script-shortcuts-dismiss = Close the list, end a snippet
 radar-payment-on-file = Payment info on file
+script-references-new-name = New name
 radar-payment-used = Payment info used
+script-references-rename = Rename all
 radar-age-hidden = n/a
+script-references-count = { $count ->
+    [one] { $count } place
+   *[other] { $count } places
+    }
 radar-age-days = { $days ->
     [one] { $days } day
    *[other] { $days } days
@@ -11131,12 +11195,19 @@ radar-age-days = { $days ->
 radar-empty = Nobody nearby.
 radar-options = Radar options
 radar-selection-menu = Actions on the selection
+script-references-none = Nothing uses this name.
 radar-add-friend = Add as friend
+script-references-renamed = { $count ->
+    [one] { $count } place renamed.
+   *[other] { $count } places renamed.
+    }
 radar-opt-minimap = Show the mini-map
 radar-opt-limit-range = Limit to a radius
 radar-opt-range = Radius
 radar-opt-show-muted = Show blocked residents
+script-search-in-scripts = Find in the windows scripts
 radar-opt-name-format = Name format
+script-search-none = Nothing found.
 radar-name-display = Display name
 script-goto-definition = Go to the definition
 radar-name-user = Username
@@ -11144,7 +11215,9 @@ script-find-references = Find references
 radar-name-display-user = Display name (username)
 script-goto-not-found = No declaration in this objects scripts.
 radar-name-user-display = Username (display name)
+script-outline-none = Nothing to outline.
 radar-opt-columns = Columns
+script-outline-filter = Filter the outline
 radar-opt-color-names = Color names by distance
 script-spaces = Spaces: { $count }
 radar-opt-report-to = Report to
@@ -11280,6 +11353,7 @@ people-groups-count-unlimited = { $count ->
     [one] You belong to { $count } group
    *[other] You belong to { $count } groups
 }
+script-preferences-errors = Errors
 people-groups-none = No active group
 script-preferences-font = Editor font
 people-groups-none-sub = No title shown above your name
@@ -11327,6 +11401,7 @@ script-preferences-current-line = Highlight the current line
 people-groups-receive-chat = Receive the group chat
 script-preferences-completion = Completion popup
 people-groups-in-profile = Show in my profile
+script-preferences-linter = Linter
 people-groups-pin = Pin at the top of the list
 script-preferences-deprecations = Deprecation hints
 people-groups-slurl = SLurl
@@ -11339,10 +11414,15 @@ people-sets-people = { $count ->
     [one] { $count } person
    *[other] { $count } people
     }
+script-preferences-errors-in-chat = Show script errors in the nearby chat
 people-sets-online = { $count } online
+script-preferences-errors-in-chat-hint = Off: they go to the Script debug window alone.
 people-sets-no-match = Nobody here matches the search.
+script-preferences-errors-channel = Also say them on a channel
 people-sets-add-people = Add people
+script-preferences-errors-channel-number = Channel
 people-sets-quick-sort = Quick sort
+script-preferences-errors-hint = The viewer's own script errors, from this account's objects.
 people-sets-quick-sort-tip = Put your friends who are in no contact set into sets, one at a time
 people-sets-online-only = Online
 people-sets-new-set-with = New contact set…

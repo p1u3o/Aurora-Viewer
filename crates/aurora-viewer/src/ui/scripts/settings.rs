@@ -1,6 +1,7 @@
 //! LLFloaterScriptEdPrefs / app_settings/settings.xml (Firestorm, LGPL 2.1).
 //! Defaults follow Firestorm's options; color defaults follow Aurora's skin.
 
+use super::view::DockTab;
 use crate::theme::Palette;
 use egui::Color32;
 use serde::{Deserialize, Serialize};
@@ -130,7 +131,8 @@ pub struct ScriptSettings {
     /// The reading aids, each on: the state/event line stuck above the source,
     /// the indent guides, the bars of the lines changed since the save, the
     /// word under the caret and its other occurrences, the bracket at the
-    /// caret and its match, the caret's line, and the completion popup.
+    /// caret and its match, the caret's line, the completion popup, and the
+    /// linter (`lints.rs` and lslint).
     #[serde(default = "on_by_default")]
     pub sticky_line: bool,
     #[serde(default = "on_by_default")]
@@ -145,6 +147,8 @@ pub struct ScriptSettings {
     pub current_line: bool,
     #[serde(default = "on_by_default")]
     pub completion: bool,
+    #[serde(default = "on_by_default")]
+    pub linter: bool,
     /// The help of a word says when the language deprecated it, and the name
     /// to use instead (`assets/lsl/definitions.json`; Aurora's own, on).
     #[serde(default = "on_by_default")]
@@ -156,6 +160,14 @@ pub struct ScriptSettings {
     /// The room of the tree beside the source, as the reader dragged its edge:
     /// 0 for the default.
     pub tree_width: u16,
+    /// The tabs of the dock under the source, in the order the reader dragged
+    /// them into, by name; empty or partial, the rest keep the default order.
+    #[serde(default)]
+    pub dock_tabs: String,
+    /// The room of the dock under the source, as the reader dragged its top
+    /// edge: 0 for the default.
+    #[serde(default)]
+    pub dock_height: u16,
     /// The parameter names in the gap before each argument of a call the
     /// catalog knows (Aurora's own; on, as an IDE's are).
     #[serde(default = "on_by_default")]
@@ -189,7 +201,43 @@ pub struct ScriptSettings {
     pub websocket_forward_debug: bool,
 }
 
-impl ScriptSettings {}
+impl ScriptSettings {
+    /// The dock's six tabs, in the order they are shown: what the reader
+    /// dragged, then the tabs it does not name, in the default order.
+    pub(super) fn dock_order(&self) -> [DockTab; 5] {
+        const ALL: [DockTab; 5] = [
+            DockTab::Console,
+            DockTab::Problems,
+            DockTab::Outline,
+            DockTab::Search,
+            DockTab::References,
+        ];
+        let mut order: Vec<DockTab> = Vec::with_capacity(5);
+        for name in self.dock_tabs.split(',').map(str::trim) {
+            if let Some(tab) = DockTab::from_name(name)
+                && !order.contains(&tab)
+            {
+                order.push(tab);
+            }
+        }
+        for tab in ALL {
+            if !order.contains(&tab) {
+                order.push(tab);
+            }
+        }
+        let mut out = ALL;
+        for (at, tab) in order.into_iter().take(6).enumerate() {
+            out[at] = tab;
+        }
+        out
+    }
+
+    /// Keep the order the reader dragged the dock's tabs into.
+    pub(super) fn set_dock_order(&mut self, order: [DockTab; 5]) {
+        let names: Vec<&str> = order.iter().map(|tab| tab.name()).collect();
+        self.dock_tabs = names.join(",");
+    }
+}
 
 /// A setting that is on unless the file says otherwise.
 fn on_by_default() -> bool {
@@ -237,9 +285,12 @@ impl Default for ScriptSettings {
             bracket_match: true,
             current_line: true,
             completion: true,
+            linter: true,
             deprecations: true,
             arguments: true,
             tree_width: 0,
+            dock_tabs: String::new(),
+            dock_height: 0,
             inlays: true,
             search_prefer_left: false,
             search_inline: false,
@@ -297,6 +348,7 @@ mod tests {
                 && settings.bracket_match
                 && settings.current_line
                 && settings.completion
+                && settings.linter
         );
         assert!(!settings.search_prefer_left && !settings.search_inline);
         assert!(settings.convert_tabs && settings.optimize && settings.switches && settings.lazy_lists);

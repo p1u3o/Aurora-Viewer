@@ -110,6 +110,52 @@ pub(super) fn outline(source: &str, lang: Lang) -> Vec<Item> {
     items
 }
 
+/// One row of the outline's tree: the item it shows, by its place in the
+/// list, and how deep it sits (an event under its state, one step in).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Row {
+    pub item: usize,
+    pub depth: u16,
+}
+
+/// The items as the tree an IDE shows: each state with its events under it,
+/// the functions and the globals at the top level, in the source's order.
+/// `filter` keeps the rows whose name holds it, and the state of the events
+/// it keeps, so that a match never loses the block it is in.
+pub(super) fn tree(items: &[Item], filter: &str) -> Vec<Row> {
+    let needle = filter.trim().to_lowercase();
+    // the state whose block holds this item's line, for an event
+    let parent: Vec<Option<usize>> = items
+        .iter()
+        .map(|item| {
+            (item.kind == Kind::Event)
+                .then(|| {
+                    items
+                        .iter()
+                        .position(|state| state.kind == Kind::State && state.line <= item.line && item.line <= state.end)
+                })
+                .flatten()
+        })
+        .collect();
+    let matches = |index: usize| needle.is_empty() || items[index].name.to_lowercase().contains(&needle);
+    let keep = |index: usize| {
+        matches(index)
+            || items
+                .iter()
+                .enumerate()
+                .any(|(child, _)| parent[child] == Some(index) && matches(child))
+    };
+    items
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| keep(*index))
+        .map(|(item, _)| Row {
+            item,
+            depth: u16::from(parent[item].is_some()),
+        })
+        .collect()
+}
+
 /// The state (if any) and the item whose block holds line: the deepest one,
 /// which is what a sticky scroll shows above the source (default › event).
 pub(super) fn enclosing(items: &[Item], line: usize) -> Option<(Option<&Item>, &Item)> {
@@ -213,6 +259,45 @@ mod tests {
 
     /// The outline is a tree: a state's events sit under it, the functions and
     /// globals at the top, and the filter keeps the state of what it keeps.
+    #[test]
+    fn the_outline_tree_nests_events_under_their_state() {
+        let source = "\
+integer count = 0;
+default
+{
+    state_entry()
+    {
+    }
+    touch_start(integer n)
+    {
+    }
+}
+rotation turn(rotation r)
+{
+    return r;
+}
+";
+        let items = outline(source, Lang::Lsl);
+        let names =
+            |rows: Vec<super::Row>| -> Vec<(String, u16)> { rows.iter().map(|row| (items[row.item].name.clone(), row.depth)).collect() };
+        assert_eq!(
+            names(tree(&items, "")),
+            [
+                ("count".to_owned(), 0),
+                ("default".to_owned(), 0),
+                ("state_entry".to_owned(), 1),
+                ("touch_start".to_owned(), 1),
+                ("turn".to_owned(), 0),
+            ]
+        );
+        // a hit in an event keeps the state it is in
+        assert_eq!(
+            names(tree(&items, "touch")),
+            [("default".to_owned(), 0), ("touch_start".to_owned(), 1)]
+        );
+        // a hit in a function keeps nothing above it
+        assert_eq!(names(tree(&items, "turn")), [("turn".to_owned(), 0)]);
+    }
 
     #[test]
     fn an_items_block_reaches_the_brace_that_closes_it() {

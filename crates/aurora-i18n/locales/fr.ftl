@@ -10904,6 +10904,7 @@ script-properties-none = Aucun script au premier plan
 build-compact-highlight = Afficher le surlignage
 script-properties-rights = Droits
 build-compact-probes = Sondes de réflexion
+script-console-open = Ouvrir le script
 build-compact-owned-only = Sélectionner mes objets uniquement
 build-compact-movable-only = Sélectionner les déplaçables
 build-compact-surrounding = Sélectionner en entourant
@@ -10929,8 +10930,11 @@ script-inventory-empty = Aucun script dans votre inventaire.
 build-compact-collapse = Replier / déplier les rubriques
 script-menu-insert = Insérer
 build-compact-paste-system = Coller depuis le presse-papiers système
+script-problems-message = Message
 build-compact-paste-vector = Coller le vecteur copié
+script-problems-source = Source
 build-compact-copy-vector = Copier le vecteur
+script-problems-line = Ligne
 build-compact-camera = Caméra
 build-tool-in-use = En cours
 build-create-options-toggle = Afficher / masquer les options
@@ -10946,14 +10950,23 @@ build-capture-shape-tooltip = Forme copiée ({ $kind })
 build-capture-shape-not-a-prim = Seule la forme d’une prim peut être copiée
 build-capture-shape-mesh-or-sculpt = La forme d’un mesh ou d’une prim sculptée ne peut pas être copiée
 build-capture-shape-no-modify = Il faut la permission de modifier cette prim pour copier sa forme
+script-problems-this = Ce script
 build-compact-move-tool = Déplacer
+script-problems-all = Tous les scripts
 build-compact-edit = Modifier
+script-problems-none = Aucun problème.
 build-compact-create = Créer
+script-problems-fold = Replier les problèmes
 task-transfer-source-gone = L’objet d’origine n’est plus disponible.
+script-problems-unfold = Afficher les problèmes
 task-transfer-unavailable = Cet élément ne peut pas être transféré.
+script-dock-problems = Problèmes
 task-transfer-attachment-no-copy = Un élément non copiable ne peut pas être retiré d’un objet porté. Posez d’abord l’objet au sol.
+script-dock-outline = Plan
 task-transfer-no-permission = Les permissions de cet élément et de son objet ne permettent pas ce transfert.
+script-dock-search = Rechercher
 task-transfer-title = Déplacer le contenu vers l’inventaire
+script-dock-references = Références
 task-transfer-warning = Cet élément ne sera pas copié : il sera retiré du contenu de l’objet et déplacé dans votre inventaire.
 script-type-lsl = LSL
 task-transfer-warning-many = { $count ->
@@ -10962,6 +10975,7 @@ task-transfer-warning-many = { $count ->
     }
 script-type-lua = Lua
 task-transfer-scripted-warning = Cet objet contient des scripts. Retirer cet élément peut perturber leur fonctionnement ou rendre l’objet inutilisable.
+script-dock-console = Console
 task-transfer-ignore = Ne plus afficher cet avertissement
 task-transfer-destination = Ce dossier ne peut pas recevoir cet élément.
 task-transfer-requested = Transfert vers l’inventaire demandé.
@@ -10975,8 +10989,11 @@ contents-copy-tip = Copier chaque élément dans un nouveau dossier au nom de l�
 contents-copy-wear = Copier et porter
 contents-copy-replace = Remplacer la tenue par le contenu
 contents-copy-add = Ajouter le contenu à la tenue
+script-console-time = Heure
 contents-copy-nothing = Cet objet ne contient aucun élément que vous êtes autorisé à copier.
+script-console-filter = Filtrer la console
 contents-copy-item-refused = { $name } : { $reason }
+script-console-copy = Tout copier
 contents-copy-move-warning = { $count ->
     [one] Cet élément non copiable sera déplacé dans votre inventaire, pas copié :
    *[other] Ces { $count } éléments non copiables seront déplacés dans votre inventaire, pas copiés :
@@ -10988,64 +11005,105 @@ contents-copy-move-more = { $count ->
     }
 script-saved-at = Enregistré à { $time }
 contents-copy-requested = Copie du contenu dans « { $folder } » demandée.
+script-console-none = Rien n'a encore été dit.
 contents-copy-folder-timeout = La création du dossier « { $folder } » n’a pas été confirmée en 60 secondes. Aucun contenu n’a été transféré.
+script-outline-name = Nom
 contents-copy-complete = { $count ->
     [one] Contenu copié dans « { $folder } » : { $count } élément reçu.
    *[other] Contenu copié dans « { $folder } » : { $count } éléments reçus.
     }
+script-dock-text = Texte
 contents-copy-timeout = Copie dans « { $folder } » non confirmée après 60 secondes. Éléments reçus : { $received }/{ $count }. Vérifiez le contenu du dossier.
+script-search-scope-window = Scripts ouverts
 contents-copy-unavailable = Copie dans « { $folder } » non confirmée : le dossier de destination est introuvable ou n’a pas pu être chargé.
+script-search-scope-object = Cet objet
 contents-copy-wear-busy = Le contenu a été copié dans « { $folder } », mais votre tenue n’a pas pu être changée pendant une autre modification de tenue. Portez le dossier depuis votre inventaire.
+script-check-again = Relire les scripts de l'objet
 contents-copy-failed = Le dossier du contenu de l’objet n’a pas pu être créé : { $reason }
+script-check-reading = { $count ->
+    [one] Lecture de { $count } script…
+   *[other] Lecture de { $count } scripts…
+    }
 contents-copy-wear-timeout = Tous les éléments de « { $folder } » ne sont pas arrivés dans votre inventaire : votre tenue n’a pas changé. Portez le dossier depuis votre inventaire.
 build-compact-land = Terrain
 build-compact-capacity = Capacité restante : { $remaining }. Cliquer pour voir les poids détaillés.
 build-compact-empty = Sélectionner un objet
+script-check-unreachable = { $name } n’a pas pu être lu : { $reason }
 build-compact-selection-edit = Édition de la sélection
+script-check-stray-close = Un « {"}"} » ne ferme aucun bloc.
 build-compact-object-kind = Objet entier · { $kind }
+script-check-open-block = Un « {"{"} » n’est jamais fermé.
 build-compact-prim = prim
+script-check-open-string = Une chaîne n’est jamais fermée.
 build-compact-mesh = mesh
+script-check-open-comment = Un commentaire n’est jamais fermé.
 build-compact-object-count = { $count ->
     [one] { $count } objet
    *[other] { $count } objets
     }
+script-check-open-lua-block = Le bloc { $word } n'est jamais fermé.
 build-compact-prim-count = { $count ->
     [one] { $count } prim
    *[other] { $count } prims
     }
+script-check-stray-lua-close = Ce { $word } ne ferme aucun bloc.
 build-compact-position = Position
+script-lint-fast-timer = Une minuterie aussi rapide affame le script ; 0,1 s est le minimum utile.
 build-compact-size = Taille
+script-lint-sleeping-call = llSleep arrête tout le script ; une minuterie le laisse répondre entre-temps.
 build-compact-rotation = Rotation
+script-lint-costly-listen = Écoute tous les interlocuteurs du canal ; filtrez le nom ou le message.
 build-compact-selection-snap = Sélection et accrochage
+script-lint-fast-sensor = Un capteur aussi fréquent coûte à la région ; une seconde est le minimum utile.
 build-compact-grid-unit = { $unit } m
+script-lint-integer-past-32-bits = Un entier aussi grand ne tient pas sur 32 bits : il déborde à la compilation.
 build-compact-copy-hint = Maj + glisser : copier
+script-lint-mergeable-prim-params = Deux appels aux paramètres de la primitive de suite : un seul appel avec les deux listes fait moins de travail.
 build-compact-create-hint = Cliquer : créer
+script-lint-string-build = Construit une chaîne dans une boucle ; rassemblez les morceaux dans une liste et joignez-les une fois.
 build-compact-land-hint = Maintenir : peindre
+script-lint-repeated-call = Appelé { $count } fois avec les mêmes arguments ici ; gardez-le dans une variable locale.
 build-compact-drag-hint = Glisser dans le monde
 
 # Compact build inspector, C3
+script-lint-arguments = { $name } prend { $expected } arguments, mais cet appel en donne { $given }.
 build-c3-remaining = { $remaining } disponibles
+script-lint-event-arguments = L’événement { $event } prend { $expected } paramètres, mais celui-ci en donne { $given }.
 build-c3-emission-options = Émission et options
+script-lint-unknown-function = Fonction inconnue { $name }
 build-c3-maps-tints = Cartes et teintes
+script-lint-did-you-mean = Vouliez-vous dire { $name } ?
 build-c3-texture-transform = Transformation des textures
+script-lint-duplicate-event = L’événement { $event } est déjà traité dans cet état.
 build-c3-material-assigned = Matériau PBR appliqué
+script-lint-assignment-in-condition = Affectation dans une condition : utilisez == pour comparer.
 build-c3-choose = Choisir…
 
+script-lint-empty-if = Le corps de ce if est vide.
 workspace-inventory-selected = { $count } sélectionné(s)
 
+script-lint-empty-while = Le corps de ce while est vide.
 workspace-land-identity = Identité et propriété
+script-lint-switch-no-default = Ce switch n’a pas de default : une valeur sans case ne fait rien.
 workspace-land-sale = Vente et informations
+script-lint-switch-duplicate-case = Case { $value } en double.
 workspace-land-actions = Actions sur la parcelle
+script-lint-state-current = state { $state } : le script y est déjà.
 workspace-outfit-selection = Sélectionnez une tenue
+script-lint-lua-lsl-call = { $name } est le nom LSL : en Lua, c'est { $suggestion }.
 workspace-outfit-items =
     { $count ->
         [one] { $count } élément
        *[other] { $count } éléments
     }
 
+script-lint-lua-lsl-call-hint = { $name } est un nom LSL : en Lua, une fonction intégrée s'écrit avec le préfixe ll.
 ui-inventory-received-purchases = Éléments reçus
+script-lint-lua-unused-local = La variable locale { $name } n'est jamais utilisée.
 ui-inventory-no-received-purchases = Aucun élément reçu pour le moment.
+script-lint-lua-global = { $name } est une variable globale : écrivez local { $name }, sauf si elle doit être partagée.
 import-local-settings = Réglages de chargement des meshes
+script-lint-lua-string-plus = Lua joint les chaînes avec deux points, pas avec un plus.
 import-local-clear = Retirer de la sélection
 script-help-shortcuts = Raccourcis
 import-local-rez = Placer un prim pour cet aperçu
@@ -11114,21 +11172,34 @@ script-shortcuts-list-take = Prendre le nom choisi dans la liste
 radar-name-header = Nom [{ $total }/{ $region }/{ $chat }]
 script-shortcuts-dismiss = Fermer la liste, terminer un extrait
 radar-name-header-tip = Nom (avatars au total / dans la région / à portée du chat)
+script-references-new-name = Nouveau nom
 radar-voice-connected = Dans le canal vocal
+script-references-rename = Renommer tout
 radar-voice-speaking = Parle
+script-references-count = { $count ->
+    [one] { $count } emplacement
+   *[other] { $count } emplacements
+    }
 radar-payment-none = Aucune info de paiement
 radar-payment-on-file = Infos de paiement enregistrées
 radar-payment-used = Infos de paiement utilisées
 radar-age-hidden = n.d.
+script-references-none = Rien n’utilise ce nom.
 radar-age-days = { $days ->
     [one] { $days } jour
    *[other] { $days } jours
+    }
+script-references-renamed = { $count ->
+    [one] { $count } emplacement renommé.
+   *[other] { $count } emplacements renommés.
     }
 radar-empty = Personne à proximité.
 radar-options = Options du radar
 radar-selection-menu = Actions sur la sélection
 radar-add-friend = Ajouter en ami
+script-search-in-scripts = Chercher dans les scripts de la fenêtre
 radar-opt-minimap = Afficher la mini-carte
+script-search-none = Rien trouvé.
 radar-opt-limit-range = Limiter au rayon
 script-goto-definition = Aller à la définition
 radar-opt-range = Rayon
@@ -11136,7 +11207,9 @@ script-find-references = Chercher les références
 radar-opt-show-muted = Afficher les résidents bloqués
 script-goto-not-found = Aucune déclaration dans les scripts de cet objet.
 radar-opt-name-format = Format des noms
+script-outline-none = Rien à esquisser.
 radar-name-display = Nom d'affichage
+script-outline-filter = Filtrer le plan
 radar-name-user = Nom d'utilisateur
 script-spaces = Espaces : { $count }
 radar-name-display-user = Nom d'affichage (utilisateur)
@@ -11266,6 +11339,7 @@ script-preferences-reset-layout = Réinitialiser la disposition
 people-sheet-add-set = Cercle
 script-preferences-reset-layout-hint = La largeur de l’arborescence, la hauteur du dock et l’ordre de ses onglets reviennent à leurs valeurs par défaut.
 people-groups-filter = Filtrer les groupes…
+script-preferences-errors = Erreurs
 people-groups-join = Rejoindre…
 script-preferences-font = Police de l’éditeur
 people-groups-join-tip = Rechercher des groupes à rejoindre
@@ -11319,6 +11393,7 @@ script-preferences-current-line = Surligner la ligne courante
 people-groups-active-switch = Groupe actif
 script-preferences-completion = Liste de complétion
 people-groups-title-shown = Titre affiché
+script-preferences-linter = Linter
 people-groups-settings = Réglages
 script-preferences-deprecations = Aides sur les obsolètes
 people-groups-receive-notices = Recevoir les avis
@@ -11328,13 +11403,18 @@ script-preferences-arguments = Aide des arguments
 people-groups-in-profile = Afficher dans mon profil
 script-preferences-arguments-hint = L'aide d'un appel liste ses arguments et ce que chacun signifie.
 people-groups-pin = Épingler en haut de la liste
+script-preferences-errors-in-chat = Afficher les erreurs de script dans le chat local
 people-groups-slurl = SLURL
+script-preferences-errors-in-chat-hint = Désactivé : elles ne vont que dans la fenêtre Script debug.
 people-groups-leave = Quitter le groupe
+script-preferences-errors-channel = Les dire aussi sur un canal
 people-sets-gear = Options et importation
+script-preferences-errors-channel-number = Canal
 people-sets-people = { $count ->
     [one] { $count } personne
    *[other] { $count } personnes
     }
+script-preferences-errors-hint = Les erreurs de script du viewer, pour les objets de ce compte.
 people-sets-online = { $count ->
     [one] { $count } en ligne
    *[other] { $count } en ligne

@@ -371,6 +371,24 @@ impl App {
         self.open_script_from(target, None);
     }
 
+    /// Reads a script's text for an object-wide search or check, without an
+    /// editor for it: the answer goes back to the editor as `loaded`.
+    fn read_script(&mut self, target: ScriptTarget, request: Uuid) {
+        if self.world.rlva.has("viewscript") {
+            return;
+        }
+        let Some(info) = self.script_info(target) else {
+            return;
+        };
+        self.send(NetCommand::LoadScript {
+            request,
+            target,
+            handle: info.handle,
+            owner: info.owner,
+            asset: info.asset,
+        });
+    }
+
     /// The window an object's script is in: the scripts of one linkset share
     /// it, its tree and its tabs. An inventory script's is the agent's one
     /// window; nil for an object that is gone, and for every script while the
@@ -523,12 +541,18 @@ impl App {
                 {
                     // the contents window's menu entries, from its own rules
                     let transfer = self.build.task_transfer_kind(&self.world, object, item);
+                    // its source may be read as opening it asks: copy and
+                    // modify, the rule `script_info` reads for the same item
+                    let member = !item.group_id.is_nil() && self.world.groups.is_member(&item.group_id);
+                    let (copy, _) = task_permissions(rules::task_script_mask(item, self.world.agent_id, member), self.world.god_level);
+                    let can_read = copy && !task_script_refused(&self.build, &self.world, object);
                     entry.scripts.push(LinksetScript {
                         object,
                         item: item.item_id,
                         name: item.name.clone(),
                         flags: item.flags,
                         permissions: Permissions::new(item.owner_mask, item.next_owner_mask),
+                        can_read,
                         running: self
                             .build
                             .contents
@@ -638,9 +662,19 @@ impl App {
         // that holds it, as the path under the source always did for a linkset
         self.script_editors
             .name_own_scripts(|target| crate::build::replace::object_name(&self.build, &self.world, target.object));
-        // the windows' trees
+        // the errors' routing lives in the main settings (Preferences ›
+        // Chat): the preferences show it too, so it goes in and comes back
+        let routing = crate::ui::scripts::ErrorRouting {
+            in_chat: self.settings.script_errors_in_chat,
+            to_channel: self.settings.script_errors_to_channel,
+            channel: self.settings.script_errors_channel,
+        };
+        self.script_editors.errors = routing;
+        // the windows' trees, then what the objects say in their Console
+        // tabs: a line names its prim, the trees say which window that is
         let linksets = self.script_linkset_views();
         self.script_stages(ctx, &linksets, std::time::Instant::now());
+        self.script_editors.console_from(&self.world.script_debug.console, &linksets);
         for action in self.script_editors.show(
             ctx,
             p,
@@ -650,6 +684,11 @@ impl App {
         ) {
             self.apply_script_action(action);
         }
+        // what the editor's preferences changed of the errors' routing
+        let errors = self.script_editors.errors;
+        self.settings.script_errors_in_chat = errors.in_chat;
+        self.settings.script_errors_to_channel = errors.to_channel;
+        self.settings.script_errors_channel = errors.channel;
         // the copies of the unsaved scripts (ui/scripts/backup.rs)
         self.sync_script_backup_dir();
         self.script_editors.back_up();
@@ -756,6 +795,7 @@ impl App {
 
     pub(super) fn apply_script_action(&mut self, action: Action) {
         match action {
+            Action::Debug => self.script_editors.open_debug(),
             Action::Touch(object) => self.script_touch(object),
             Action::Rename { target, name } => {
                 // Permissions are rechecked when the UI action is executed.
@@ -948,6 +988,7 @@ impl App {
                 }
             }
             Action::OpenScript(target) => self.open_script(target),
+            Action::ReadScript { target, request } => self.read_script(target, request),
             Action::TakeScript { object, item } => self.take_task_script(object, item),
             Action::DeleteScript { object, item } => self.remove_task_items(object, &[item]),
             Action::Properties(target) => self.open_task_script_properties(target),
@@ -1192,12 +1233,15 @@ fn folder_scripts(
         .filter_map(|item| {
             let original = rules::original(inv, item.id)?;
             let script = inv.items.get(&original).filter(|it| it.asset_type == 10)?;
+            // the rule `script_info` reads for an inventory item
+            let (can_read, _) = permissions(rules::held(inv, script), true, 0);
             Some(LinksetScript {
                 object: Uuid::nil(),
                 item: original,
                 name: item.name.clone(),
                 flags: script.flags,
                 permissions: Permissions::new(script.owner_mask, script.next_owner_mask),
+                can_read,
                 running: None,
                 dirty: false,
                 menu: None,

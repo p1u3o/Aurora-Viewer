@@ -627,6 +627,12 @@ fn clear_filter(ui: &mut egui::Ui, p: &Palette, text: &mut String, response: &mu
     }
 }
 
+/// A quiet line under the rows of a panel -- a list with nothing in it, a note
+/// under a table: the smallest text, dimmed, wrapped to the room it has.
+pub fn quiet_note(ui: &mut egui::Ui, p: &Palette, text: &str) {
+    ui.add(egui::Label::new(egui::RichText::new(text).size(11.0).color(p.muted_dim)).wrap());
+}
+
 /// What a tab of a strip of closable tabs holds, as the open scripts' strip
 /// draws its own.
 pub struct TabPill<'a> {

@@ -49,6 +49,23 @@ mod typing;
 mod view;
 mod workspace;
 
+/// The same clock as `hhmm`, seconds and all: a console's lines can share
+/// a minute. (Second Life time is a whole number of hours from Unix time, so
+/// the seconds are the same in both.)
+pub(crate) fn hhmmss(t: std::time::SystemTime) -> String {
+    if t == std::time::UNIX_EPOCH {
+        return String::new();
+    }
+    let slt = Slt::of(t);
+    let seconds = t.duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_secs() % 60);
+    super::bars::clock::hour_text(
+        slt.hour,
+        slt.minute,
+        &format!(":{seconds:02}"),
+        super::bars::clock::chat_twelve_hours(),
+    )
+}
+
 #[cfg(test)]
 mod action_marker_tests;
 #[cfg(test)]

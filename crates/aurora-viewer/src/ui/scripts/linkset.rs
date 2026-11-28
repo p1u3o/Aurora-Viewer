@@ -62,6 +62,10 @@ pub struct Script {
     pub running: Option<bool>,
     /// The rights the contents window shows for it (its C/M/T letters).
     pub permissions: Permissions,
+    /// Whether its source may be read, as opening it asks: copy and modify
+    /// (`ScriptInfo::can_read`, `IncludeUse::Unreadable`). The dock's
+    /// object-wide check and search read only what the reader could open.
+    pub can_read: bool,
     /// Its open document has unsaved text: the row marks it with a star, in
     /// place of a tab strip's dot.
     pub dirty: bool,
